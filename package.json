@@ -1,0 +1,21 @@
+{
+  "name": "ai-agent-lab",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "AI Agent 面试准备实验室：Function Calling / RAG / Agent / MCP / Skill 手写 demo",
+  "scripts": {
+    "smoke": "node smoke_test.ts",
+    "m1": "node 01-function-calling/tool_call.ts",
+    "m2": "node 02-rag/rag.ts",
+    "m3": "node 03-agent/mini_agent.ts",
+    "m4": "node 04-mcp/mini_client.ts",
+    "m6": "node 06-context/mini_agent.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.1",
+    "dotenv": "^18.0.4",
+    "openai": "^7.23.0",
+    "zod": "^4.6.5"
+  }
+}
