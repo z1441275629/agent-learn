@@ -1,2 +1,7 @@
 node_modules/
 .env
+
+# 07-memory 运行时数据（agent 生成的记忆文件，含个人信息，不入库）
+07-memory/MEMORY.md
+07-memory/memories/
+07-memory/log/
