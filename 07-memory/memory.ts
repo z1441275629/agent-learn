@@ -5,15 +5,23 @@
 // 会话 1：「我家 5 口人，回答请保持简洁」——看它写不写记忆（不写就在 system prompt 里告诉它有这能力）
 // 会话 2：「帮我全家规划买伞预算」——它必须从记忆捞回「5 口人」和「简洁」
 
+import { hybridSearch } from './bm25.ts'
 import type { SearchTopKeyItem, ToolDef, WriteMemoryItem } from './type.ts'
-import { cosine, embed, findMostSimilarByContent, parseMemoryIndex, parseVectorsFromFile, search } from './vector_store.ts'
+import {
+	cosine,
+	embed,
+	findMostSimilarByContent,
+	parseMemoryIndex,
+	parseVectorsFromFile,
+	// search
+} from './vector_store.ts'
 
 // ---------- 记忆治理：代码侧向量查重 + 并集合并 ----------
 // 为什么在代码里做：去重键不能是模型现编的 name（每次都变），一致性必须代码保证。
 // 阈值：0.80。校准数据（test_dedup.ts 实测，embedding-3）：
 //   同事实不同排版 0.81~0.96（bullet 列表比散文连句掉 ~0.13）；相邻主题新事实 ≤0.59；无关 ≤0.52。
 //   0.80 落在实测的沟里，且偏保守——宁可误建新文件（良性，巡检能收），不可误合并（事实被搅）
-export const MERGE_THRESHOLD = 0.80
+export const MERGE_THRESHOLD = 0.8
 
 // 合并策略注入：本文件不 import LLM client（层次干净、避免循环依赖），
 // 由 mini_agent 启动时注册——和 registerMemoryTools 同一个模式
@@ -88,8 +96,11 @@ export const searchMemoryTool = {
 		required: ['query'],
 	},
 	impl: async (args: { query: string }) => {
-		const topK: SearchTopKeyItem[] = await search(args.query, 3)
-    return JSON.stringify(topK)
+		// 向量检索
+		// const topK: SearchTopKeyItem[] = await search(args.query, 3)
+		// 混合检索 向量 + BM25
+		const topK: SearchTopKeyItem[] = await hybridSearch(args.query, 3)
+		return JSON.stringify(topK)
 	},
 }
 
@@ -126,18 +137,18 @@ async function updateIndex(name: string, abstract: string): Promise<void> {
 // 将记忆存储到向量数据库，我这里就存到 vectors.json 文件中了。
 // 双向量：vector = 摘要向量（检索线），contentVector = 正文向量（治理线/查重）
 async function saveVector(name: string, vector: number[], contentVector: number[]) {
-  const vectors = await parseVectorsFromFile()
-  const oldVector = vectors.find(item => item.name === name)
-  if (oldVector) {
-    oldVector.vector = vector
-    oldVector.contentVector = contentVector
-  } else {
-    vectors.push({name, vector, contentVector})
-  }
-  const fs = await import('fs/promises')
-  const path = await import('node:path')
-  const vectorPath = path.resolve(import.meta.dirname, 'vectors.json')
-  await fs.writeFile(vectorPath, JSON.stringify(vectors))
+	const vectors = await parseVectorsFromFile()
+	const oldVector = vectors.find((item) => item.name === name)
+	if (oldVector) {
+		oldVector.vector = vector
+		oldVector.contentVector = contentVector
+	} else {
+		vectors.push({ name, vector, contentVector })
+	}
+	const fs = await import('fs/promises')
+	const path = await import('node:path')
+	const vectorPath = path.resolve(import.meta.dirname, 'vectors.json')
+	await fs.writeFile(vectorPath, JSON.stringify(vectors))
 }
 
 // 满血版 description（策略 A 的实验条件）：判断标准先行、例子只做示意——
@@ -290,10 +301,7 @@ export async function dedupeMemories(opts: { threshold?: number } = {}): Promise
 			}
 		}
 		if (target && bestScore >= threshold) {
-			const merged = await mergeContent(
-				{ name: target.name, content: target.content, abstract: target.abstract },
-				{ name: item.name, content, abstract: item.abstract },
-			)
+			const merged = await mergeContent({ name: target.name, content: target.content, abstract: target.abstract }, { name: item.name, content, abstract: item.abstract })
 			await appendAudit(`CLEANUP MERGE ${item.name} → ${target.name} (相似度${bestScore.toFixed(3)}): 【${target.content}】+【${content}】→【${merged.content}】`)
 			target.content = merged.content
 			target.abstract = merged.abstract
@@ -329,24 +337,24 @@ export class MemoryManager {
 	}
 
 	static async getSystemPrompt(includeWrite = true) {
-// 		const fs = await import('fs/promises')
-// 		const path = await import('path')
-// 		// 读索引文件 MEMORY.md——必须和 updateIndex 写的路径一致（两处各自 resolve 一旦改布局就会漂移，更好的做法是抽一个共享常量）
-// 		const memoryIndexPath = path.resolve(import.meta.dirname, 'MEMORY.md')
-// 		let memoryIndexContent: string
-// 		try {
-// 			memoryIndexContent = await fs.readFile(memoryIndexPath, 'utf8')
-// 		} catch {
-// 			// 第一次运行时索引还不存在（write_memory 还没被调过）——不是错误，"暂无记忆"即可
-// 			memoryIndexContent = '（暂无记忆）'
-// 		}
-// 		// 记忆读取方案1 把索引文件的内容都加到系统提示词中
-// 		// 索引膨胀怎么办：① 纪律——索引必须守住一行一条；② 真大到装不下时，就轮到检索型记忆
-// 		// （对 memories/ 做语义/关键词检索，按需捞回）——那是本模块第二周的功课，现在不用解
-// 		return `你有跨会话的长期记忆。记忆索引（一行一条 = 日期 | 名称 | 摘要），需要详情时用 read_memory(name) 读取：\n【${memoryIndexContent}】\n 
-// 当了解到关于用户的持久事实或偏好时调用——判断标准：这条信息在未来的对话中还用得上吗？（如：年龄、职业、家庭构成、所在地、作息习惯、表达偏好、长期目标）。一次性的任务细节不要记。
-// 需要增加记忆时用 write_memory(name, content, abstract) 写入`
-		
+		// 		const fs = await import('fs/promises')
+		// 		const path = await import('path')
+		// 		// 读索引文件 MEMORY.md——必须和 updateIndex 写的路径一致（两处各自 resolve 一旦改布局就会漂移，更好的做法是抽一个共享常量）
+		// 		const memoryIndexPath = path.resolve(import.meta.dirname, 'MEMORY.md')
+		// 		let memoryIndexContent: string
+		// 		try {
+		// 			memoryIndexContent = await fs.readFile(memoryIndexPath, 'utf8')
+		// 		} catch {
+		// 			// 第一次运行时索引还不存在（write_memory 还没被调过）——不是错误，"暂无记忆"即可
+		// 			memoryIndexContent = '（暂无记忆）'
+		// 		}
+		// 		// 记忆读取方案1 把索引文件的内容都加到系统提示词中
+		// 		// 索引膨胀怎么办：① 纪律——索引必须守住一行一条；② 真大到装不下时，就轮到检索型记忆
+		// 		// （对 memories/ 做语义/关键词检索，按需捞回）——那是本模块第二周的功课，现在不用解
+		// 		return `你有跨会话的长期记忆。记忆索引（一行一条 = 日期 | 名称 | 摘要），需要详情时用 read_memory(name) 读取：\n【${memoryIndexContent}】\n
+		// 当了解到关于用户的持久事实或偏好时调用——判断标准：这条信息在未来的对话中还用得上吗？（如：年龄、职业、家庭构成、所在地、作息习惯、表达偏好、长期目标）。一次性的任务细节不要记。
+		// 需要增加记忆时用 write_memory(name, content, abstract) 写入`
+
 		// 记忆读取方案2 记忆的索引不是全部放到系统提示词中，而是根据用户的问题搜索一下分数高的前几个索引
 		// 读取引导常驻；写入引导（策略 A）按开关拼装——B 条件下模型不知道自己"能写"，条件才干净
 		const writeGuidance = `
@@ -357,12 +365,12 @@ export class MemoryManager {
 
 		// 记忆写入方案A 在提示词中告诉模型，了解到就记录。
 		// 记忆写入方案B 会话跑完之后，再单独跑一次会话从内容中提取记忆并保存
-// 				return `
-// 你有跨会话的长期记忆。
-// 当用户问问题时，如果发现需要用户的基本信息，你先用 search_memory(query) 检索分数高的3个索引，然后需要时再按需用 read_memory(name) 读取记忆详情。
-// 如果只是闲聊或者与用户基本信息没关系的对话，不需要检索记忆，比如下面这个例子就不需要记忆信息：今天天气怎么样？
-// 现在指的是当前时间，不是模型训练的时间
-// ` 
+		// 				return `
+		// 你有跨会话的长期记忆。
+		// 当用户问问题时，如果发现需要用户的基本信息，你先用 search_memory(query) 检索分数高的3个索引，然后需要时再按需用 read_memory(name) 读取记忆详情。
+		// 如果只是闲聊或者与用户基本信息没关系的对话，不需要检索记忆，比如下面这个例子就不需要记忆信息：今天天气怎么样？
+		// 现在指的是当前时间，不是模型训练的时间
+		// `
 	}
 }
 
