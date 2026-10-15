@@ -89,7 +89,7 @@ async function saveVector(name: string, vector: number[]) {
   const vectors = await parseVectorsFromFile()
   const oldVector = vectors.find(item => item.name === name)
   if (oldVector) {
-    oldVector.vector === vector
+    oldVector.vector = vector
   } else {
     vectors.push({name, vector})
   }
@@ -179,18 +179,25 @@ export class MemoryManager {
 		// 	// 第一次运行时索引还不存在（write_memory 还没被调过）——不是错误，"暂无记忆"即可
 		// 	memoryIndexContent = '（暂无记忆）'
 		// }
-		// 方案1 把索引文件的内容都加到系统提示词中
+		// 记忆读取方案1 把索引文件的内容都加到系统提示词中
 		// 索引膨胀怎么办：① 纪律——索引必须守住一行一条；② 真大到装不下时，就轮到检索型记忆
 		// （对 memories/ 做语义/关键词检索，按需捞回）——那是本模块第二周的功课，现在不用解
 		// return `你有跨会话的长期记忆。记忆索引（一行一条 = 日期 | 名称 | 摘要），需要详情时用 read_memory(name) 读取：\n【${memoryIndexContent}】\n 当了解到关于用户的持久事实或偏好时调用——判断标准：这条信息在未来的对话中还用得上吗？（如：年龄、职业、家庭构成、所在地、作息习惯、表达偏好、长期目标）。一次性的任务细节不要记。需要增加记忆时用 write_memory(name, content, abstract) 读取`
 		
-		// 方案2 记忆的索引不是全部放到系统提示词中，而是根据用户的问题搜索一下分数高的前几个索引
-		return `
+		// 记忆读取方案2 记忆的索引不是全部放到系统提示词中，而是根据用户的问题搜索一下分数高的前几个索引
+// 		return `
+// 你有跨会话的长期记忆。
+// 当用户问问题时，你先用 search_memory(query) 检索分数高的3个索引，然后需要时再按需用 read_memory(name) 读取记忆详情。
+// 当了解到关于用户的持久事实或偏好时调用——判断标准：这条信息在未来的对话中还用得上吗？（如：年龄、职业、家庭构成、所在地、作息习惯、表达偏好、长期目标）。一次性的任务细节不要记。
+// 需要保存记忆时用 write_memory(name, content, abstract) 写入
+// 		`
+
+		// 记忆写入方案A 在提示词中告诉模型，了解到就记录。
+		// 记忆写入方案B 会话跑完之后，再单独跑一次会话从内容中提取记忆并保存
+				return `
 你有跨会话的长期记忆。
 当用户问问题时，你先用 search_memory(query) 检索分数高的3个索引，然后需要时再按需用 read_memory(name) 读取记忆详情。
-当了解到关于用户的持久事实或偏好时调用——判断标准：这条信息在未来的对话中还用得上吗？（如：年龄、职业、家庭构成、所在地、作息习惯、表达偏好、长期目标）。一次性的任务细节不要记。
-需要保存记忆时用 write_memory(name, content, abstract) 读取
-		`
+` 
 	}
 }
 
