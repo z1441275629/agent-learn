@@ -5,7 +5,8 @@
 // 会话 1：「我家 5 口人，回答请保持简洁」——看它写不写记忆（不写就在 system prompt 里告诉它有这能力）
 // 会话 2：「帮我全家规划买伞预算」——它必须从记忆捞回「5 口人」和「简洁」
 
-import type { ToolDef } from './type.ts'
+import type { SearchTopKeyItem, ToolDef } from './type.ts'
+import { embed, parseVectorsFromFile, search } from './vector_store.ts'
 
 // export const memoryPrompt = '记忆布局：memory/MEMORY.md（索引：一行一条 = 事实摘要 + 文件名 + 日期）+ memory/memories/*.md（每事实一个文件）'
 
@@ -37,6 +38,25 @@ export const readMemoryTool = {
 	},
 }
 
+export const searchMemoryTool = {
+	name: 'search_memory',
+	description: '通过关键词检索记忆索引，返回分数最高的3条',
+	parameters: {
+		type: 'object',
+		properties: {
+			query: {
+				type: 'string',
+				description: '要检索的记忆关键词',
+			},
+		},
+		required: ['query'],
+	},
+	impl: async (args: { query: string }) => {
+		const topK: SearchTopKeyItem[] = await search(args.query, 3)
+    return JSON.stringify(topK)
+	},
+}
+
 // ---------- 更新索引（write_memory 的家政部分） ----------
 // 索引行格式：- 2026-10-13 | name | 摘要
 // Node 模式：整读 → split('\n') 按行处理 → 整写。索引才几十上百行，
@@ -64,10 +84,25 @@ async function updateIndex(name: string, abstract: string): Promise<void> {
 	await fs.writeFile(indexPath, lines.join('\n'), 'utf8')
 }
 
+// 将记忆存储到向量数据库，我这里就存到 vectors.json 文件中了
+async function saveVector(name: string, vector: number[]) {
+  const vectors = await parseVectorsFromFile()
+  const oldVector = vectors.find(item => item.name === name)
+  if (oldVector) {
+    oldVector.vector === vector
+  } else {
+    vectors.push({name, vector})
+  }
+  const fs = await import('fs/promises')
+  const path = await import('node:path')
+  const vectorPath = path.resolve(import.meta.dirname, 'vectors.json')
+  await fs.writeFile(vectorPath, JSON.stringify(vectors))
+}
+
 export const writeMemoryTool = {
 	name: 'write_memory',
 	// description: '当你了解到关于用户的持久事实、用户信息或偏好时调用（家庭情况、表达偏好、长期目标）；不要记录一次性的任务细节',
-  description: '当了解到关于用户的持久事实或偏好时调用——判断标准：这条信息在未来的对话中还用得上吗？（如：年龄、职业、家庭构成、所在地、作息习惯、表达偏好、长期目标）。一次性的任务细节不要记。',
+	description: '当了解到关于用户的持久事实或偏好时调用——判断标准：这条信息在未来的对话中还用得上吗？（如：年龄、职业、家庭构成、所在地、作息习惯、表达偏好、长期目标）。一次性的任务细节不要记。',
 	parameters: {
 		type: 'object',
 		properties: {
@@ -114,6 +149,9 @@ export const writeMemoryTool = {
 
 		await fs.writeFile(memoryFilePath, args.content, 'utf8') // 覆盖和新增都要写正文（原分支只在"不存在"时写——已存在永远更新不了）
 		await updateIndex(args.name, args.abstract)
+		// 检索的时候用的是索引中的abstract，所以存向量也是存abstract
+    const vector = await embed([args.abstract])
+    await saveVector(args.name, vector[0])
 		return (overwrote ? '已覆盖' : '已写入') + `记忆 ${args.name}，索引已更新`
 	},
 }
@@ -125,24 +163,34 @@ export class MemoryManager {
 	}
 	static registerMemoryTools(registry: Map<string, ToolDef>) {
 		registry.set(readMemoryTool.name, readMemoryTool)
+		registry.set(searchMemoryTool.name, searchMemoryTool)
 		registry.set(writeMemoryTool.name, writeMemoryTool)
 	}
 
 	static async getSystemPrompt() {
 		const fs = await import('fs/promises')
 		const path = await import('path')
-		// 读索引文件 MEMORY.md——必须和 updateIndex 写的路径一致（两处各自 resolve 一旦改布局就会漂移，更好的做法是抽一个共享常量）
-		const memoryIndexPath = path.resolve(import.meta.dirname, 'MEMORY.md')
-		let memoryIndexContent: string
-		try {
-			memoryIndexContent = await fs.readFile(memoryIndexPath, 'utf8')
-		} catch {
-			// 第一次运行时索引还不存在（write_memory 还没被调过）——不是错误，"暂无记忆"即可
-			memoryIndexContent = '（暂无记忆）'
-		}
+		// // 读索引文件 MEMORY.md——必须和 updateIndex 写的路径一致（两处各自 resolve 一旦改布局就会漂移，更好的做法是抽一个共享常量）
+		// const memoryIndexPath = path.resolve(import.meta.dirname, 'MEMORY.md')
+		// let memoryIndexContent: string
+		// try {
+		// 	memoryIndexContent = await fs.readFile(memoryIndexPath, 'utf8')
+		// } catch {
+		// 	// 第一次运行时索引还不存在（write_memory 还没被调过）——不是错误，"暂无记忆"即可
+		// 	memoryIndexContent = '（暂无记忆）'
+		// }
+		// 方案1 把索引文件的内容都加到系统提示词中
 		// 索引膨胀怎么办：① 纪律——索引必须守住一行一条；② 真大到装不下时，就轮到检索型记忆
 		// （对 memories/ 做语义/关键词检索，按需捞回）——那是本模块第二周的功课，现在不用解
-		return `你有跨会话的长期记忆。记忆索引（一行一条 = 日期 | 名称 | 摘要），需要详情时用 read_memory(name) 读取：\n【${memoryIndexContent}】\n 当了解到关于用户的持久事实或偏好时调用——判断标准：这条信息在未来的对话中还用得上吗？（如：年龄、职业、家庭构成、所在地、作息习惯、表达偏好、长期目标）。一次性的任务细节不要记。需要增加记忆时用 write_memory(name, content, abstract) 读取`
+		// return `你有跨会话的长期记忆。记忆索引（一行一条 = 日期 | 名称 | 摘要），需要详情时用 read_memory(name) 读取：\n【${memoryIndexContent}】\n 当了解到关于用户的持久事实或偏好时调用——判断标准：这条信息在未来的对话中还用得上吗？（如：年龄、职业、家庭构成、所在地、作息习惯、表达偏好、长期目标）。一次性的任务细节不要记。需要增加记忆时用 write_memory(name, content, abstract) 读取`
+		
+		// 方案2 记忆的索引不是全部放到系统提示词中，而是根据用户的问题搜索一下分数高的前几个索引
+		return `
+你有跨会话的长期记忆。
+当用户问问题时，你先用 search_memory(query) 检索分数高的3个索引，然后需要时再按需用 read_memory(name) 读取记忆详情。
+当了解到关于用户的持久事实或偏好时调用——判断标准：这条信息在未来的对话中还用得上吗？（如：年龄、职业、家庭构成、所在地、作息习惯、表达偏好、长期目标）。一次性的任务细节不要记。
+需要保存记忆时用 write_memory(name, content, abstract) 读取
+		`
 	}
 }
 
@@ -152,6 +200,7 @@ export class MemoryManager {
 
 //   // await writeMemoryTool.impl({name:'family-size', content:'家里6口人', abstract:'家庭人口'})
 //   // const data = await readMemoryTool.impl({name: 'family-size'})
-//   const data = await readMemoryTool.impl({name: 'family'})
-//   console.log(data)
+//   // const data = await readMemoryTool.impl({name: 'family'})
+//   // const data = await searchMemoryTool.impl({ query: '我媳妇是谁'})
+//   // console.log(data)
 // })()

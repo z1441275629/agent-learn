@@ -37,11 +37,11 @@ Skill             —— 知识封装层：把"某类任务该怎么做"写成 M
 | # | 模块 | 你要亲手写的东西 | 面试考点 | 状态 |
 |---|------|----------------|---------|------|
 | 0 | 环境准备 | API key + 跑通第一次对话 | — | ☐ |
-| 1 | Function Calling | `tool_call.ts`：让模型调用你的天气/计算器函数 | messages 数组结构、tool_calls 字段、为什么要循环 | ☐ |
-| 2 | RAG | `rag.ts`：本地文档问答（切片→向量化→检索→生成） | 为什么要切片、chunk 大小、embedding 是什么、和微调的区别 | ☐ |
-| 3 | Agent | `mini_agent.ts`：ReAct 循环 + 工具注册表 + 终止条件 | Agent 和工作流的区别、死循环怎么办、多轮上下文管理 | ☐ |
-| 4 | MCP | `mcp_server.ts` + 自己接入 ZCode | JSON-RPC、tools/resources/prompts 三类原语、和 function calling 的关系 | ☐ |
-| 5 | Skill | 给 ZCode 写一个真实可用的 Skill | Skill vs MCP vs Prompt 的边界、渐进式加载 | ☐ |
+| 1 | Function Calling | `tool_call.ts`：让模型调用你的天气/计算器函数 | messages 数组结构、tool_calls 字段、为什么要循环 | ☑ |
+| 2 | RAG | `rag.ts`：本地文档问答（切片→向量化→检索→生成） | 为什么要切片、chunk 大小、embedding 是什么、和微调的区别 | ☑ |
+| 3 | Agent | `mini_agent.ts`：ReAct 循环 + 工具注册表 + 终止条件 | Agent 和工作流的区别、死循环怎么办、多轮上下文管理 | ☑ |
+| 4 | MCP | `mcp_server.ts` + 自己接入 ZCode | JSON-RPC、tools/resources/prompts 三类原语、和 function calling 的关系 | ☑ |
+| 5 | Skill | 给 ZCode 写一个真实可用的 Skill | Skill vs MCP vs Prompt 的边界、渐进式加载 | ☑ |
 
 每个模块的节奏：**30 分钟读概念 → 1~2 小时写代码（自己写，卡住再问我）→ 对着面试题自测 → 能脱稿讲 2 分钟原理才算过**。
 

@@ -12,6 +12,7 @@ import { pathToFileURL } from 'node:url'
 import { ContextManager, truncateToolResult } from './context.ts'
 import { MemoryManager } from './memory.ts'
 import { registry, buildToolsParam } from './tools.ts'
+import { historyMemoryToVector } from './vector_store.ts'
 
 // GLM Coding Plan 套餐专用端点（按量付费改 https://open.bigmodel.cn/api/paas/v4）
 const BASE_URL = 'https://open.bigmodel.cn/api/coding/paas/v4'
@@ -102,6 +103,8 @@ export async function agentLoop(ctx: ContextManager, maxSteps = 8, onToolCall?: 
 export async function createAgent(task: string, opts?: { budgetTokens?: number }): Promise<ContextManager> {
 	const ctx = new ContextManager(client, MODEL, { budgetTokens: opts?.budgetTokens ?? BUDGET_TOKENS, toolsDef: buildToolsParam() })
 	const memoryPrompt = await MemoryManager.getSystemPrompt()
+	// 清洗历史数据，执行过一次就好了
+	// await historyMemoryToVector()
 	ctx.add({ role: 'system', content: SYSTEM_PROMPT + `记忆：${memoryPrompt}` })
 	ctx.add({ role: 'user', content: task })
 	return ctx
@@ -112,66 +115,94 @@ export async function createAgent(task: string, opts?: { budgetTokens?: number }
 // 被回归测试 import 时不自动跑——主模块判断保护脚本入口
 const isMain = process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href
 if (isMain) {
-const SESSION = process.argv[2] ?? '1'
-if (SESSION === '1') {
-	// 测试写入记忆
-	const ctx = await createAgent('北京今天会下雨吗？如果会下雨，我给全家 5 口人每人买一把 25 元的伞，帮我算算一共多少钱。查一下我笔记里关于买伞的记录，再结合北京天气决定买不买')
-	const answer = await agentLoop(ctx)
-	console.log('\n=== 最终回答 ===\n' + answer)
-} else if (SESSION === '2') {
-	// 测试读取记忆
-	const ctx = await createAgent('我家有几口人')
-	const answer = await agentLoop(ctx)
-	console.log('\n=== 记忆读取 ===\n' + answer)
-} else if (SESSION === '3') {
-	// 测试写入记忆
-	const ctx = await createAgent('我们家，我是赵德升，媳妇是李露露，儿子是赵睿泽，弟弟是赵德财，妹妹是赵慧，爸爸是赵立成，妈妈是孙花，一共几个人？')
-	const answer = await agentLoop(ctx)
-	console.log('\n=== 家庭成员人名告知，验证是否会存记忆 ===\n' + answer)
-} else if (SESSION === '4') {
-	// 测试记忆读写
-	const ctx = await createAgent('我1994年出生的，我老婆比我小一岁，请输出我媳妇的名字和年龄')
-	const answer = await agentLoop(ctx)
-	console.log('\n=== 年龄告知与年龄计算，验证是否会存记忆，并且读取之前的媳妇名字的记忆 ===\n' + answer)
-} else if (SESSION === '5') {
-	//
-	const ctx = await createAgent('我喜欢熬夜，我媳妇说熬夜不好，容易长痘痘，她不喜欢熬夜。熬夜到底好不好。')
-	const answer = await agentLoop(ctx)
-	console.log('\n=== 测试偏好是否存入记忆 ===\n' + answer)
-} else if (SESSION === '6') {
-	//
-	const ctx = await createAgent('我和我媳妇，平常谁睡的更早')
-	const answer = await agentLoop(ctx)
-	console.log('\n=== 测试偏好 ===\n' + answer)
-} else if (SESSION === '7') {
-	//
-	const ctx = await createAgent('我小时候经常跟发小一起去我们那的小河里洗澡，但是我还是没学会游泳，其他的发小都学会了。也去小河里摸过鱼，也没有其他发小摸到的多。我是不是手慢，动手能力差？')
-	const answer = await agentLoop(ctx)
-	console.log('\n=== 测试用户信息披露时是否记忆 ===\n' + answer)
-} else if (SESSION === '8') {
-	//
-	const ctx = await createAgent('你猜我会游泳不？')
-	const answer = await agentLoop(ctx)
-	console.log('\n=== 游泳 ===\n' + answer)
-} else if (SESSION === '9') {
-	//
-	const ctx = await createAgent('我2024-10-10去民政局领证的，2021-10-14办的婚礼，结婚算不算晚')
-	const answer = await agentLoop(ctx)
-	console.log('\n=== 结婚年龄 ===\n' + answer)
-} else if (SESSION === '10') {
-	//
-	const ctx = await createAgent('我结婚多久了')
-	const answer = await agentLoop(ctx)
-	console.log('\n=== 结婚时长 ===\n' + answer)
-} else if (SESSION === '11') {
-	//
-	const ctx = await createAgent('我实际是2024-10-14办的婚礼，农历9月12')
-	const answer = await agentLoop(ctx)
-	console.log('\n=== 结婚信息变更 ===\n' + answer)
-} else if (SESSION === '12') {
-	//
-	const ctx = await createAgent('我学前班在村里的分校上的，离家近。回家的途中经过爷爷家，所以中午经常到爷爷家吃饭。一年级也是这个学校，二年级没上完，就转到村里的总校了，距离可远了，家在山顶，每次需要先下山，然后过河，在上山到学校。放学又是这样，先下山，再过河，然后上山。4年级上完，村里的五六年级撤了，我就转学到隔壁村去上了，隔壁村叫柳泉村，我们村叫罗台村，我家是二组。柳泉小学上完5年级后，这个学校的五六年级也撤了，我又转学到镇上的中心小学——金家小学上6年级。在柳泉上学的时候，先下山，再过河，然后平路1-2公里到学校。金家小学远，我就开启了住校生活，以后上学全是住校。我的小学经历是不是有点丰富')
-	const answer = await agentLoop(ctx)
-	console.log('\n=== 小学经历 ===\n' + answer)
-}
+	const SESSION = process.argv[2] ?? '1'
+	if (SESSION === '1') {
+		// 测试写入记忆
+		const ctx = await createAgent('北京今天会下雨吗？如果会下雨，我给全家 5 口人每人买一把 25 元的伞，帮我算算一共多少钱。查一下我笔记里关于买伞的记录，再结合北京天气决定买不买')
+		const answer = await agentLoop(ctx)
+		console.log('\n=== 最终回答 ===\n' + answer)
+	} else if (SESSION === '2') {
+		// 测试读取记忆
+		const ctx = await createAgent('我家有几口人')
+		const answer = await agentLoop(ctx)
+		console.log('\n=== 记忆读取 ===\n' + answer)
+	} else if (SESSION === '3') {
+		// 测试写入记忆
+		const ctx = await createAgent('我们家，我是赵德升，媳妇是李露露，儿子是赵睿泽，弟弟是赵德财，妹妹是赵慧，爸爸是赵立成，妈妈是孙花，一共几个人？')
+		const answer = await agentLoop(ctx)
+		console.log('\n=== 家庭成员人名告知，验证是否会存记忆 ===\n' + answer)
+	} else if (SESSION === '4') {
+		// 测试记忆读写
+		const ctx = await createAgent('我1994年出生的，我老婆比我小一岁，请输出我媳妇的名字和年龄')
+		const answer = await agentLoop(ctx)
+		console.log('\n=== 年龄告知与年龄计算，验证是否会存记忆，并且读取之前的媳妇名字的记忆 ===\n' + answer)
+	} else if (SESSION === '5') {
+		//
+		const ctx = await createAgent('我喜欢熬夜，我媳妇说熬夜不好，容易长痘痘，她不喜欢熬夜。熬夜到底好不好。')
+		const answer = await agentLoop(ctx)
+		console.log('\n=== 测试偏好是否存入记忆 ===\n' + answer)
+	} else if (SESSION === '6') {
+		//
+		const ctx = await createAgent('我和我媳妇，平常谁睡的更早')
+		const answer = await agentLoop(ctx)
+		console.log('\n=== 测试偏好 ===\n' + answer)
+	} else if (SESSION === '7') {
+		//
+		const ctx = await createAgent('我小时候经常跟发小一起去我们那的小河里洗澡，但是我还是没学会游泳，其他的发小都学会了。也去小河里摸过鱼，也没有其他发小摸到的多。我是不是手慢，动手能力差？')
+		const answer = await agentLoop(ctx)
+		console.log('\n=== 测试用户信息披露时是否记忆 ===\n' + answer)
+	} else if (SESSION === '8') {
+		//
+		const ctx = await createAgent('你猜我会游泳不？')
+		const answer = await agentLoop(ctx)
+		console.log('\n=== 游泳 ===\n' + answer)
+	} else if (SESSION === '9') {
+		//
+		const ctx = await createAgent('我2024-10-10去民政局领证的，2021-10-14办的婚礼，结婚算不算晚')
+		const answer = await agentLoop(ctx)
+		console.log('\n=== 结婚年龄 ===\n' + answer)
+	} else if (SESSION === '10') {
+		//
+		const ctx = await createAgent('我结婚多久了')
+		const answer = await agentLoop(ctx)
+		console.log('\n=== 结婚时长 ===\n' + answer)
+	} else if (SESSION === '11') {
+		//
+		const ctx = await createAgent('我实际是2024-10-14办的婚礼，农历9月12')
+		const answer = await agentLoop(ctx)
+		console.log('\n=== 结婚信息变更 ===\n' + answer)
+	} else if (SESSION === '12') {
+		//
+		const ctx = await createAgent(
+			'我学前班在村里的分校上的，离家近。回家的途中经过爷爷家，所以中午经常到爷爷家吃饭。一年级也是这个学校，二年级没上完，就转到村里的总校了，距离可远了，家在山顶，每次需要先下山，然后过河，在上山到学校。放学又是这样，先下山，再过河，然后上山。4年级上完，村里的五六年级撤了，我就转学到隔壁村去上了，隔壁村叫柳泉村，我们村叫罗台村，我家是二组。柳泉小学上完5年级后，这个学校的五六年级也撤了，我又转学到镇上的中心小学——金家小学上6年级。在柳泉上学的时候，先下山，再过河，然后平路1-2公里到学校。金家小学远，我就开启了住校生活，以后上学全是住校。我的小学经历是不是有点丰富',
+		)
+		const answer = await agentLoop(ctx)
+		console.log('\n=== 小学经历 ===\n' + answer)
+	} else if (SESSION === '13') {
+		//
+		const ctx = await createAgent(
+			'我决定放弃前端职业生涯，转行做Agent开发了，这个决定怎么样'
+		)
+		const answer = await agentLoop(ctx)
+		console.log('\n=== 职业生涯 ===\n' + answer)
+	} else if (SESSION === '14') {
+		//
+		const QUESTIONS = [
+			'我家有几口人',
+			'我的童年经历有啥',
+			'我媳妇叫啥',
+			// '我的职业生涯情况'
+		]
+
+		for (let q of QUESTIONS) {
+			const ctx = await createAgent(q)
+			const answer = await agentLoop(ctx)
+			console.log(`\n=== ${q} ===\n` + answer)
+		}
+	} else {
+		// 把用户执行脚本时的第二个参数当输入
+		const ctx = await createAgent(SESSION)
+		const answer = await agentLoop(ctx)
+		console.log(`\n=== 用户输入的问题：${SESSION} ===\n` + answer)
+	}
 }
