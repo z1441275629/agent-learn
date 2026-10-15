@@ -6,3 +6,6 @@ node_modules/
 07-memory/memories/
 07-memory/log/
 07-memory/vectors.json
+
+# 07-memory A/B 实验等调试用的隐藏目录
+07-memory/.[!.]*/

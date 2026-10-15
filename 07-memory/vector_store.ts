@@ -23,7 +23,6 @@ import OpenAI from 'openai'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import type { Chunk, MemoryIndexItem, VectorItem } from './type.ts'
-import { keyof } from 'zod'
 
 // embedding 走按量计费的标准端点（Coding Plan 只包聊天模型）。
 // 报"余额不足/无权限"时两个选择：① bigmodel 充 1~2 元（embedding-3 很便宜）；
@@ -45,7 +44,7 @@ export async function embed(texts: string[]) {
 // cosine：手写余弦相似度 = 点积 / (模A * 模B)
 //       思考：embedding 已经归一化的话，余弦相似度退化成什么？（点积）
 // 思考答案  ???
-function cosine(a: number[], b: number[]): number {
+export function cosine(a: number[], b: number[]): number {
 	const dotProduct = a.reduce((sum, val, i) => sum + val * b[i], 0)
 	const magnitudeA = Math.sqrt(a.reduce((sum, val) => sum + val * val, 0))
 	const magnitudeB = Math.sqrt(b.reduce((sum, val) => sum + val * val, 0))
@@ -89,15 +88,15 @@ export async function historyMemoryToVector() {
 		}
 	}
 	if (!missList.length) {
-		console.log('记忆索引和向量数据完全对应，没有缺失的索引向量')
+		console.log('\n记忆索引和向量数据完全对应，没有缺失的索引向量\n')
 		return
 	}
-	console.log(`有${missList.length}条数据缺少向量，现在补上`)
+	console.log(`\n有${missList.length}条数据缺少向量，现在补上\n`)
 	const texts = missList.map((item) => item.abstract)
 	const allVectors = await embed(texts)
 	const list = missList.map((item, index) => ({ name: item.name, vector: allVectors[index] }))
 	await batchSaveVectors(list)
-	console.log('缺失向量补充完成，数据清洗完成')
+	console.log('\n缺失向量补充完成，数据清洗完成\n')
 }
 
 // 批量存储记忆向量
@@ -113,7 +112,48 @@ export async function batchSaveVectors(list: VectorItem[]) {
 	const newVectors = [...vectorMap.values()]
 	const vectorPath = path.resolve(import.meta.dirname, 'vectors.json')
 	await fs.writeFile(vectorPath, JSON.stringify(newVectors))
-	console.log(`所有的向量名称:${[...vectorMap.keys()]}`)
+	console.log(`\n所有的向量名称:${[...vectorMap.keys()]}\n`)
+}
+
+// ---------- 治理线（查重/合并） ----------
+// 和 search() 的分工：search 查摘要向量服务检索；这里查正文向量服务治理——
+// "语义重复"的判断依据是事实内容，不是 30 字摘要（摘要太薄，区分度不够）
+export async function findMostSimilarByContent(content: string): Promise<{ name: string; score: number } | undefined> {
+	const vectors = await parseVectorsFromFile()
+	const candidates = vectors.filter((item): item is VectorItem & { contentVector: number[] } => !!item.contentVector)
+	if (!candidates.length) return undefined
+	const [queryVector] = await embed([content])
+	const best = candidates
+		.map((item) => ({ name: item.name, score: cosine(queryVector, item.contentVector) }))
+		.sort((a, b) => b.score - a.score)[0]
+	return best
+}
+
+// 一次性清洗：给只有摘要向量的旧数据补正文向量（幂等，缺才补）
+export async function backfillContentVectors(): Promise<void> {
+	const vectors = await parseVectorsFromFile()
+	const missing = vectors.filter((item) => !item.contentVector)
+	if (!missing.length) {
+		console.log('contentVector 无缺失，不用补')
+		return
+	}
+	const entries = await Promise.all(
+		missing.map(async (item) => {
+			try {
+				const content = await fs.readFile(path.resolve(import.meta.dirname, 'memories', `${item.name}.md`), 'utf8')
+				return { item, content }
+			} catch {
+				console.log(`跳过 ${item.name}：正文文件缺失，补不了`)
+				return undefined
+			}
+		}),
+	)
+	const ok = entries.filter((e): e is { item: VectorItem; content: string } => !!e)
+	if (!ok.length) return
+	const vecs = await embed(ok.map((e) => e.content))
+	ok.forEach((e, i) => (e.item.contentVector = vecs[i]))
+	await fs.writeFile(path.resolve(import.meta.dirname, 'vectors.json'), JSON.stringify(vectors))
+	console.log(`已补 ${ok.length} 条 contentVector`)
 }
 
 // 把索引文件解析成map，方便查找值 map<name, {time, name, abstract}>
