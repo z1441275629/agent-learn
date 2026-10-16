@@ -9,3 +9,10 @@ node_modules/
 
 # 07-memory A/B 实验等调试用的隐藏目录
 07-memory/.[!.]*/
+
+# 08-planner 运行时数据（同 07：agent 生成的记忆/向量/日志，含个人信息，不入库）
+08-planner/MEMORY.md
+08-planner/memories/
+08-planner/log/
+08-planner/vectors.json
+08-planner/.[!.]*/
