@@ -192,6 +192,7 @@ export async function extractMemories(ctx: ContextManager) {
 		const history = ctx.ledger.filter((item) => item.role !== 'system')
 		const userPrompt =
 			'从以下对话中抽取关于用户的持久事实与偏好，以 JSON 数组返回 [{name, content, abstract}]，没有可抽取的就返回 []， 注意是纯json，不要用markdown代码块包裹。' +
+			'name 是记忆的存储键（文件名），必须匹配 ^[a-z0-9-]+$（小写字母数字连字符，如 laptop-spec、os-version），禁止中文——write_memory 会按此校验，中文直接拒；' +
 			'只记录对话中出现的事实，不要补充建议、推断或常识；时间一律写成绝对日期（如2026年3月1日，今天是2026年），不要用"今年""最近几个月"这类相对表述；abstract 不超过30字。会话：' +
 			JSON.stringify(history)
 		const response = await client.chat.completions.create({
@@ -225,19 +226,29 @@ export async function extractMemories(ctx: ContextManager) {
 		// 这里不再手动 checkPermission（查两遍 = TTY 下每条记忆弹两次 y/n，违背单点咽喉纪律）。
 		// 代价：无头模式（planner/cron）write_memory 是 confirm → 默认拒 → 记忆不写入（下方大声报）。
 		// 参数是单个对象不是数组——impl 签名是 WriteMemoryItem
-		for (let item of toMemories) {
+		let okCount = 0
+		let failCount = 0
+		for (const item of toMemories) {
 			const res = await dispatch({
 				function: {
 					name: writeMemoryTool.name,
 					arguments: JSON.stringify(item),
 				},
 			})
-			// 钩子的返回值没人接——被拦的记忆必须在这里大声报，否则又变静默丢
-			if (res.includes('权限拒绝')) {
-				console.log(`⚠ 记忆被权限闸拦下未写入：${JSON.stringify(item).slice(0, 120)}`)
+			// 机读成败：dispatch 返回的是 JSON.stringify(impl 的字符串返回)，{error} 被套了两层——
+			// 拆到不是字符串为止。纯文本（成功消息/校验错误）拆一层就到头，对象带 .error 即失败
+			let result: any = parseModelJson(res)
+			while (typeof result === 'string') result = parseModelJson(result)
+			if (result?.error) {
+				// 钩子的返回值没人接——失败必须在这里大声报 + 留条目原文，人能补救（07 的老规矩）
+				console.log(`⚠ 记忆写入失败未落盘：${result.error} | 条目: ${JSON.stringify(item).slice(0, 120)}`)
+				failCount++
+			} else {
+				okCount++
 			}
 		}
-		console.log('批量写入记忆完成')
+		// 汇报真实结果——"完成"两个字撒过谎（0 条写入也打完成），计数不撒谎
+		console.log(`批量写入记忆结束：${okCount} 成功 / ${failCount} 失败${failCount ? '（失败条目见上方 ⚠）' : ''}`)
 	} catch (err: any) {
 		console.log('记忆抽取钩子出错（不影响本次回答）:', err?.message)
 	}
@@ -364,6 +375,8 @@ if (isMain) {
 		// 我2013年在十堰市郧阳区第一中学毕业，然后进入的延安大学，大学当时是二本，现在是一本了。高中暑假去打暑假工，干的洗车的活，一天40块钱，全月无休，还把脚泡伤了，挣的钱还被一个亲戚骗了。我太难了
 		// 我比我弟弟大12岁，我比我妹妹大9岁。即将大学毕业的妹妹，准备给我儿子买个玩具，给她推荐一下玩具。
 		// 帮我算下32岁的人养老保险要交多少年、我儿子还不会走，给他买什么玩具
+		// 给我查下当前系统信息
+		// 你可以调用哪些工具
 		const ctx = await createAgent(SESSION)
 		const answer = await agentLoop(ctx)
 		console.log(`\n=== 用户输入的问题：${SESSION} ===\n` + answer)

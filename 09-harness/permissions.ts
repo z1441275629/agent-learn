@@ -61,19 +61,25 @@ export async function loadPermissions(): Promise<PermissionConfig> {
 }
 
 // 规则匹配：一条规则是否命中 (toolName, args)
-// 工具级 "tool" 直接比名；参数级 "tool(参数模式)" 先 TODO——§2 沙箱上线时一起实现
+// 工具级 "tool" 比名即中；参数级 "tool(参数模式)" 是「形状比对」：glob 模式 × 实参值。
+// 与沙箱的分工（别再混）：权限层只看形状——echo * 对 "echo hi && del x" 形状确实匹配，
+// 该放行；内容有毒（第二段的 del）是 sandbox.ts 的 inspectCommand 在 impl 里拦。
+// 权限层复用内容分析 = 配置语义被偷换 + 两层干一件事，防线反而变薄
 function matchRule(rule: string, toolName: string, args: any): boolean {
 	// 格式校验已在 loadPermissions 做过（同源 RULE_PATTERN），这里只管匹配
 	const parsedRule = RULE_PATTERN.exec(rule)
-	if (parsedRule) {
-		const [, name, argString] = parsedRule
-		if (name !== toolName) return false
-		if (!argString) return true // 工具级规则，命中
-		// 参数级 "tool(参数模式)"：§2 沙箱一起实现匹配；实现前 fail-closed 不命中
-		// → 落到 confirm 让人批（占位期放行 = fail-open，allow 里写参数规则会全量放行，最危险方向）
-		return false
-	}
-	return false
+	if (!parsedRule) return false
+	const [, name, argString] = parsedRule
+	if (name !== toolName) return false
+	if (!argString) return true // 工具级规则，命中
+	// 参数级：glob（* = 任意串）→ 锚定正则，对字符串参数值任一命中即命中。
+	// echo * → ^echo .*$：命中 "echo hi"，不命中 "node -v"——args 才是比对的另一半，
+	// 模式串自己（argString）跟安全问题无关，永远不要拿它去过沙箱
+	const globToRegex = (glob: string) => new RegExp('^' + glob.split('*').map((s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('.*') + '$')
+	const re = globToRegex(argString.trim())
+	return Object.values(args ?? {})
+		.filter((v) => typeof v === 'string')
+		.some((v) => re.test(v))
 }
 
 // human-in-the-loop：TTY 上问一句，返回用户批没批

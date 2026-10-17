@@ -51,25 +51,35 @@ function isBlacklisted(segment: string): boolean {
 	return BLACKLIST.includes(cmd)
 }
 
-// TODO ② 组合拆解：命令串 → 原子段数组（~4 行）
+// ② 组合拆解：命令串 → 原子段数组
 // 正则一把梭：/\s*(?:&&|\|\||[;|&])\s*/ 切分（长分隔符 && || 在单字符 ; | & 之前匹配，
 // 顺序写错会把 && 切成两个空段）。npm test && rm -rf / 应拆出 ["npm test", "rm -rf /"]
 function splitCommand(command: string): string[] {
-	throw new Error('TODO splitCommand')
+	return command.split(/\s*(?:&&|\|\||[;|&])\s*/)
 }
 
-// TODO ③ 路径逃逸：段里是否出现越出沙箱的路径字面量（~5 行）
+// ③ 路径逃逸：段里是否出现越出沙箱的路径字面量
 // 三种形态：.. 穿越（路径段里有 ..）、绝对路径（盘符 X:\ 或以 / \ 开头）、~ 开头
 // 07 #7 的 pathIsInDir 是「解析后检查目标在不在目录里」（语义级）；
 // 这里是「扫字面量有没有越狱意图」（字符串级）——弱一档但便宜，教学版的取舍
 function hasPathEscape(segment: string): boolean {
-	throw new Error('TODO hasPathEscape')
+	// 除了字符串的校验，真实项目中是怎么判断的？？？目录层级的判断？
+	return /(\.\.)+|[a-zA-Z]:[\\/]|^[~\\\/]/.test(segment) // 去锚后 URL（https://x 的 s:/）也会被拦——对沙箱这是 fail-closed 方向的误报，可接受。
 }
 
-// TODO 串联：三层按 ②拆解 → 逐段 ①黑名单 + ③路径逃逸 跑一遍（~6 行）
+// 串联：三层按 ②拆解 → 逐段 ①黑名单 + ③路径逃逸 跑一遍
 // 返回 null = 放行；返回 string = 拦截原因（喂给模型的 error 里要带上是哪段、违反哪层）
-function inspectCommand(command: string): string | null {
-	throw new Error('TODO inspectCommand')
+export function inspectCommand(command: string): string | null {
+	const cmds = splitCommand(command)
+	for (const item of cmds) {
+		if (isBlacklisted(item)) {
+			return `命令: ${command} 处于黑名单中，禁止执行`
+		}
+		if (hasPathEscape(item)) {
+			return `命令: ${command} 含有路径逃逸写法，禁止执行`
+		}
+	}
+	return null
 }
 
 export const runShellTool: ToolDef = {
@@ -107,3 +117,10 @@ export function registerSandboxTools() {
 	fs.mkdir(SANDBOX_DIR, { recursive: true }).catch(() => {})
 	registerTool('run_shell', runShellTool)
 }
+
+// ① del test.txt                    → 拦
+// ② npm test && del x.txt           → 拦（毒在第二段也逃不掉）
+// ③ .. 穿越                          → 拦
+// ③ 盘符绝对路径（\ 和 / 两种斜率）    → 拦（锚点修复生效）
+// 超时 ping -n 12                    → 10.0s 整被杀，error 以 JSON 返回不崩
+// 放行 echo / node -v                → {ok: true, stdout}

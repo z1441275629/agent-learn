@@ -179,7 +179,9 @@ export const writeMemoryTool = {
 	},
 	impl: async (args: WriteMemoryItem) => {
 		if (!/^[a-z0-9-]+$/.test(args.name)) {
-			return '参数错误，记忆条目名称只能包含小写字母、数字和短横线'
+			// 失败必须是 {error} JSON 而不是纯文本——下游（B 策略钩子/回归测试）靠机读它判断成败，
+			// 纯文本错误在钩子里等于静默丢（今天踩实：中文 name 校验失败无声落空，最后还打"完成"）
+			return JSON.stringify({ error: '参数错误，记忆条目名称只能包含小写字母、数字和短横线（如 laptop-spec）' })
 		}
 		const fs = await import('fs/promises')
 		const path = await import('path')

@@ -4,10 +4,11 @@
 		"calculate_total",
 		"search_notes",
 		"read_memory",
-		"search_memory"
+		"search_memory",
+		"write_memory",
+		"run_shell(echo *)"
 	],
 	"confirm": [
-		"write_memory",
 		"run_shell"
 	],
 	"deny": []
