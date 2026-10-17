@@ -377,6 +377,7 @@ if (isMain) {
 		// 帮我算下32岁的人养老保险要交多少年、我儿子还不会走，给他买什么玩具
 		// 给我查下当前系统信息
 		// 你可以调用哪些工具
+		// 创建一个名为hello.txt的文件，并写入 hello world
 		const ctx = await createAgent(SESSION)
 		const answer = await agentLoop(ctx)
 		console.log(`\n=== 用户输入的问题：${SESSION} ===\n` + answer)
