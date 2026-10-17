@@ -19,6 +19,7 @@ import { pathToFileURL } from 'node:url'
 import { ContextManager, truncateToolResult } from './context.ts'
 import { checkPermission, type Verdict } from './permissions.ts'
 import { MemoryManager, registerMergeStrategy, writeMemoryTool } from './memory.ts'
+import { registerSandboxTools } from './sandbox.ts'
 import { registry, buildToolsParam } from './tools.ts'
 import type { ToolCallParams } from './type.ts'
 
@@ -47,6 +48,8 @@ const WRITE_STRATEGY = (process.env.WRITE_STRATEGY ?? 'AB').toUpperCase() as 'A'
 
 console.info('本次策略是：' + WRITE_STRATEGY)
 MemoryManager.registerMemoryTools(registry, WRITE_STRATEGY)
+// §2 沙箱工具：run_shell（cwd 锁死 + 超时 + 三层拦截；权限层它在 confirm 列表——人批+沙箱筛双闸）
+registerSandboxTools()
 
 // 注册记忆合并策略：查重命中后的"并集合并"由 LLM 做（事实合并不适合纯字符串拼接）。
 // memory.ts 不 import 本文件的 client（会循环依赖）——需要 LLM 的策略由这里注入
