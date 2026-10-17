@@ -20,6 +20,7 @@ import { ContextManager, truncateToolResult } from './context.ts'
 import { checkPermission, type Verdict } from './permissions.ts'
 import { MemoryManager, registerMergeStrategy, writeMemoryTool } from './memory.ts'
 import { registerSandboxTools } from './sandbox.ts'
+import { runPreHooks, runPostHooks, runSessionEndHooks, registerSessionEndHook } from './hooks.ts'
 import { registry, buildToolsParam } from './tools.ts'
 import type { ToolCallParams } from './type.ts'
 
@@ -50,6 +51,11 @@ console.info('本次策略是：' + WRITE_STRATEGY)
 MemoryManager.registerMemoryTools(registry, WRITE_STRATEGY)
 // §2 沙箱工具：run_shell（cwd 锁死 + 超时 + 三层拦截；权限层它在 confirm 列表——人批+沙箱筛双闸）
 registerSandboxTools()
+// §3 hooks：内置 post-hook（脱敏+审计）随 hooks.ts 的 import 已注册；
+// B 策略记忆抽取迁入正式的会话结束钩子——agentLoop 的两个出口不再各自内联
+if (WRITE_STRATEGY !== 'A') {
+	registerSessionEndHook(extractMemories)
+}
 
 // 注册记忆合并策略：查重命中后的"并集合并"由 LLM 做（事实合并不适合纯字符串拼接）。
 // memory.ts 不 import 本文件的 client（会循环依赖）——需要 LLM 的策略由这里注入
@@ -85,6 +91,21 @@ async function dispatch(toolCall: ToolCallParams): Promise<string> {
 	} catch (err: any) {
 		return JSON.stringify({ error: '参数解析失败' + err?.message })
 	}
+	// §3 pre-hook：在权限闸【前】——改写先发生，权限判定的是改写后的最终参数
+	// （hook 把 echo 改成 del，权限看到 del 并拒绝；放权限后 = 改写逃过审判）。
+	// pre 经过一切调用（含被拒的）；post 只见真执行了的。管线出错按拦截处理，不崩循环
+	let pre: import('./hooks.ts').PreHookResult
+	try {
+		pre = await runPreHooks(toolName, args)
+	} catch (err: any) {
+		return JSON.stringify({ error: `pre-hook 管线失败（按拦截处理）:${err?.message}` })
+	}
+	if (pre.blocked) {
+		return JSON.stringify({ error: `pre-hook 拦截：${pre.blocked}` })
+	}
+	if (pre.args !== undefined) {
+		args = pre.args // 改写后的参数才进权限判定和 impl
+	}
 	// 权限闸（§1）：唯一咽喉的唯一闸门——args 解析完、impl 执行前。
 	// 权限系统自身出错也不能把循环崩了：闸门坏了按「拦下」处理（fail-closed），
 	// 错误信息喂给模型；拒绝也按「永不抛」约定返回 JSON——模型看得懂，还能换路子
@@ -99,9 +120,14 @@ async function dispatch(toolCall: ToolCallParams): Promise<string> {
 	}
 	try {
 		const res = await def.impl(args)
-		const raw = JSON.stringify(res)
+		let raw = JSON.stringify(res)
 		// 源头减量：结果进 messages 之前就砍，别等超预算再救
-		return def.maxResultTokens ? truncateToolResult(raw, def.maxResultTokens) : raw
+		// （它本质是个内置 post-hook，先跑——后面的审计/脱敏 hook 拿到的是终态）
+		if (def.maxResultTokens) {
+			raw = truncateToolResult(raw, def.maxResultTokens)
+		}
+		// §3 post-hook 最后跑：脱敏 → 审计（注册顺序即安全问题，见 hooks.ts）
+		return await runPostHooks(toolName, args, raw)
 	} catch (err: any) {
 		return JSON.stringify({ error: '工具调用失败' + err?.message })
 	}
@@ -124,8 +150,8 @@ export async function agentLoop(ctx: ContextManager, maxSteps = 8, onToolCall?: 
 
 	while (true) {
 		if (step > maxSteps) {
-			// 这里不阻塞执行，后面可以改成钩子
-			if (WRITE_STRATEGY !== 'A') extractMemories(ctx)
+			// §3 会话结束钩子（B 策略抽取已迁入 hooks.ts 的挂载点，这里不再内联）
+			void runSessionEndHooks(ctx)
 			return JSON.stringify({ error: '(达到最大步数，任务中止)' })
 		}
 		await ctx.ensureBudget()
@@ -140,8 +166,8 @@ export async function agentLoop(ctx: ContextManager, maxSteps = 8, onToolCall?: 
 		const toolCalls = (message.tool_calls ?? []) as any[]
 		ctx.add(message)
 		if (!toolCalls.length) {
-			// 这里不阻塞执行，后面可以改成钩子
-			if (WRITE_STRATEGY !== 'A') extractMemories(ctx)
+			// §3 会话结束钩子（两个出口——正常答完/步数中止——现在共用一个挂载点）
+			void runSessionEndHooks(ctx)
 			return message.content || JSON.stringify({ error: '模型未返回内容' })
 		}
 		console.log(`[step ${step}] 调用: ${toolCalls.map((t) => `${t.function.name}(${t.function.arguments})`).join(', ')}`)
