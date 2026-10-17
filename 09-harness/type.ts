@@ -39,3 +39,10 @@ export type WriteMemoryItem = {
 	content: string
 	abstract: string
 }
+
+export type ToolCallParams = {
+	function: {
+		name: string
+		arguments: string
+	}
+}

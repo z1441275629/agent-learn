@@ -20,6 +20,7 @@ import { ContextManager, truncateToolResult } from './context.ts'
 import { checkPermission, type Verdict } from './permissions.ts'
 import { MemoryManager, registerMergeStrategy, writeMemoryTool } from './memory.ts'
 import { registry, buildToolsParam } from './tools.ts'
+import type { ToolCallParams } from './type.ts'
 
 // GLM Coding Plan 套餐专用端点（按量付费改 https://open.bigmodel.cn/api/paas/v4）
 const BASE_URL = 'https://open.bigmodel.cn/api/coding/paas/v4'
@@ -69,7 +70,7 @@ registerMergeStrategy(async (oldM, newM) => {
 
 // ---------- dispatch：执行一次工具调用，武器①（截断）在这里接线 ----------
 // 统一约定：永远返回字符串，永远不抛——错误是喂给模型的信息，不是崩掉的理由
-async function dispatch(toolCall: any): Promise<string> {
+async function dispatch(toolCall: ToolCallParams): Promise<string> {
 	const toolName = toolCall.function.name
 	const def = registry.get(toolName)
 	if (!def) {
@@ -169,7 +170,10 @@ export function parseModelJson(raw: string | null | undefined): any {
 	if (!raw) return undefined
 	let text = raw.trim()
 	if (text.startsWith('```')) {
-		text = text.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '').trim()
+		text = text
+			.replace(/^```(?:json)?\s*/i, '')
+			.replace(/```\s*$/, '')
+			.trim()
 	}
 	try {
 		return JSON.parse(text)
@@ -213,13 +217,22 @@ export async function extractMemories(ctx: ContextManager) {
 			console.log('没有要写入的记忆')
 			return
 		}
-		// ⚠ 09 待决接线：这里直接调 impl，绕过了 dispatch 的权限闸——
-		// B 策略（会话钩子抽取）写记忆不经人批。两个方向选一个，想清楚再动：
-		//   a) 受信内部豁免：钩子是 harness 自己的代码不是模型发起，视为可信（但要写进文档，别默默放行）
-		//   b) 一视同仁走 checkPermission：更严但无头模式下默认拒 = B 策略永远写不进记忆——
-		// 留给 §1 收尾时决策，此处先保持原样
+
+		// 接线决策（2026-10-17）：钩子写记忆一视同仁走 dispatch——权限检查在 dispatch 里做，
+		// 这里不再手动 checkPermission（查两遍 = TTY 下每条记忆弹两次 y/n，违背单点咽喉纪律）。
+		// 代价：无头模式（planner/cron）write_memory 是 confirm → 默认拒 → 记忆不写入（下方大声报）。
+		// 参数是单个对象不是数组——impl 签名是 WriteMemoryItem
 		for (let item of toMemories) {
-			await writeMemoryTool.impl(item)
+			const res = await dispatch({
+				function: {
+					name: writeMemoryTool.name,
+					arguments: JSON.stringify(item),
+				},
+			})
+			// 钩子的返回值没人接——被拦的记忆必须在这里大声报，否则又变静默丢
+			if (res.includes('权限拒绝')) {
+				console.log(`⚠ 记忆被权限闸拦下未写入：${JSON.stringify(item).slice(0, 120)}`)
+			}
 		}
 		console.log('批量写入记忆完成')
 	} catch (err: any) {
@@ -326,7 +339,7 @@ if (isMain) {
 		}
 	} else if (SESSION === 'new_memory') {
 		// 新信息，应该增加记忆
-		const READ_ONLY_QUESTIONS = ['我红绿色弱', '我皮肤不好，容易得皮肤病，后脑勺经常发作毛脑炎', '我屁股长过2次疖肿', '我窦性心律，心电轴显著右偏',]
+		const READ_ONLY_QUESTIONS = ['我红绿色弱', '我皮肤不好，容易得皮肤病，后脑勺经常发作毛脑炎', '我屁股长过2次疖肿', '我窦性心律，心电轴显著右偏']
 		for (const q of READ_ONLY_QUESTIONS) {
 			const ctx = await createAgent(q)
 			const answer = await agentLoop(ctx)
