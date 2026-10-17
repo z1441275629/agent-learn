@@ -1,0 +1,13 @@
+{
+	"allow": [
+		"get_weather",
+		"calculate_total",
+		"search_notes",
+		"read_memory",
+		"search_memory"
+	],
+	"confirm": [
+		"write_memory"
+	],
+	"deny": []
+}

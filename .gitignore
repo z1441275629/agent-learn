@@ -17,3 +17,12 @@ node_modules/
 08-planner/vectors.json
 08-planner/.[!.]*/
 08-planner/scheduler-state.json
+
+# 09-harness 运行时数据（同 07/08：agent 生成的记忆/向量/日志/检查点，含个人信息，不入库）
+09-harness/MEMORY.md
+09-harness/memories/
+09-harness/log/
+09-harness/vectors.json
+09-harness/.[!.]*/
+09-harness/scheduler-state.json
+09-harness/plan-checkpoint.json
