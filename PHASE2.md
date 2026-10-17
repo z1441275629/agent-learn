@@ -56,7 +56,7 @@
 | --- | ----------------- | ------------- | ----- | ------------------------------------ | --- |
 | 06  | `06-context/`     | 上下文工程与提示工程    | 3 周   | ContextManager：测量/滑动窗口/截断/compaction | ☑   |
 | 07  | `07-memory/`      | 记忆 + 检索进阶     | 2.5 周 | 文件型+检索型双通道记忆，混合检索                    | ☑   |
-| 08  | `08-planner/`     | 任务调度与规划       | 2 周   | planner-executor + 并发子任务             | ☐   |
+| 08  | `08-planner/`     | 任务调度与规划       | 2 周   | planner-executor + 并发子任务             | ☑   |
 | 09  | `09-harness/`     | Agent Harness | 2 周   | 给 agent 加壳：权限/沙箱/hooks/resume        | ☐   |
 | 10  | `10-multi-agent/` | 多 Agent       | 2.5 周 | 五种编排模式 + 3-agent 协作系统                | ☐   |
 | 11  | `11-production/`  | 生产工程          | 2.5 周 | evals + Langfuse tracing + 注入攻防      | ☐   |

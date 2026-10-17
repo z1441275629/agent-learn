@@ -16,3 +16,4 @@ node_modules/
 08-planner/log/
 08-planner/vectors.json
 08-planner/.[!.]*/
+08-planner/scheduler-state.json

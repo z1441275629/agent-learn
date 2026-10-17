@@ -1,5 +1,5 @@
 /*
-模块 08 主菜：planner-executor 调度层（骨架——核心逻辑你来填）
+模块 08 主菜：planner-executor 调度层（骨架）
 
 分界线（和 agent.ts 的分工）：
 - agent.ts 的 agentLoop = 裸 ReAct 循环：验收实验的对照组 + 每步的执行器，循环本体不动
