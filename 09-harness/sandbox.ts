@@ -102,13 +102,30 @@ export const runShellTool: ToolDef = {
 				cwd: SANDBOX_DIR, // cwd 锁死：进程的"脚"被钉在沙箱里
 				timeout: TIMEOUT_MS, // 到点杀进程——幻觉出的挂死命令不陪葬
 				windowsHide: true,
+				encoding: 'buffer', // 拿原始字节——编码的账在解码侧算（见 decodeOutput）
 			})
-			return JSON.stringify({ ok: true, stdout: stdout.slice(0, 2000), stderr: stderr.slice(0, 500) })
+			return JSON.stringify({ ok: true, stdout: decodeOutput(stdout).slice(0, 2000), stderr: decodeOutput(stderr).slice(0, 500) })
 		} catch (err: any) {
-			// 超时/非零退出/命令不存在都到这——错误是给模型的信息，不是崩溃的理由
-			return JSON.stringify({ error: String(err?.message || err).slice(0, 300), stdout: err?.stdout?.slice(0, 500) ?? '' })
+			// 超时/非零退出/命令不存在都到这——错误是给模型的信息，不是崩溃的理由。
+			// err.stdout/stderr 也是 Buffer，同样走混合解码（"系统找不到指定的文件"这类
+			// cmd 错误是 GBK，不解码就是 ϵͳ??? 的天书）
+			return JSON.stringify({ error: decodeOutput(err.stderr).slice(0, 300) || String(err?.message || err).slice(0, 300), stdout: decodeOutput(err.stdout).slice(0, 500) })
 		}
 	},
+}
+
+// Windows 编码缝合：cmd 内置命令输出 GBK（cp936），node/git 等现代工具输出 UTF-8——
+// 同一个进程的输出两种编码共存，而 chcp 65001 在无控制台的管道会话里不可靠（实测无效）。
+// 解法在解码侧：先按严格 UTF-8 解（fatal：非法序列即抛），解不动按 GBK 解——
+// GBK 中文字节（如 中的 d6d0）几乎不可能凑成合法 UTF-8 序列，误判率极低；
+// ASCII 两边同码，永远走 UTF-8 分支
+function decodeOutput(buf: Buffer | undefined): string {
+	if (!buf || !buf.length) return ''
+	try {
+		return new TextDecoder('utf-8', { fatal: true }).decode(buf)
+	} catch {
+		return new TextDecoder('gbk').decode(buf)
+	}
 }
 
 // 启动时注册一次（与 registerMemoryTools 同款模式：注册是启动动作）

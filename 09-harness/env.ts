@@ -18,6 +18,7 @@ ZCode/Claude Code 的 system prompt 里有一段 environment_details：cwd、git
 */
 import { exec } from 'node:child_process'
 import { promisify } from 'node:util'
+import os from 'node:os'
 import fs from 'node:fs/promises'
 import { SANDBOX_DIR } from './sandbox.ts'
 
@@ -25,6 +26,7 @@ const execAsync = promisify(exec)
 
 export interface EnvInfo {
 	now: string // 人类可读完整时间，如 2026-10-18 周六 10:32
+	platform: string // process.platform（win32/darwin/linux）——shell 方言由它决定
 	sandboxTree: string[] // 沙箱顶层条目名（run_shell 的家——模型该知道里面有什么）
 	git: string // 如 'master（3 个未提交变更）' 或 '非 git 环境'
 }
@@ -37,7 +39,77 @@ export interface EnvInfo {
 //    execAsync('git branch --show-current') 拿分支（失败 = 非 git 环境），
 //    execAsync('git status --porcelain') 的输出按非空行数 = 未提交变更数
 export async function collectEnv(): Promise<EnvInfo> {
-	throw new Error('TODO collectEnv')
+	const now = getNow()
+	const platform = os.platform()
+	const [sandboxTree, git] = await Promise.all([getSandboxTree(), getGit()])
+	return {
+		now,
+		platform,
+		sandboxTree,
+		git,
+	}
+}
+
+export const weeksMap = new Map([
+	[0, '星期日'],
+	[1, '星期一'],
+	[2, '星期二'],
+	[3, '星期三'],
+	[4, '星期四'],
+	[5, '星期五'],
+	[6, '星期六'],
+])
+// @return 年-月-日 星期几 时:分
+export function getNow(): string {
+	const now = new Date()
+	const [year, month, day, hour, minute] = [now.getFullYear(), now.getMonth() + 1, now.getDate(), now.getHours(), now.getMinutes()].map((item) => padStart(item))
+	const date = [year, month, day].join('-')
+	const week = weeksMap.get(now.getDay())
+	const time = `${hour}:${minute}`
+	return `${date} ${week} ${time}`
+}
+
+function padStart(str: string | number, aimLength = 2, fillString = '0') {
+	str = `${str}`
+	return str.padStart(aimLength, fillString)
+}
+
+export async function getGit() {
+	let currentBranch = ''
+	try {
+		const branchRes = await execAsync('git branch --show-current')
+		if (branchRes.stderr) {
+			console.error(`git branch --show-current 报错：${branchRes.stderr}，当前不是一个git仓库`)
+			currentBranch = ''
+		} else {
+			currentBranch = branchRes.stdout.replace('\n', '')
+		}
+
+		let gitStatus = ''
+		const { stderr, stdout } = await execAsync('git status --porcelain')
+		if (stderr) {
+			console.error(`git status --porcelain 报错：${stderr}`)
+		} else {
+			// 总结下stdout -> 改动文件个数
+			//  M 09-harness/agent.ts
+			//  M 09-harness/env.ts
+			const modifies = stdout.split('\n').filter((item) => item)
+			gitStatus = `${modifies.length}个文件变动`
+		}
+		return currentBranch ? `当前分支：${currentBranch}, 当前仓库状态：${gitStatus}` : '当前不是在一个git仓库中'
+	} catch (err: any) {
+		console.error(`获取git信息报错：${err?.message}，认为当前不是一个git仓库`)
+		return '当前不是在一个git仓库中'
+	}
+}
+
+export async function getSandboxTree() {
+	try {
+		return await fs.readdir(SANDBOX_DIR)
+	} catch (err: any) {
+		console.error(`读取沙箱目录失败，返回[]`)
+		return []
+	}
 }
 
 // 注入块渲染（机械件）：紧凑、写给模型的，不是给人的报表
@@ -45,7 +117,10 @@ export function renderEnvBlock(env: EnvInfo): string {
 	return [
 		'## 环境',
 		`- 当前时间：${env.now}（涉及时钟/日期/年龄的问题以它为准，不要用训练数据里的旧时间）`,
-		`- 工作目录（run_shell 的执行范围）sandbox/ 内有：${env.sandboxTree.join('、') || '(空)'}`,
-		`- 代码仓库状态：${env.git}`,
+		`- 操作系统：${env.platform === 'win32' ? 'Windows，shell 是 cmd——列目录用 dir（没有 ls）、查看文件用 type（没有 cat）、路径分隔符是反斜杠' : env.platform}`,
+		`- 你的 shell 工作目录：${SANDBOX_DIR}——run_shell 的 cwd 锁定在此，相对路径都落在这个目录里；当前内容：${env.sandboxTree.join('、') || '(空)'}`,
+		`- 所在代码仓库（背景信息，不是你的工作目录）：${env.git}`,
 	].join('\n')
 }
+
+// console.log(await collectEnv())
