@@ -22,6 +22,7 @@ import { ContextManager, truncateToolResult } from './context.ts'
 import { checkPermission, type Verdict } from './permissions.ts'
 import { MemoryManager, registerMergeStrategy, writeMemoryTool } from './memory.ts'
 import { registerSandboxTools } from './sandbox.ts'
+import { collectEnv, renderEnvBlock } from './env.ts'
 import { runPreHooks, runPostHooks, runSessionEndHooks, registerSessionEndHook } from './hooks.ts'
 import type { PreHookResult } from './hooks.ts'
 import { registry, buildToolsParam } from './tools.ts'
@@ -191,7 +192,10 @@ export async function createAgent(task: string, opts?: { budgetTokens?: number; 
 	const memoryPrompt = await MemoryManager.getSystemPrompt(WRITE_STRATEGY !== 'B')
 	// 清洗历史数据，执行过一次就好了
 	// await historyMemoryToVector()
-	ctx.add({ role: 'system', content: SYSTEM_PROMPT + `记忆：${memoryPrompt}` + (opts?.systemExtra ? `\n${opts.systemExtra}` : '') })
+	// §4 环境注入：会话开始采一次快照拼进 system（机制同 07 索引常驻/08 计划常驻——同一模式第三次复用）。
+	// 注意账：planner 模式每步一个子 agent，每步都重新采集+付这份 token（百级）——见 env.ts 头注的时机推导
+	const env = await collectEnv()
+	ctx.add({ role: 'system', content: SYSTEM_PROMPT + `记忆：${memoryPrompt}` + `\n${renderEnvBlock(env)}` + (opts?.systemExtra ? `\n${opts.systemExtra}` : '') })
 	ctx.add({ role: 'user', content: task })
 	return ctx
 }
@@ -222,7 +226,9 @@ export async function extractMemories(ctx: ContextManager) {
 		const userPrompt =
 			'从以下对话中抽取关于用户的持久事实与偏好，以 JSON 数组返回 [{name, content, abstract}]，没有可抽取的就返回 []， 注意是纯json，不要用markdown代码块包裹。' +
 			'name 是记忆的存储键（文件名），必须匹配 ^[a-z0-9-]+$（小写字母数字连字符，如 laptop-spec、os-version），禁止中文——write_memory 会按此校验，中文直接拒；' +
-			'只记录对话中出现的事实，不要补充建议、推断或常识；时间一律写成绝对日期（如2026年3月1日，今天是2026年），不要用"今年""最近几个月"这类相对表述；abstract 不超过30字。会话：' +
+			'只记录对话中出现的事实，不要补充建议、推断或常识；时间一律写成绝对日期（如2026年3月1日），不要用"今年""最近几个月"这类相对表述；今天是 ' +
+			new Date().toISOString().slice(0, 10) +
+			'（以此换算相对表述，别用训练数据里的旧年份）；abstract 不超过30字。会话：' +
 			JSON.stringify(history)
 		const response = await client.chat.completions.create({
 			model: MODEL,
