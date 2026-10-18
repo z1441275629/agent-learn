@@ -43,9 +43,14 @@
 
 ## 4. 环境注入：模型怎么「知道自己在哪」
 
-- cwd / git 分支与脏文件 / 顶层文件树 → system prompt
-- 每轮重注入 vs 会话开始注入一次：token 账怎么算（06/08 的纪律：数字说话）
-- 过期问题：文件树注入后用户改了目录——staleness 的代价
+- 机制是第三次复用同一根管子：07 记忆索引常驻 → 08 计划常驻（systemExtra）→ 09 环境常驻——`createAgent` 里 env 块拼进 system，对照 ZCode/Claude Code 的 environment_details（cwd/git/文件树/时钟）
+- `collectEnv` 采四样：**真实时钟**、OS/shell 方言、沙箱绝对路径+文件树、git 分支与脏文件数（`Promise.all` 并行——git status 在 Windows 上约百 ms，planner 每步都付）
+- **UTC 双重坑（实测出→修→复测）**：`toISOString()` 是 UTC——时间差 8 小时只是表症，真正的阴招是它和 `getDay()`（本地星期）混用：本地 0~8 点之间日期还是**昨天**，注入块会输出「10-17 星期日」这种日期星期互相打架的鬼话。修法：全本地 getter（getFullYear/getMonth+1/getDate/getHours/getMinutes）+ padStart 补零
+- 反面教材顺手埋掉：抽取提示词硬编码「今天是2026年」——绝对时间也会腐烂（PITFALLS #19 的变体），改成动态 `new Date()`；同理 run_shell 的乱码（cmd 输出 GBK、Node 按 UTF-8 解码）用**混合解码**修：`encoding:'buffer'` 拿原始字节 → 先严格 UTF-8（fatal）解不动按 GBK 兜底；`chcp 65001` 在无控制台的管道会话实测无效，弃
+- **时机推导（可推导不实验）**：会话开始注入一次 vs 每轮重注入，在无提示词缓存下 token 成本**完全相同**——system 块不管变不变，每次请求都原样重发。真实差异是新鲜度（一次注入会过期：文件树变了模型不知道、跨小时会话时钟是旧的）vs 确定性+缓存友好（有缓存的供应商那里，每轮刷新 = 缓存失效反而更贵）。教学版选一次注入
+- **staleness 是真金白银的代价**：同一会话里先问沙箱有什么 → 建新文件 → 再问，模型还报旧清单——一次注入的过期肉眼可见；Claude Code 的 environment_context 带时钟且周期刷新 = 两头都要就付两头的钱
+- **知识归属地框架（本节最大收获）**：知识要放进它被消费的地方——用户事实放记忆（问答时检索）、环境事实放注入（每次开场就在场）、开发者的坑放 PITFALLS（只有我自己看）。案例：模型每次会话都先 `ls` 失败再 `dir`（每次白付一轮失败调用，好在 GBK 修复后错误信息可读、模型能自救）——「这台机器没有 ls」是环境事实，写进注入块一行，开场就知道
+- 个人高频坑点名（async/catch 家族三连）：askHuman 的 `return false`（promise 永不结算）、runSessionEndHooks 的同步 catch（异步 rejection 逃逸）、getSandboxTree 的 `return` 没 `await`（catch 接不住 rejection）——同一个根：**try/catch 管得住语句的同步执行，await 进了 try，catch 才有得接**
 
 ## 5. 会话持久化与 resume
 
