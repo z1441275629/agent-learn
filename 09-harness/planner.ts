@@ -137,12 +137,13 @@ export function runnableSteps(plan: Plan): PlanStep[] {
 // 步与步互相看不见——step 3 要用 step 2 的查询结果，必须显式转交。
 // 对比：单循环 ReAct 天然共享 ledger，这是它唯一的信息优势，交接设计要补上这个差
 export async function runStep(plan: Plan, step: PlanStep, stepResults: Map<number, string>): Promise<{ ok: boolean; summary: string }> {
-	// 1. systemExtra = `当前计划：\n${renderPlan(plan)}` —— 带勾的最新地图常驻 system
+	// 1. systemExtra = `<plan>…</plan>` —— 带勾的最新地图常驻 system（标签由注入方自带：
+	//    §5 定界符规矩——拼接处只管拼，边界谁的内容谁负责）
 	// 2. task = 本步骤指令 + 依赖步骤的结果摘要（只带 dependsOn 指到的，截断防膨胀——truncateToolResult 可复用）
 	// 3. const ctx = await createAgent(task, { systemExtra }) → agentLoop(ctx)
 	// 4. 成败判定（金笔记：agentLoop 不抛错 ≠ 步骤成功——返回值是模型的话，不是验收。
 	//    MVP 启发式：返回含 '"error"' = 失败；进阶：加一次 judge 调用，让另一个上下文核对目标）
-	const systemExtra = `当前计划：\n${renderPlan(plan)}\n` // 已完成计划：
+	const systemExtra = `<plan>\n当前计划：\n${renderPlan(plan)}\n</plan>`
 
 	const dependsOnTexts = step.dependsOn
 		.map((stepId) => {

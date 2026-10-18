@@ -28,3 +28,4 @@ node_modules/
 09-harness/plan-checkpoint.json
 09-harness/sandbox/
 09-harness/.sessions.json
+09-harness/sessions/

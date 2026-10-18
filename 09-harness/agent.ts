@@ -22,7 +22,8 @@ import { ContextManager, truncateToolResult } from './context.ts'
 import { checkPermission, type Verdict } from './permissions.ts'
 import { MemoryManager, registerMergeStrategy, writeMemoryTool } from './memory.ts'
 import { registerSandboxTools } from './sandbox.ts'
-import { collectEnv, renderEnvBlock } from './env.ts'
+import { collectEnv, renderEnvBlock, refreshEnvBlock } from './env.ts'
+import { newSessionId, saveSession, loadSession } from './persist.ts'
 import { runPreHooks, runPostHooks, runSessionEndHooks, registerSessionEndHook } from './hooks.ts'
 import type { PreHookResult } from './hooks.ts'
 import { registry, buildToolsParam } from './tools.ts'
@@ -144,16 +145,30 @@ const SYSTEM_PROMPT = `你是一个严谨的生活助理。用户问相关问题
 // ---------- Agent 循环 ----------
 // 和模块 3 的唯一区别：messages 数组的生杀大权交给 ContextManager。
 // 每步：ensureBudget（可能触发一次压缩调用）→ 打表 → 用 view 发请求 → 新消息 ctx.add 双写
-// onToolCall：可选观察者（回归测试用），每次工具调用完成后上报 name/arguments/result——
-// 不影响循环本身，测试借此捕获工具调用序列
 export type ToolCallObserver = (info: { name: string; arguments: string; result: string }) => void
 
-export async function agentLoop(ctx: ContextManager, maxSteps = 8, onToolCall?: ToolCallObserver): Promise<string> {
+// 配置项打包（§5 重构）：可选位置参数堆到两个 + 调用点出现 undefined 洞（(ctx, 8, undefined, sid)）
+// 就是换形状的信号——主题参数（ctx，必选）保持位置参数，配置进对象：调用点自解释，
+// 以后加配置项不再动既有调用点。onToolCall 没并入 §3 post-hook：覆盖面不同——
+// post-hook 只见真执行了的调用（被 pre/权限拒的在它之前就 return 了），观察者连拒绝也上报
+export interface AgentLoopOptions {
+	maxSteps?: number // 默认 8——历史步数预算，resume 后重起算
+	onToolCall?: ToolCallObserver // 回归测试观察者：捕获工具调用序列（含被拒的，result 是错误 JSON）
+	sessionId?: string // §5 存档 id——传了才落盘，每步一存档
+}
+
+export async function agentLoop(ctx: ContextManager, { maxSteps = 8, onToolCall, sessionId }: AgentLoopOptions = {}): Promise<string> {
 	let step = 1
 	const tools = buildToolsParam()
+	// §5 检查点：每步工具结果落盘后，进程中途被杀也能从最近一步 resume（08 plan-checkpoint 的教训：
+	// 检查点要存「进行到哪」而不是只存「跑完的」）。saveSession 自带永不抛纪律，这里放心 await
+	const checkpoint = async () => {
+		if (sessionId) await saveSession(sessionId, ctx.ledger)
+	}
 
 	while (true) {
 		if (step > maxSteps) {
+			await checkpoint()
 			// §3 会话结束钩子（B 策略抽取已迁入 hooks.ts 的挂载点，这里不再内联）
 			void runSessionEndHooks(ctx)
 			return JSON.stringify({ error: '(达到最大步数，任务中止)' })
@@ -170,6 +185,7 @@ export async function agentLoop(ctx: ContextManager, maxSteps = 8, onToolCall?: 
 		const toolCalls = (message.tool_calls ?? []) as any[]
 		ctx.add(message)
 		if (!toolCalls.length) {
+			await checkpoint()
 			// §3 会话结束钩子（两个出口——正常答完/步数中止——现在共用一个挂载点）
 			void runSessionEndHooks(ctx)
 			return message.content || JSON.stringify({ error: '模型未返回内容' })
@@ -180,6 +196,7 @@ export async function agentLoop(ctx: ContextManager, maxSteps = 8, onToolCall?: 
 			console.log(`[step ${step}] 工具结果: ${toolCalls[index].function.name} -> ${item}`)
 			ctx.add({ role: 'tool', tool_call_id: toolCalls[index].id, content: item })
 		})
+		await checkpoint() // 每步存档：崩溃损失 = 最多一步
 		onToolCall && toolCalls.forEach((tc, index) => onToolCall({ name: tc.function.name, arguments: tc.function.arguments, result: toolRes[index] }))
 		step++
 	}
@@ -195,7 +212,10 @@ export async function createAgent(task: string, opts?: { budgetTokens?: number; 
 	// §4 环境注入：会话开始采一次快照拼进 system（机制同 07 索引常驻/08 计划常驻——同一模式第三次复用）。
 	// 注意账：planner 模式每步一个子 agent，每步都重新采集+付这份 token（百级）——见 env.ts 头注的时机推导
 	const env = await collectEnv()
-	ctx.add({ role: 'system', content: SYSTEM_PROMPT + `记忆：${memoryPrompt}` + `\n${renderEnvBlock(env)}` + (opts?.systemExtra ? `\n${opts.systemExtra}` : '') })
+	// 常驻注入的定界符规矩（§5 定稿）：每类注入一段、成对标签锁区间——<memories>（这里）、
+	// <env>（env.ts）、<plan>（planner.ts 自己带）。替换类操作（resume 的环境刷新）按标签定位，
+	// 不从拼接结果里猜结构——拼接的人拥有定界符（谁写谁负责让边界可被机器找到）
+	ctx.add({ role: 'system', content: SYSTEM_PROMPT + `\n<memories>\n${memoryPrompt}\n</memories>` + `\n${renderEnvBlock(env)}` + (opts?.systemExtra ? `\n${opts.systemExtra}` : '') })
 	ctx.add({ role: 'user', content: task })
 	return ctx
 }
@@ -299,6 +319,28 @@ export async function extractMemories(ctx: ContextManager) {
 const isMain = process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href
 if (isMain) {
 	const SESSION = process.argv[2] ?? '1'
+	// §5 resume 分支：node 09-harness/agent.ts resume <会话id> "继续指令"——
+	// 恢复 = 读档 → 新 ContextManager 逐条重放 add()（双写，view 自动重建）→
+	// 刷新环境块（时钟/文件树是旧会话采的）→ 追加新 user 消息继续跑。
+	// 不能走 createAgent：它新开 system+user，恢复出来的不是同一个会话
+	if (SESSION === 'resume') {
+		const [id, task] = [process.argv[3], process.argv[4]]
+		if (!id || !task) {
+			console.error('用法：npm run m9 -- resume <会话id> "继续指令"（会话 id 见每次跑完打印的存档号）')
+			process.exit(1)
+		}
+		const ledger = await loadSession(id)
+		if (!ledger?.length) {
+			console.error(`会话 ${id} 恢复不了（sessions/ 下没有对应文件，或内容是空的）`)
+			process.exit(1)
+		}
+		const ctx = new ContextManager(client, MODEL, { budgetTokens: BUDGET_TOKENS, toolsDef: buildToolsParam() })
+		for (const msg of ledger) ctx.add(msg)
+		await refreshEnvBlock(ctx) // 边界②：环境块重采——别拿上次的时钟推理
+		ctx.add({ role: 'user', content: task })
+		const answer = await agentLoop(ctx, { sessionId: id }) // 沿用原 id 续档：resume 之后还能再 resume
+		console.log(`\n=== 续答（会话 ${id}）===\n` + answer)
+	} else {
 	let sessions: Record<string, string | string[]> = {}
 	try {
 		sessions = JSON.parse(await fs.readFile(path.resolve(import.meta.dirname, '.sessions.json'), 'utf8'))
@@ -311,8 +353,10 @@ if (isMain) {
 	const questions = typeof entry === 'string' ? [entry] : Array.isArray(entry) ? entry : [SESSION]
 	for (const q of questions) {
 		const ctx = await createAgent(q)
-		const answer = await agentLoop(ctx)
-		console.log(`\n=== ${q.slice(0, 24)} ===\n` + answer)
+		const sid = newSessionId()
+		const answer = await agentLoop(ctx, { sessionId: sid })
+		console.log(`\n=== ${q.slice(0, 24)} ===\n` + answer + `\n[会话已存档 ${sid}——续跑：npm run m9 -- resume ${sid} "下一步指令"]`)
+	}
 	}
 }
 

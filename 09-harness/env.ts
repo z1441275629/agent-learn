@@ -112,15 +112,30 @@ export async function getSandboxTree() {
 	}
 }
 
-// 注入块渲染（机械件）：紧凑、写给模型的，不是给人的报表
+// 注入块渲染（机械件）：紧凑、写给模型的，不是给人的报表。
+// 定界符规矩（§5 定稿）：成对标签锁区间——比 ## 标题强在「结束位置不靠猜」+「内容碰撞免疫」
+// （记忆里存段 markdown 也不会误伤边界）；生产参照：Claude Code 的 environment details 同款
 export function renderEnvBlock(env: EnvInfo): string {
 	return [
-		'## 环境',
+		'<env>',
 		`- 当前时间：${env.now}（涉及时钟/日期/年龄的问题以它为准，不要用训练数据里的旧时间）`,
 		`- 操作系统：${env.platform === 'win32' ? 'Windows，shell 是 cmd——列目录用 dir（没有 ls）、查看文件用 type（没有 cat）、路径分隔符是反斜杠' : env.platform}`,
 		`- 你的 shell 工作目录：${SANDBOX_DIR}——run_shell 的 cwd 锁定在此，相对路径都落在这个目录里；当前内容：${env.sandboxTree.join('、') || '(空)'}`,
 		`- 所在代码仓库（背景信息，不是你的工作目录）：${env.git}`,
+		'</env>',
 	].join('\n')
+}
+
+// §5 resume 用：重采环境并替换 system 里的旧环境段——离线期间时钟/文件树已过期，
+// 拿旧环境继续推理 = 从错误的「今天」出发，§4 白做。§4 之前存的老会话没有环境段 → 追加
+export async function refreshEnvBlock(ctx: { ledger: any[] }): Promise<void> {
+	const block = renderEnvBlock(await collectEnv())
+	const sys = ctx.ledger.find((m) => m.role === 'system')
+	if (!sys) return
+	// ctx.add 推的是同一个对象引用（双账本共享消息对象）——改 content 两本账同时生效
+	sys.content = sys.content.includes('<env>')
+		? sys.content.replace(/<env>[\s\S]*?<\/env>/, block) // 成对标签锁死区间——旧版按「下一个 ## 或结尾」猜边界，把不按标题格式的计划段整个吃过
+		: sys.content + '\n' + block // 更老的存档（标签制之前）没有环境段 → 追加
 }
 
 // console.log(await collectEnv())
