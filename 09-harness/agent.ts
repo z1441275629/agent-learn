@@ -23,7 +23,7 @@ import { checkPermission, type Verdict } from './permissions.ts'
 import { MemoryManager, registerMergeStrategy, writeMemoryTool } from './memory.ts'
 import { registerSandboxTools } from './sandbox.ts'
 import { collectEnv, renderEnvBlock, refreshEnvBlock } from './env.ts'
-import { newSessionId, saveSession, loadSession } from './persist.ts'
+import { newSessionId, saveSession, loadSession, listSessions, archiveSession, renameSession } from './persist.ts'
 import { runPreHooks, runPostHooks, runSessionEndHooks, registerSessionEndHook } from './hooks.ts'
 import type { PreHookResult } from './hooks.ts'
 import { registry, buildToolsParam } from './tools.ts'
@@ -340,6 +340,30 @@ if (isMain) {
 		ctx.add({ role: 'user', content: task })
 		const answer = await agentLoop(ctx, { sessionId: id }) // 沿用原 id 续档：resume 之后还能再 resume
 		console.log(`\n=== 续答（会话 ${id}）===\n` + answer)
+	} else if (SESSION === 'list') {
+		// 历史会话列表：元数据全部从存档派生（尾巴定状态、首条 user 定标题），没有中央索引
+		const metas = await listSessions()
+		if (!metas.length) {
+			console.log('还没有任何会话存档（跑完任意会话后自动生成）')
+		} else {
+			console.log('历史会话（新的在前）：')
+			for (const m of metas) console.log(`  ${m.id}  [${m.status}] ${m.msgCount} 条 | ${m.title}`)
+			console.log('\n续跑：npm run m9 -- resume <id> "指令"；归档：npm run m9 -- archive <id>；改名：npm run m9 -- rename <id> "标题"')
+		}
+	} else if (SESSION === 'archive') {
+		const id = process.argv[3]
+		if (!id) {
+			console.error('用法：npm run m9 -- archive <会话id>（id 用 list 查）')
+			process.exit(1)
+		}
+		console.log((await archiveSession(id)) ? `已归档 ${id}（挪入 sessions/archive/，挪回即恢复）` : '归档失败，见上方报错')
+	} else if (SESSION === 'rename') {
+		const [id, title] = [process.argv[3], process.argv[4]]
+		if (!id || !title) {
+			console.error('用法：npm run m9 -- rename <会话id> "新标题"（id 用 list 查）')
+			process.exit(1)
+		}
+		console.log((await renameSession(id, title)) ? `已改名：${title}` : `会话 ${id} 不存在或读不了，改名失败`)
 	} else {
 	let sessions: Record<string, string | string[]> = {}
 	try {
@@ -360,9 +384,10 @@ if (isMain) {
 	}
 }
 
-// npm run m9 -- "现在几点了？星期几？你的工作目录里有什么文件？"   ← 不调工具直接答 = 注入成功
-// npm run m9 -- "我今年多大了"                                  ← 1994 + 真实时钟 = 正确年龄
-// npm run m9 -- "帮我看看沙箱里的文件" 然后中途建文件再问         ← staleness 亲眼可见
-// npm run m9 -- "创建一个md文件，随便写点内容"
-// npm run m9 -- "帮我看看沙箱里有几个文件"
+// npm run m9 -- list                          # 老档（裸数组格式）也能列出 = 迁移生效
+// npm run m9 -- rename <id> "测试标题"
+// npm run m9 -- list                          # 显示「测试标题」而不是首条截断 = L3 生效
+// npm run m9 -- resume <id> "随便问点什么"     # 跑完再 list——标题还是「测试标题」
+//                                             # = checkpoint 没把改名冲掉（标题保全生效，最关键一发）
+
 
