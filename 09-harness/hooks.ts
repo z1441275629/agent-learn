@@ -56,50 +56,82 @@ export function registerSessionEndHook(hook: SessionEndHook) {
 	sessionEndHooks.push(hook)
 }
 
-// TODO 你来写（~8 行）：按注册顺序跑 pre-hook 管线
+// 按注册顺序跑 pre-hook 管线
 // 1. 逐个 await hook(toolName, args)；任何一个 blocked → 立即短路返回（后面的不再跑）
 // 2. 返回 args !== undefined → 更新流水中的 args（改写链：下一个 hook 看到的是改后的）
 // 3. hook 抛错 → 按拦截处理（blocked = 错误信息）+ console.error——热路径上的 hook 坏了
 //    不该放行也不该崩循环，fail-closed
 export async function runPreHooks(toolName: string, args: any): Promise<PreHookResult> {
-	throw new Error('TODO runPreHooks')
+	for (const hook of preHooks) {
+		try {
+			const hookRes = await hook(toolName, args)
+			const { blocked, args: reWriteArgs } = hookRes
+			if (blocked) {
+				return hookRes
+			}
+			if (reWriteArgs !== undefined) {
+				// 更新流水中的 args（改写链：下一个 hook 看到的是改后的）
+				console.log(`工具${toolName}的参数由${JSON.stringify(args).slice(0, 120)}改为${JSON.stringify(reWriteArgs).slice(0, 120)}`)
+				args = reWriteArgs
+			}
+		} catch (err: any) {
+			const desc = `工具${toolName}的前置hook执行时报错：${err.message}`
+			console.error(desc)
+			return { blocked: desc }
+		}
+	}
+	return { args }
 }
 
-// TODO 你来写（~5 行）：按注册顺序跑 post-hook 管线，result 链式传递
+// 按注册顺序跑 post-hook 管线，result 链式传递
 // 每个 hook 的返回值是下一个的输入，最后返回终态。
 // hook 抛错 → 跳过这个 hook + 大声报，用上一个 result 继续——post 是增益性质，
 // 一个脱敏 hook 坏了不该把整个工具结果废掉（注意：这和 pre 的 fail-closed 方向相反，为什么？）
 export async function runPostHooks(toolName: string, args: any, result: string): Promise<string> {
-	throw new Error('TODO runPostHooks')
+	for (const hook of postHooks) {
+		try {
+			const hookRes = await hook(toolName, args, result)
+			if (hookRes !== result) {
+				console.log(`\n后置钩子的结果由 ${result} 变为 ${hookRes} \n`)
+				result = hookRes
+			}
+		} catch (err: any) {
+			console.error(`${toolName}的后置钩子执行时发生错误，错误信息：${err.message}。用上一个result【${result}】继续`)
+		}
+	}
+	return result
 }
 
-// TODO 你来写（~4 行）：会话结束钩子逐个 void 触发（不 await——不阻塞最终回答返回），
+// 会话结束钩子逐个 void 触发（不 await——不阻塞最终回答返回），
 // 每个 hook 的异常自己消化（07 #18：unawaited 钩子的异常逃逸 = unhandled rejection = 崩进程）
 export function runSessionEndHooks(ctx: ContextManager): void {
-	throw new Error('TODO runSessionEndHooks')
+	for (const hook of sessionEndHooks) {
+		// .then 包一层：同步抛错和异步 rejection 都汇进同一个 catch
+		Promise.resolve()
+			.then(() => hook(ctx))
+			.catch((err: any) => console.error(`会话结束钩子执行错误，错误信息：${err?.message}`))
+	}
 }
 
 // ---------- 内置 hook（示例住户 + §3 验收标的；import 本模块即注册，与 tools.ts 同款模式） ----------
 const AUDIT_PATH = path.resolve(import.meta.dirname, 'log', 'tool-audit.log')
 
-// 脱敏 post-hook【先注册】：结果里的手机号/身份证打码。
-// 注册顺序在这里是安全问题：审计 hook 若排在前面，日志里存的就是未脱敏的原文——
-// 审计日志本身也是数据出口。post 管线按注册顺序跑，先脱敏后审计
-registerPostHook((toolName, args, result) => {
-	return Promise.resolve(
-		result
-			.replace(/1[3-9]\d{9}/g, (m) => m.slice(0, 3) + '****' + m.slice(-4))
-			.replace(/\d{17}[\dXx]/g, (m) => m.slice(0, 4) + '**************' + m.slice(-2)),
-	)
-})
+// 手机号和身份证号脱敏——只用于日志副本。
+// 位置是威胁模型定的：管道里的业务数据要干活（read_memory 取回手机号是给用户报数的，
+// 在管线上脱敏 = 用户问自己手机号、模型收到 173****7986——实测踩过）。
+// 数据给模型看不是威胁，发出去才是：外传走工具，有沙箱+confirm 闸；
+// 日志是数据出口，在这里脱敏副本，业务数据不动
+const redact = (text: string) => text.replace(/1[3-9]\d{9}/g, (m) => m.slice(0, 3) + '****' + m.slice(-4)).replace(/\d{17}[\dXx]/g, (m) => m.slice(0, 4) + '**************' + m.slice(-2))
 
-// 审计 post-hook【后注册】：每次工具调用一行流水（07 appendAudit 的正式版）。
-// 拿到的已是脱敏+截断后的终态；失败大声报但不影响结果（审计坏了不能废掉工具调用）
-registerPostHook(async (toolName, args, result) => {
+// 审计 post-hook：每次工具调用一行流水（07 appendAudit 的正式版）。
+// args 和 result 都在写入时脱敏——先脱敏再截断（先截会把打码截坏、边界外的原文漏脱）
+const auditHook: PostHook = async (toolName, args, result) => {
 	try {
-		await fs.appendFile(AUDIT_PATH, `[${new Date().toISOString()}] ${toolName} ${JSON.stringify(args).slice(0, 200)} → ${result.slice(0, 200)}\n`, 'utf8')
+		await fs.appendFile(AUDIT_PATH, `[${new Date().toISOString()}] ${toolName} ${redact(JSON.stringify(args)).slice(0, 200)} → ${redact(result).slice(0, 200)}\n`, 'utf8')
 	} catch (err: any) {
 		console.error('⚠ 审计 hook 写入失败:', err?.message)
 	}
-	return result // 只看不动
-})
+	return result // 只看不动（返回给管道的仍是原文）
+}
+
+registerPostHook(auditHook)
