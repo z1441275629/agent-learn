@@ -15,12 +15,15 @@
 //   新消息一律 ctx.add()（双写）——不直接 push 任何数组。
 import 'dotenv/config'
 import OpenAI from 'openai'
+import fs from 'node:fs/promises'
+import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { ContextManager, truncateToolResult } from './context.ts'
 import { checkPermission, type Verdict } from './permissions.ts'
 import { MemoryManager, registerMergeStrategy, writeMemoryTool } from './memory.ts'
 import { registerSandboxTools } from './sandbox.ts'
 import { runPreHooks, runPostHooks, runSessionEndHooks, registerSessionEndHook } from './hooks.ts'
+import type { PreHookResult } from './hooks.ts'
 import { registry, buildToolsParam } from './tools.ts'
 import type { ToolCallParams } from './type.ts'
 
@@ -94,7 +97,7 @@ async function dispatch(toolCall: ToolCallParams): Promise<string> {
 	// §3 pre-hook：在权限闸【前】——改写先发生，权限判定的是改写后的最终参数
 	// （hook 把 echo 改成 del，权限看到 del 并拒绝；放权限后 = 改写逃过审判）。
 	// pre 经过一切调用（含被拒的）；post 只见真执行了的。管线出错按拦截处理，不崩循环
-	let pre: import('./hooks.ts').PreHookResult
+	let pre: PreHookResult
 	try {
 		pre = await runPreHooks(toolName, args)
 	} catch (err: any) {
@@ -281,131 +284,28 @@ export async function extractMemories(ctx: ContextManager) {
 }
 
 // ---------- 主流程 ----------
-// 只在直接作为脚本入口运行时执行（node 09-harness/agent.ts N）；
-// 被回归测试 import 时不自动跑——主模块判断保护脚本入口
+// 只在直接作为脚本入口运行时执行（node 09-harness/agent.ts N 或自由文本）；
+// 被回归测试 import 时不自动跑——主模块判断保护脚本入口。
+// 测试语料含真实个人信息，不入库：全部放 .sessions.json（已 gitignore）——
+// 键 = 会话号/名字，值 = 字符串（单会话）或数组（跑批）；未命中的输入直接当自由文本。
+// 注意：写类会话（3,4,5,7,9,11,12,13,new_memory,test2）别盲跑——老案例里的事实已过期
+// （如会话 1 的"5 口人"），而合并规则是"冲突以新为准"，重跑等于拿旧事实覆盖新事实
 const isMain = process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href
 if (isMain) {
 	const SESSION = process.argv[2] ?? '1'
-	if (SESSION === '1') {
-		// 测试写入记忆
-		const ctx = await createAgent('北京今天会下雨吗？如果会下雨，我给全家 5 口人每人买一把 25 元的伞，帮我算算一共多少钱。查一下我笔记里关于买伞的记录，再结合北京天气决定买不买')
+	let sessions: Record<string, string | string[]> = {}
+	try {
+		sessions = JSON.parse(await fs.readFile(path.resolve(import.meta.dirname, '.sessions.json'), 'utf8'))
+	} catch {
+		console.error('没找到/读不了 09-harness/.sessions.json（个人测试语料，不入库）——缺了就照旧格式新建一份')
+		process.exit(1)
+	}
+	const entry = sessions[SESSION]
+	// 字符串 → 单会话；数组 → 跑批；都没命中 → argv 原文当自由文本（node 09-harness/agent.js "今天天气如何"）
+	const questions = typeof entry === 'string' ? [entry] : Array.isArray(entry) ? entry : [SESSION]
+	for (const q of questions) {
+		const ctx = await createAgent(q)
 		const answer = await agentLoop(ctx)
-		console.log('\n=== 最终回答 ===\n' + answer)
-	} else if (SESSION === '2') {
-		// 测试读取记忆
-		const ctx = await createAgent('我家有几口人')
-		const answer = await agentLoop(ctx)
-		console.log('\n=== 记忆读取 ===\n' + answer)
-	} else if (SESSION === '3') {
-		// 测试写入记忆
-		const ctx = await createAgent('我们家，我是赵德升，媳妇是李露露，儿子是赵睿泽，弟弟是赵德财，妹妹是赵慧，爸爸是赵立成，妈妈是孙花，一共几个人？')
-		const answer = await agentLoop(ctx)
-		console.log('\n=== 家庭成员人名告知，验证是否会存记忆 ===\n' + answer)
-	} else if (SESSION === '4') {
-		// 测试记忆读写
-		const ctx = await createAgent('我1994年出生的，我老婆比我小一岁，请输出我媳妇的名字和年龄')
-		const answer = await agentLoop(ctx)
-		console.log('\n=== 年龄告知与年龄计算，验证是否会存记忆，并且读取之前的媳妇名字的记忆 ===\n' + answer)
-	} else if (SESSION === '5') {
-		//
-		const ctx = await createAgent('我喜欢熬夜，我媳妇说熬夜不好，容易长痘痘，她不喜欢熬夜。熬夜到底好不好。')
-		const answer = await agentLoop(ctx)
-		console.log('\n=== 测试偏好是否存入记忆 ===\n' + answer)
-	} else if (SESSION === '6') {
-		//
-		const ctx = await createAgent('我和我媳妇，平常谁睡的更早')
-		const answer = await agentLoop(ctx)
-		console.log('\n=== 测试偏好 ===\n' + answer)
-	} else if (SESSION === '7') {
-		//
-		const ctx = await createAgent('我小时候经常跟发小一起去我们那的小河里洗澡，但是我还是没学会游泳，其他的发小都学会了。也去小河里摸过鱼，也没有其他发小摸到的多。我是不是手慢，动手能力差？')
-		const answer = await agentLoop(ctx)
-		console.log('\n=== 测试用户信息披露时是否记忆 ===\n' + answer)
-	} else if (SESSION === '8') {
-		//
-		const ctx = await createAgent('你猜我会游泳不？')
-		const answer = await agentLoop(ctx)
-		console.log('\n=== 游泳 ===\n' + answer)
-	} else if (SESSION === '9') {
-		//
-		const ctx = await createAgent('我2024-10-10去民政局领证的，2021-10-14办的婚礼，结婚算不算晚')
-		const answer = await agentLoop(ctx)
-		console.log('\n=== 结婚年龄 ===\n' + answer)
-	} else if (SESSION === '10') {
-		//
-		const ctx = await createAgent('我结婚多久了')
-		const answer = await agentLoop(ctx)
-		console.log('\n=== 结婚时长 ===\n' + answer)
-	} else if (SESSION === '11') {
-		//
-		const ctx = await createAgent('我实际是2024-10-14办的婚礼，农历9月12')
-		const answer = await agentLoop(ctx)
-		console.log('\n=== 结婚信息变更 ===\n' + answer)
-	} else if (SESSION === '12') {
-		//
-		const ctx = await createAgent(
-			'我学前班在村里的分校上的，离家近。回家的途中经过爷爷家，所以中午经常到爷爷家吃饭。一年级也是这个学校，二年级没上完，就转到村里的总校了，距离可远了，家在山顶，每次需要先下山，然后过河，在上山到学校。放学又是这样，先下山，再过河，然后上山。4年级上完，村里的五六年级撤了，我就转学到隔壁村去上了，隔壁村叫柳泉村，我们村叫罗台村，我家是二组。柳泉小学上完5年级后，这个学校的五六年级也撤了，我又转学到镇上的中心小学——金家小学上6年级。在柳泉上学的时候，先下山，再过河，然后平路1-2公里到学校。金家小学远，我就开启了住校生活，以后上学全是住校。我的小学经历是不是有点丰富',
-		)
-		const answer = await agentLoop(ctx)
-		console.log('\n=== 小学经历 ===\n' + answer)
-	} else if (SESSION === '13') {
-		//
-		const ctx = await createAgent('我决定放弃前端职业生涯，转行做Agent开发了，这个决定怎么样')
-		const answer = await agentLoop(ctx)
-		console.log('\n=== 职业生涯 ===\n' + answer)
-	} else if (SESSION === '14') {
-		//
-		const QUESTIONS = [
-			'我家有几口人',
-			'我的童年经历有啥',
-			'我媳妇叫啥',
-			// '我的职业生涯情况'
-		]
-
-		for (let q of QUESTIONS) {
-			const ctx = await createAgent(q)
-			const answer = await agentLoop(ctx)
-			console.log(`\n=== ${q} ===\n` + answer)
-		}
-	} else if (SESSION === 'all') {
-		// 回归跑批：只跑幂等的读测试（问答不产生新事实）。
-		// 写测试（1,3,4,5,7,9,11,12,13）别盲跑——老案例里的事实已过期（如会话 1 的"5 口人"），
-		// 而合并规则是"冲突以新为准"，重跑等于拿旧事实覆盖新事实，会把 family-size 搅坏
-		const READ_ONLY_QUESTIONS = ['我家有几口人', '我和我媳妇，平常谁睡的更早', '你猜我会游泳不？', '我结婚多久了', '我的童年经历有啥', '我媳妇叫啥']
-		for (const q of READ_ONLY_QUESTIONS) {
-			const ctx = await createAgent(q)
-			const answer = await agentLoop(ctx)
-			console.log(`\n=== ${q} ===\n` + answer)
-		}
-	} else if (SESSION === 'new_memory') {
-		// 新信息，应该增加记忆
-		const READ_ONLY_QUESTIONS = ['我红绿色弱', '我皮肤不好，容易得皮肤病，后脑勺经常发作毛脑炎', '我屁股长过2次疖肿', '我窦性心律，心电轴显著右偏']
-		for (const q of READ_ONLY_QUESTIONS) {
-			const ctx = await createAgent(q)
-			const answer = await agentLoop(ctx)
-			console.log(`\n=== ${q} ===\n` + answer)
-		}
-	} else if (SESSION === 'test2') {
-		// 新信息，应该增加记忆
-		const READ_ONLY_QUESTIONS = ['我媳妇叫啥', '我今年32岁了', '我儿子今年3.1号出生的，还不会爬', '最近几个月两个胳膊长了3次湿疹了，最近用999皮炎平快治好了，泡泡基本消了']
-		for (const q of READ_ONLY_QUESTIONS) {
-			const ctx = await createAgent(q)
-			const answer = await agentLoop(ctx)
-			console.log(`\n=== ${q} ===\n` + answer)
-		}
-	} else {
-		// 把用户执行脚本时的第二个参数当输入
-		// 我家里的人，除了我弟弟，都不喜欢吃辣的，媳妇不喜欢吃甜的，怕长胖
-		// 中午有推荐的吃的没
-		// 我大学2017那年毕业，现在毕业多少年了
-		// 我2013年在十堰市郧阳区第一中学毕业，然后进入的延安大学，大学当时是二本，现在是一本了。高中暑假去打暑假工，干的洗车的活，一天40块钱，全月无休，还把脚泡伤了，挣的钱还被一个亲戚骗了。我太难了
-		// 我比我弟弟大12岁，我比我妹妹大9岁。即将大学毕业的妹妹，准备给我儿子买个玩具，给她推荐一下玩具。
-		// 帮我算下32岁的人养老保险要交多少年、我儿子还不会走，给他买什么玩具
-		// 给我查下当前系统信息
-		// 你可以调用哪些工具
-		// 创建一个名为hello.txt的文件，并写入 hello world
-		const ctx = await createAgent(SESSION)
-		const answer = await agentLoop(ctx)
-		console.log(`\n=== 用户输入的问题：${SESSION} ===\n` + answer)
+		console.log(`\n=== ${q.slice(0, 24)} ===\n` + answer)
 	}
 }
