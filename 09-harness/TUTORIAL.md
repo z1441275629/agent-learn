@@ -54,9 +54,16 @@
 
 ## 5. 会话持久化与 resume
 
-- 08 已有雏形：plan-checkpoint.json（status 在 schema 里 → 序列化即检查点）
-- 本模块补全：ledger 落盘 → 进程重启 → 恢复视图继续跑（06 双账本的 ledger 天生适合落盘）
-- 边界：resume 后工具结果还能复用吗（tool_call_id 配对）？环境已变的步骤要重跑吗？
+- 06 双账本在此闭环：ledger 只增不删、view 可派生——**ledger 天生就是存储**。落盘落 ledger，恢复 = 逐条重放 `add()`（双写），view 自动重建。08 的 plan-checkpoint 只是雏形（status 在 schema 里，序列化即检查点），§5 补的是对话本身
+- resume 三边界（全部可推导，不花实验预算）：① **tool_call_id 配对**——assistant 的 tool_calls 和 tool 结果在 ledger 里天然有序成对，原样重放就是合法历史，API 收的是「历史事实」，不重执行、不重扣费；② **环境已变**——历史工具结果是当时的事实保留，但 system 里的环境块（时钟/文件树）必须重采刷新（refreshEnvBlock），否则模型拿上次的时钟继续推理，§4 白做；③ **maxSteps 重起算**——历史长度的账归 ensureBudget 的压缩管，不归 step 管
+- **每步 checkpoint**：agentLoop 每步工具结果落盘一次，崩溃损失 = 最多一步。08 的教训在此兑现：检查点要存「进行到哪」，不是只存「跑完的」
+- **原子写（torn write，先实测出洞再修）**：全量覆写 `id.json` 死在半路 = 好档陪葬——§5 卖「中途被杀也能恢复」，死在最后一笔写上等于卖点破功。修法 tmp + rename：同卷 rename 是**指针互换，不是「先删后改名」**——后者有「文件不存在」的中间窗口，前者任何时刻要么完整旧档、要么完整新档（Windows 上 libuv 走 MoveFileEx 替换已存在目标，实测：rename 后内容为 tmp 的新档、tmp 名字消失）。.tmp 是替死鬼：写一半被杀毁的是它，最坏留个孤儿，读取只认 id.json
+- **形状校验（实测坐实）**：`JSON.parse` 成功 ≠ 是账本——盘上内容是 `"hello"` 时返回字符串，`.length === 5` 骗过 `!ledger?.length` 守卫，重放循环把 `h`、`e`、`l` 当消息喂 `ctx.add`。修法一行 `Array.isArray`。原则：**读回来的数据也是外部输入**——和 parseModelJson 剥围栏、B 策略查 {error} 同族，这是「模型输出不可信」落在磁盘上的版本
+- **状态派生 vs 状态存储（本节最大设计课）**：会话「完成/中断」从 ledger 尾巴派生——末条纯 assistant = 已完成；tool / user / 带工具 assistant 尾巴 = 中断。单独的状态文件 = 和账本之间留同步缝，**刚用原子写堵上的洞，别自己再挖**。maxSteps 中止的尾巴恰是 tool（中止分支的 return 值没有 ctx.add——错误是给调用方的，不是历史的一部分），这个不对称正是「尾巴派生」的成立条件。自己实现的三连坑（都实测出→修→复测）：空账本崩（判了 `!lastMsg` 没 return，后面照样取 `lastMsg.role`）；梯子漏格（user 尾巴误报损坏）——**分类穷举靠一正一反的二分，不靠逐个枚举，枚举永远漏格**；`String(undefined)` 是字符串 `'undefined'`（真值），`||` 回落分支是死的
+- **信封格式与格式演进**：要加标题字段时裸数组装不下 → `{title?, ledger}`。**存储格式一旦发布就有兼容性债务**：readSessionDoc 双形状分派、读时迁移不改盘，这条兼容分支是永久债务——要活到所有老档被覆写成新格式为止
+- **标题三层（拆三方的做法）**：L1 首条 user 截断（派生，零成本）< L2 会话结束模型摘要（session-end hook 挂载点的第四次复用，留白）< L3 用户改名（存信封字段，用户改过的永远赢）。**标题保全**：每步 checkpoint 都调 saveSession，`title ?? existing` 读-改-写——否则无标题信封会把用户的改名冲掉（微缩版同步缝）。灵魂探针：rename 后 resume（信封被每步覆写 N 次），标题还是用户改的那个才算生效
+- **归档 = 挪窝**：`sessions/archive/` 子目录 + rename（又是原子挪）——归档是人的决定（不可派生，真得存），但**文件系统即状态**，没有第二份账要对齐。历史列表的「去重」真实含义是**过滤 .tmp 替死鬼**
+- 顺手两笔接口清账：agentLoop 参数膨胀出现 `undefined` 洞（`(ctx, 8, undefined, sid)`）→ 配置对象化——**主题参数保持位置参数，可选项进对象**；onToolCall 没并进 post-hook——**post-hook 只见真执行了的调用**（被 pre/权限拒的在它前面就 return 了），观察者连拒绝也上报，覆盖面不同不算冗余；且注册表生命周期是进程级、参数是栈级（「谁注册谁注销」还没实现，记在账上）
 
 ## 6. 后台任务（08 已交付大半，别重建）
 
