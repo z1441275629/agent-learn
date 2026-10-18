@@ -64,19 +64,33 @@
 - **标题三层（拆三方的做法）**：L1 首条 user 截断（派生，零成本）< L2 会话结束模型摘要（session-end hook 挂载点的第四次复用，留白）< L3 用户改名（存信封字段，用户改过的永远赢）。**标题保全**：每步 checkpoint 都调 saveSession，`title ?? existing` 读-改-写——否则无标题信封会把用户的改名冲掉（微缩版同步缝）。灵魂探针：rename 后 resume（信封被每步覆写 N 次），标题还是用户改的那个才算生效
 - **归档 = 挪窝**：`sessions/archive/` 子目录 + rename（又是原子挪）——归档是人的决定（不可派生，真得存），但**文件系统即状态**，没有第二份账要对齐。历史列表的「去重」真实含义是**过滤 .tmp 替死鬼**
 - 顺手两笔接口清账：agentLoop 参数膨胀出现 `undefined` 洞（`(ctx, 8, undefined, sid)`）→ 配置对象化——**主题参数保持位置参数，可选项进对象**；onToolCall 没并进 post-hook——**post-hook 只见真执行了的调用**（被 pre/权限拒的在它前面就 return 了），观察者连拒绝也上报，覆盖面不同不算冗余；且注册表生命周期是进程级、参数是栈级（「谁注册谁注销」还没实现，记在账上）
+- **已知边界（2026-10-18 记账，未实施）：planner 的中断恢复**——plan-checkpoint.json 是 08 传下来的**写-only 存档**（没有任何代码读它）：中断时计划状态活着，但 stepResults（步间交接的命脉）只在内存、正在跑的子 agent 不落盘、`running` 残留态没人复位。补法两层：**L1 计划级恢复 ~35 行**——checkpoint 从裸 Plan 变 `{plan, stepResults}` 信封（格式演进二刷）+ 启动读档：running→pending、done 跳过、Map 还原（「done 绝不重跑」的 08 金笔记在此兑现——非幂等副作用翻倍）；**L2 步骤级续跑可选**——runStep 传 `sessionId`，中断的步骤用 §5 的 resume 从半截账本续。L1 的真实意义：§5 资产第一次喂回 08 层，「累积式不丢旧能力」的验收
 
 ## 6. 后台任务（08 已交付大半，别重建）
 
-- cron.ts 全家：setTimeout 链防堆叠、fire 全兜异常、审计日志、补跑水位线
-- 本模块只做对照：ZCode 的后台 shell / 任务列表和我的实现差在哪（它多了任务管理 UI 和进程级隔离）
+- cron.ts 全家：setTimeout 链防堆叠、fire 全兜异常、审计日志、补跑水位线——本模块零新增，08 的资产原样上岗
+- §7 拆出的对照结论：ZCode 的 tasks-index.sqlite（+ setting.json 的 taskAutoArchiveEnabled）是**任务列表/后台任务的管理**——记录、归档、展示；不是**定时调度**。我的是调度（cron 语义），它的是管理（queue/history 语义）——两者正交，它没做调度那半，我的超出项
+- 钩子粒度错位的老账在此结清（08 金笔记①）：「会话结束」钩子遇到「一个任务 = N 次会话」（planner 每步一个子 agent）就错位——B 策略在 planner 模式下被抽取 N 遍。生产答案：钩子粒度跟任务边界对齐（executePlan 尾部抽一次），教学答案：planner 用 A 策略绕开
+- 没有定时调度会出什么事（§0 句式）：补跑水位线和防堆叠就不是人肉能盯的——错过的任务要么丢（无水位线）要么雪崩（无防堆叠）
 
-## 7. 验收：拆 ZCode
+## 7. 验收：拆实物（ZCode + Claude Code 双参照系）
 
-- 打开 Zcode/Claude Code 的 settings.json / permissions 配置 / hooks 配置
-- 逐项对照：allowlist 规则语法 ↔ 我的 permissions；PreToolUse hook ↔ 我的 pre-hook；sandbox ↔ 我的 run_shell 拦截
-- 能对上几项？对不上的差在哪（我这版缺什么、生产版多了什么）
+- **拆法本身是一课**：安装目录（D:\software\ZCode）只有 Electron 壳（exe + chromium dll）——用户配置在 `~/.zcode`，内部分层：v2/setting.json（应用 UI 设置：窗口/语言/任务自动归档）、v2/config.json（供应商与模型目录）、cli/config.json（插件 + MCP——我的 04-mcp 实验服务器就挂在上面）、db.sqlite。工具就是 ls / grep / strings——**黑盒考古：看它在盘上留下了什么**
+- **权限（找了一圈的结论）**：ZCode 全目录扫 permissions 零命中（连 db 的 strings 都没有）——它把权限收进 UI 的模式选择，文件层不可编程。参照系换 Claude Code：settings.json 里 `permissions: { defaultMode: "auto", allow: [...], deny: [...] }`——**两层结构：权限模式（粗粒度，管「要不要问你」）叠在 allowlist（`Bash(git diff:*)` 规则，管「哪些免问」）之上**。我的 permissions.json 是 allowlist 层的直系教学版；验收当天顺手把模式层也补上了（`PERMISSION_MODE` 走 .env——**模式只替换「问」这一个动作，不拆闸**：deny/pre-hook/沙箱照跑，run_shell 是 auto 的例外——教学沙箱有已知绕过，没有补位层的段不放宽；对照 Claude 的 acceptEdits 自动批编辑不批 Bash，同一个判断）
+- **hooks**：真身藏在插件里（mimosa 的 hooks.json）：PreToolUse/PostToolUse + matcher 正则（`"Edit|Write|MultiEdit"`）+ 外部进程（node 脚本）+ timeoutMs + statusMessage。对我的 §3 有三条真差距：① matcher 在**注册期**声明管哪些工具，我的钩子对所有工具跑、运行期自己写 if；② 钩子是外部进程，崩了挂了不伤主循环，我是同进程回调；③ **hook 超时（timeoutMs: 120000）我没有**——runPreHooks 无限 await，一个挂死的钩子能让整个循环陪葬（加固清单头号候选）
+- **定时任务**：三方对照——ZCode 零命中（JSON + db 全扫）；Claude 有（durable cron 写 scheduled_tasks.json，没建过就没有文件）；我有（08 cron.ts）。**08 是少数超出 ZCode 的地方**（防堆叠/补跑水位线/审计）。ZCode 的 tasks-index.sqlite + taskAutoArchiveEnabled 是任务列表/后台任务**管理**，不是定时**调度**——§6 对照的正主
+- **会话存储**：Claude = `projects/<项目>/<uuid>.jsonl`，一行一条消息**纯追加**（拆到一盘 521 行的转写 = 521 条消息逐条 append）——§5 评审时那句「生产答案是 append-only journal、不是每步全量重写」的实物证据；ZCode = `sess_<uuid>/agent_<uuid>/` 目录树（一会话多 agent 各一档，metadata.json 与 output.txt 分两个文件）——正好对应我的两个简化：planner 子 agent 没分档、信封把元数据和正文合一文件
+- **环境注入**：environment_context 带时钟且周期刷新——§4 已对照（两头都要就付两头的钱）
+- **沙箱**：不在本轮拆出的面上，§2 已有结论——它的沙箱在路径检查三级梯子的最上层（OS 级隔离），我的三层拦截是梯子第一级
+- **计分（骨架问题的直接回答）**：五层里权限/钩子/注入/存储四层对上原型，cron 反超 ZCode。我缺的：权限模式层、hook 超时、进程隔离、append-only 存储；它多的是 UI 化和产品完整度——**我多的是每一层都亲手写过一遍**
+- 彩蛋收尾：Claude 参照系的 settings.json 里 `ANTHROPIC_BASE_URL` 指向本地 magpie 代理、路由到 GLM-5.3——**Agent ≠ Harness（§0）的活教材：壳是 Claude Code，模型可插拔**
+- 诚实边界：拆的是本地可见的 JSON 文本层 + db strings——结论措辞是「本地可见面内没有」，不是「产品没有」
 
 ## 8. 一句话总结（必填，用你自己的话）
+我写的：harness是给agent加边界，例如 权限（安全、防范危险命令、沙箱限制命令范围）、钩子（改写工具参数、工具输出审计、会话结束总结会话标题、总结需要记忆的内容等）、环境注入（注入当前时间、系统信息、工作区信息）、任务存档（接着会话聊、失败重试）
+
+AI建议的：「加边界」这个框架，罩得住权限和沙箱，罩不住另外两层。 边界是「拦」——权限拦不该做的、沙箱拦不该碰的。但环境注入是「给」——补上模型本来没有的感知（时钟、方言、文件树）；存档是「续」——给会话续命。它们不是限制 agent，是供给 agent。§0 的自问句其实是双向的：「没有它会出什么事」——没有权限是失控，没有注入是失明，没有存档是失忆。
+harness = 模型和真实世界之间的全部工程层——既有闸（拦住不该做的），也有桥（补上本来没有的）
 
 ## 附：本模块踩的坑
 

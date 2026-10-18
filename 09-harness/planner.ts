@@ -59,7 +59,8 @@ export function renderPlan(plan: Plan): string {
 }
 
 // 检查点（§5 了解级的落地）：status 在 schema 里 → 序列化即检查点，每次状态变化落一次盘
-// resume 留给你（可选）：启动时读到 checkpoint → 校验 goal 匹配 → 跳过 done 从断点继续。
+// resume（记在 TUTORIAL §5 已知边界，未实施）：L1 计划级 = checkpoint 变 {plan, stepResults} 信封
+// + 启动读档（running→pending 复位、done 跳过、Map 还原）；L2 步骤级 = runStep 传 sessionId 走 §5 半截续跑
 // 金笔记：恢复时绝不能重跑 done 的步骤——非幂等副作用会翻倍（07 的并集合并救得了内容，救不了重复调用）
 const CHECKPOINT = path.resolve(import.meta.dirname, 'plan-checkpoint.json')
 async function saveCheckpoint(plan: Plan): Promise<void> {
