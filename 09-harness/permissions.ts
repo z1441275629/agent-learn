@@ -15,7 +15,8 @@
   deny 命中 → deny（拒绝优先：白名单是可以被构造性输入绕过的，黑名单是底线）
   → allow 命中 → allow
   → confirm 命中 / 未列出 → confirm 流程（未列出默认 confirm——
-    默认 deny 太严会训练人无脑点允许，默认 allow 形同虚设，confirm 是安全默认）
+    默认 deny 太严会训练人无脑点允许，默认 allow 形同虚设，confirm 是安全默认；
+    PERMISSION_MODE=auto 时本档自动放行，run_shell 除外——见下方模式层注释）
 
 两个坑预告（踩实了记 PITFALLS）：
 - 组合命令绕过：白名单放行 "run_shell(npm *)"，模型来一句 "npm test && rm -rf /"——
@@ -30,6 +31,7 @@ import readline from 'node:readline/promises'
 export type Verdict = 'allow' | 'confirm' | 'deny'
 
 interface PermissionConfig {
+	mode?: 'default' | 'auto' // 权限模式（用户配置层，优先于环境变量——见模式层注释）
 	allow: string[]
 	confirm: string[]
 	deny: string[]
@@ -47,10 +49,18 @@ const RULE_PATTERN = /^([a-z_]+)(?:\((.+)?\))?$/i
 export async function loadPermissions(): Promise<PermissionConfig> {
 	try {
 		const config: PermissionConfig = JSON.parse(await fs.readFile(CONFIG_PATH, 'utf8'))
+		// 拼错的 mode 和拼错的规则同罪：以为在 auto、实际全走问——启动就炸，不运行时静默失效
+		if (config.mode !== undefined && !['default', 'auto'].includes(config.mode)) {
+			throw new Error(`mode 取值非法: ${config.mode}（只认 default/auto）`)
+		}
 		// 逐条校验：拼错的规则永不命中，写 deny 的人以为自己拒了实际没拒——
 		// 「永不命中的规则」和 cron「永不触发的表达式」同罪，启动就炸，不运行时静默失效
 		const bad = [...config.allow, ...config.confirm, ...config.deny].filter((r) => !RULE_PATTERN.test(r))
 		if (bad.length) throw new Error(`规则格式非法: ${bad.join(' | ')}`)
+		// 生效模式大声报一次（带来源）：静默的 auto 比没有 auto 危险——人以为闸还在
+		if ((config.mode ?? ENV_MODE) === 'auto') {
+			console.warn(`⚠ 权限模式 auto 生效（来源：${config.mode ? 'permissions.json' : '环境变量 PERMISSION_MODE'}）：confirm 档不再人工确认；run_shell 仍走确认。deny / pre-hook / 沙箱照常生效`)
+		}
 		return config
 	} catch (err: any) {
 		// 配置缺失/损坏/含非法规则 = 全部走 confirm（fail-safe：宁可多问一句，不可静默放行）
@@ -120,6 +130,22 @@ export const getPermissionConfig = (() => {
 	}
 })()
 
+// ---------- 权限模式层（§7 拆实物拆出来的缺口，补上） ----------
+// Claude Code 的 permissions 是两层：defaultMode（模式，管「要不要问你」）叠 allowlist（管「哪些免问」），
+// 我们原本只有 allowlist 层。模式只替换「问」这一个动作，不拆任何闸：
+//   deny 清单照跑（优先级在模式之前）、pre-hook 照跑、沙箱照跑（长在 impl 层，与权限模式无关）
+// auto 的边界（想清楚再放宽）：confirm 档 → 放行，但 run_shell 除外——教学沙箱有已记录的
+// 绕过（$() 替换等，sandbox.ts 头注），没有补位层的段不放宽；要「脚本形状自动放行」走参数级
+// allow 规则（run_shell(node *)），形状可枚举才可白名单。对照 Claude 的 acceptEdits：
+// 自动批编辑、不批 Bash——同一个判断
+// 生效优先级：permissions.json 的 mode（用户配置，和规则住一个文件——模式的正主位置）
+//   > 环境变量 PERMISSION_MODE（机器默认，适合无头/跑批）> 'default'。
+// 「界面上改」在我们这的对应物 = 改 json 重启（与规则同款约定：低频变更 + 高确定性）
+const ENV_MODE = (process.env.PERMISSION_MODE ?? 'default').toLowerCase()
+if (!['default', 'auto'].includes(ENV_MODE)) {
+	console.warn(`⚠ PERMISSION_MODE=${process.env.PERMISSION_MODE} 不认识（只认 default/auto），按 default 走`)
+}
+
 // 权限判定总入口——dispatch 的唯一调用点，管线见文件头
 export async function checkPermission(toolName: string, args: any): Promise<Verdict> {
 	let config
@@ -135,6 +161,10 @@ export async function checkPermission(toolName: string, args: any): Promise<Verd
 	if (config.allow.some((rule) => matchRule(rule, toolName, args))) {
 		return 'allow'
 	}
-	// confirm 命中或未列出 全部让人确认
+	// confirm 命中或未列出：默认问人；auto 下自动放行（run_shell 除外，理由见模式层注释）。
+	// 生效模式 = json 的 mode（用户配置）?? 环境变量——每判一次现取，配置自愈重读后无需重启也跟得上
+	if ((config.mode ?? ENV_MODE) === 'auto' && toolName !== 'run_shell') {
+		return 'allow'
+	}
 	return (await askHuman(toolName, args)) ? 'allow' : 'deny'
 }

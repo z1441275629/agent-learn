@@ -56,15 +56,39 @@ export function registerSessionEndHook(hook: SessionEndHook) {
 	sessionEndHooks.push(hook)
 }
 
+// §7 对照补的缺口：钩子超时——此前 runPreHooks 无限 await，一个挂死的钩子让整个循环陪葬
+// （ZCode 的 hooks.json 每个钩子自带 timeoutMs: 120000——外部进程钩子的标准配置，
+// 我们是同进程钩子，10s 已经宽裕）。实现是 Promise.race，两个诚实边界：
+//   ① 输掉的 Promise 不会被取消——JS 没有 cancellation，钩子还在后台跑，只是没人再等它的结果
+//   ② 计时器分出胜负后必须清掉，否则空定时器拖住进程退出
+// 超时 rejection 落进各管线已有的 catch——语义自动正确：pre fail-closed（按拦截）、
+// post fail-open（保住上一个 result）、session-end 大声报。HOOK_TIMEOUT_MS 走 env 是给探针留的口子
+const HOOK_TIMEOUT_MS = Number(process.env.HOOK_TIMEOUT_MS) || 10_000
+
+// 入参放宽为 T | Promise<T>：钩子签名本来就是「同步返回或 Promise 二选一」（PreHook/PostHook 的
+// 返回类型）——已是 Promise 则 Promise.resolve 原样穿透，不额外包一层
+function withTimeout<T>(value: T | Promise<T>, label: string): Promise<T> {
+	let timer: ReturnType<typeof setTimeout>
+	const timeout = new Promise<never>((_, reject) => {
+		timer = setTimeout(() => reject(new Error(`钩子 ${label} 超过 ${HOOK_TIMEOUT_MS}ms 未返回`)), HOOK_TIMEOUT_MS)
+	})
+	const p = Promise.resolve(value)
+	// 诊断挂件：race 对输家只「观察到」不处理——超时已判、流程已走，但输家 eventual 的报错
+	// 正是「为什么慢」的病因，必须留痕（只挂日志，不改变任何流向；输家迟到地成功 resolve
+	// 则无声——不是错误，记了就是噪音）。同一个 p，race 照常订阅，两不耽误
+	p.catch((err: any) => console.error(`钩子 ${label} 在超时放弃后报错（病因诊断）：${err?.message}`))
+	return Promise.race([p, timeout]).finally(() => clearTimeout(timer))
+}
+
 // 按注册顺序跑 pre-hook 管线
 // 1. 逐个 await hook(toolName, args)；任何一个 blocked → 立即短路返回（后面的不再跑）
 // 2. 返回 args !== undefined → 更新流水中的 args（改写链：下一个 hook 看到的是改后的）
-// 3. hook 抛错 → 按拦截处理（blocked = 错误信息）+ console.error——热路径上的 hook 坏了
+// 3. hook 抛错/超时 → 按拦截处理（blocked = 错误信息）+ console.error——热路径上的 hook 坏了
 //    不该放行也不该崩循环，fail-closed
 export async function runPreHooks(toolName: string, args: any): Promise<PreHookResult> {
 	for (const hook of preHooks) {
 		try {
-			const hookRes = await hook(toolName, args)
+			const hookRes = await withTimeout(hook(toolName, args), toolName)
 			const { blocked, args: reWriteArgs } = hookRes
 			if (blocked) {
 				return hookRes
@@ -90,7 +114,7 @@ export async function runPreHooks(toolName: string, args: any): Promise<PreHookR
 export async function runPostHooks(toolName: string, args: any, result: string): Promise<string> {
 	for (const hook of postHooks) {
 		try {
-			const hookRes = await hook(toolName, args, result)
+			const hookRes = await withTimeout(hook(toolName, args, result), toolName)
 			if (hookRes !== result) {
 				console.log(`\n后置钩子的结果由 ${result} 变为 ${hookRes} \n`)
 				result = hookRes
@@ -106,9 +130,9 @@ export async function runPostHooks(toolName: string, args: any, result: string):
 // 每个 hook 的异常自己消化（07 #18：unawaited 钩子的异常逃逸 = unhandled rejection = 崩进程）
 export function runSessionEndHooks(ctx: ContextManager): void {
 	for (const hook of sessionEndHooks) {
-		// .then 包一层：同步抛错和异步 rejection 都汇进同一个 catch
+		// .then 包一层：同步抛错和异步 rejection 都汇进同一个 catch；超时同罚
 		Promise.resolve()
-			.then(() => hook(ctx))
+			.then(() => withTimeout(hook(ctx), 'session-end'))
 			.catch((err: any) => console.error(`会话结束钩子执行错误，错误信息：${err?.message}`))
 	}
 }
