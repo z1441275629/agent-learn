@@ -154,10 +154,11 @@ export type ToolCallObserver = (info: { name: string; arguments: string; result:
 export interface AgentLoopOptions {
 	maxSteps?: number // 默认 8——历史步数预算，resume 后重起算
 	onToolCall?: ToolCallObserver // 回归测试观察者：捕获工具调用序列（含被拒的，result 是错误 JSON）
+	onUsage?: (u: { promptTokens: number; completionTokens: number }) => void // 模块 10 spawn 的账本探针：每次请求上报 token 用量——多 agent 成本核算（×N 记账）的数据入口
 	sessionId?: string // §5 存档 id——传了才落盘，每步一存档
 }
 
-export async function agentLoop(ctx: ContextManager, { maxSteps = 8, onToolCall, sessionId }: AgentLoopOptions = {}): Promise<string> {
+export async function agentLoop(ctx: ContextManager, { maxSteps = 8, onToolCall, onUsage, sessionId }: AgentLoopOptions = {}): Promise<string> {
 	let step = 1
 	const tools = buildToolsParam()
 	// §5 检查点：每步工具结果落盘后，进程中途被杀也能从最近一步 resume（08 plan-checkpoint 的教训：
@@ -181,6 +182,7 @@ export async function agentLoop(ctx: ContextManager, { maxSteps = 8, onToolCall,
 			tools,
 		})
 		console.log('真实token用量：', response.usage?.prompt_tokens)
+		onUsage?.({ promptTokens: response.usage?.prompt_tokens ?? 0, completionTokens: response.usage?.completion_tokens ?? 0 })
 		const message = response.choices[0].message
 		const toolCalls = (message.tool_calls ?? []) as any[]
 		ctx.add(message)

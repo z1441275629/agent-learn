@@ -57,7 +57,7 @@
 | 06  | `06-context/`     | 上下文工程与提示工程    | 3 周   | ContextManager：测量/滑动窗口/截断/compaction | ☑   |
 | 07  | `07-memory/`      | 记忆 + 检索进阶     | 2.5 周 | 文件型+检索型双通道记忆，混合检索                    | ☑   |
 | 08  | `08-planner/`     | 任务调度与规划       | 2 周   | planner-executor + 并发子任务             | ☑   |
-| 09  | `09-harness/`     | Agent Harness | 2 周   | 给 agent 加壳：权限/沙箱/hooks/resume        | ☐   |
+| 09  | `09-harness/`     | Agent Harness | 2 周   | 给 agent 加壳：权限/沙箱/hooks/resume        | ☑   |
 | 10  | `10-multi-agent/` | 多 Agent       | 2.5 周 | 五种编排模式 + 3-agent 协作系统                | ☐   |
 | 11  | `11-production/`  | 生产工程          | 2.5 周 | evals + Langfuse tracing + 注入攻防      | ☐   |
 | 12  | `12-capstone/`    | 框架横评 + 毕业项目   | 3 周   | 框架重写 + 四件套应用（含 chat UI）              | ☐   |
@@ -126,6 +126,7 @@
 - **核心问题**：权限粒度怎么设计（按工具？按参数？）？hooks 和权限谁先谁后？环境信息每轮都重新注入吗（token 成本）？
 - **验收**：打开 ZCode 的 settings / permissions / hooks 配置，能对照指出"这个机制我实现过，原理是 X"。
 - **资源**：Claude Code 官方文档的 permissions / hooks / sandbox 三章；Claude Agent SDK 的源码结构。
+- **一句话总结（2026-10-18 完工）**：harness 是给 agent 加壳——权限拦危险、沙箱限范围、钩子管改写与审计、环境注入补感知、存档给会话续命（拆实物双参照系验收：四层对上原型，cron 反超 ZCode）。
 
 ### 模块 10 · 多 Agent（2.5 周）
 
