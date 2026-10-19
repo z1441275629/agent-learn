@@ -20,6 +20,7 @@
   ③ 空 手：跑完了、没 error、但结论没营养（研究类任务常见：没查到）——机器判不了，
      error 字段留给调用方续判。三个入口全兜住，主管才敢放心派活
 */
+// import 'dotenv/config'
 import { createAgent, agentLoop, parseModelJson } from '../09-harness/agent.ts'
 import { truncateToolResult } from '../09-harness/context.ts'
 
@@ -32,14 +33,16 @@ export interface SpawnResult {
 	error?: string // ok=false 必有：①原文 ②模型侧 error——喂给主管做 重试/换路/放弃 的决策
 }
 
-// TODO 你来写（~10 行）：任务书渲染——「上下文边界」四个字的实锤
+const MAX_CONCLUSION_LENGTH = 500
+// 任务书渲染——「上下文边界」四个字的实锤
 // 1. 任务本体 + 可选上游交接物 handoff：只传「下游需要的」摘要，绝不传上游整本账——
 //    边界松一格，隔离的收益就漏一分（主管窗口被上游过程污染 = 白付了多 agent 的钱）
 // 2. 输出契约写进任务书：「只回传最终结论，不超过 N 字，不要过程叙述」——
 //    模型不会自觉，契约（软）+ conclusion 截断（硬）双保险
 // 3. 返回 string，它就是 createAgent 的 task 参数（子 agent 世界的全部输入）
 export function renderBrief(task: string, handoff?: string): string {
-	throw new Error('TODO renderBrief')
+	const handoffPrompt = handoff ? `上游交接物：【${handoff}】\n` : ''
+	return `你的任务是：【${task}】\n${handoffPrompt}返回契约：【只回传最终结论，不超过 ${MAX_CONCLUSION_LENGTH} 字，不要过程叙述】`
 }
 
 // spawn：起一个子 agent 干活，拿回结论 + 账单。
@@ -57,15 +60,39 @@ export async function spawn(task: string, opts?: { handoff?: string; systemExtra
 				completionTokens += u.completionTokens
 			},
 		})
-		// TODO 你来写（~15 行）：失败传播 ② + 结论收口
+		// 失败传播 ② + 结论收口
 		// ② 假结论：parseModelJson(raw)?.error 有值 → ok:false，error 带上原文（截断）——
 		//    注意 parseModelJson 对纯文本返回 undefined，别把正常结论误判成失败
 		// 结论侧：conclusion = raw；用 truncateToolResult 兜底截断（防一个话痨子 agent 撑爆主管窗口）
 		// 返回 SpawnResult（ok:true）——token 账和 elapsed 照记
-		throw new Error('TODO spawn 结论收口')
+		const resJson = parseModelJson(raw)
+		if (resJson?.error) {
+			return {
+				ok: false,
+				conclusion: `任务执行失败，agent返回的错误信息：【${resJson.error}】`,
+				promptTokens,
+				completionTokens,
+				elapsedMs: Date.now() - t0,
+				error: resJson.error,
+			}
+		}
+		return {
+			ok: true,
+			conclusion: truncateToolResult(raw, MAX_CONCLUSION_LENGTH),
+			promptTokens,
+			completionTokens,
+			elapsedMs: Date.now() - t0,
+		}
 	} catch (err: any) {
 		// ① 真异常：ok:false + error 原文——token 账照记（花掉的钱不因失败而看不见，×N 记账要的是全量真数）
-		throw new Error('TODO spawn 异常兜底')
+		return {
+			ok: false,
+			conclusion: `任务执行失败，捕获的错误信息：【${err?.message}】`,
+			promptTokens,
+			completionTokens,
+			elapsedMs: Date.now() - t0,
+			error: err?.message,
+		}
 	}
 }
 
@@ -76,7 +103,12 @@ const isMain = process.argv[1] !== undefined && import.meta.url === new URL(`fil
 if (isMain) {
 	const task = process.argv[2] ?? '用一句话总结：多 agent 系统里 spawn 原语的职责是什么'
 	console.log(`\n【spawn 任务】${task}\n`)
+	// 设置最大步数验证agent假性执行成功
+	// const result = await spawn(task, {maxSteps: 1})
 	const result = await spawn(task)
 	console.log(`\n=== spawn 结果 ===`)
 	console.log(JSON.stringify(result, null, 2))
 }
+
+// node 10-multi-agent/spawn.ts "用一句话说明 Windows cmd 里 dir 和 ls 的区别"
+// node 10-multi-agent/spawn.ts "如果今天武汉下雨，就给我全家人买伞，一把伞大概25元，算下我需要准备多少钱买伞"
