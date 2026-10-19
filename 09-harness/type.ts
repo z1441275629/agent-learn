@@ -2,6 +2,7 @@
 export type ToolImpl = (args: any) => Promise<string>
 // 工具定义
 export type ToolDef = {
+	name?: string
 	description: string
 	parameters: object
 	impl: ToolImpl
