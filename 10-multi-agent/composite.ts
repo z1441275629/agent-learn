@@ -154,18 +154,21 @@ export interface CompositeResult {
 export async function runCompositeSystem(topic: string): Promise<CompositeResult> {
 	const researchTokens = { prompt: 0, completion: 0 }
 	const writingTokens = { prompt: 0, completion: 0 }
-	const chargeR = (r: SpawnResult) => {
+	// §8/§9 收数口：每发流水（角色 + 双栏账）——窗口级数据从这里收，流转图和账本不用再改代码
+	const chargeR = (role: string, r: SpawnResult) => {
 		researchTokens.prompt += r.promptTokens
 		researchTokens.completion += r.completionTokens
+		console.log(`  [账] ${role}: prompt ${r.promptTokens} / completion ${r.completionTokens}${r.ok ? '' : `（失败：${(r.error ?? '').slice(0, 40)}）`}`)
 	}
-	const chargeW = (r: SpawnResult) => {
+	const chargeW = (role: string, r: SpawnResult) => {
 		writingTokens.prompt += r.promptTokens
 		writingTokens.completion += r.completionTokens
+		console.log(`  [账] ${role}: prompt ${r.promptTokens} / completion ${r.completionTokens}${r.ok ? '' : `（失败：${(r.error ?? '').slice(0, 40)}）`}`)
 	}
 
 	// —— 研究段第一发：研究员（纯文本组织活 tools: []；挂了短路，final 带定位——§3 模式，空手 ≠ 消息丢失）——
 	const research = await spawn(researchPrompt(), { handoff: `原始素材（${topic}）：\n${SOURCE_MATERIAL}`, tools: [], thinking: false, skipSessionEndHooks: true })
-	chargeR(research)
+	chargeR('研究员首发', research)
 
 	const result: CompositeResult = {
 		research,
@@ -206,7 +209,7 @@ export async function runCompositeSystem(topic: string): Promise<CompositeResult
 		if (shapeIssues.length === 0) {
 			// 审校①：独立窗口看素材+简报，看不到研究员的过程（§6 隔离不变）
 			const critic = await spawn(digestCriticPrompt(), { handoff: `原始素材（${topic}）：\n${SOURCE_MATERIAL}\n\n待审简报：${digest}`, tools: [], thinking: false, skipSessionEndHooks: true })
-			chargeR(critic)
+			chargeR('审校①', critic)
 			verdict = parseCriticVerdict(critic.conclusion)
 			result.researchRounds.push({ output: digest, critic, verdict })
 		} else {
@@ -226,7 +229,7 @@ export async function runCompositeSystem(topic: string): Promise<CompositeResult
 			[researchPrompt(), `上一版简报被打回，逐条修订：\n${verdict.issues.map((s, i) => `${i + 1}. ${s}`).join('\n')}`].join('\n\n'),
 			{ handoff: `原始素材（${topic}）：\n${SOURCE_MATERIAL}\n\n上一版简报：${digest}`, tools: [], thinking: false, skipSessionEndHooks: true },
 		)
-		chargeR(revise)
+		chargeR('研究员修订', revise)
 		digest = revise.conclusion
 	}
 	if (!result.researchPassed) {
@@ -240,13 +243,13 @@ export async function runCompositeSystem(topic: string): Promise<CompositeResult
 	// criticPrompt 从 §6 import 一字不改：每段的「原始素材」= 它的直接上游交接物——
 	// 简报对写作段就是源头（它已被审校① 验过，这是审校② 敢只看简报的全部前提）
 	const first = await spawn(REPORT_TASK, { handoff: `研究简报：${result.digest}`, tools: [], thinking: false, skipSessionEndHooks: true })
-	chargeW(first)
+	chargeW('写手首稿', first)
 	result.writerSpawns = 1
 	let draft = first.conclusion
 	let wRevises = 0
 	while (true) {
 		const critic = await spawn(criticPrompt(), { handoff: `原始素材：${result.digest}\n\n待审稿件：${draft}`, tools: [], thinking: false, skipSessionEndHooks: true })
-		chargeW(critic)
+		chargeW('审校②', critic)
 		const verdict = parseCriticVerdict(critic.conclusion)
 		result.writingRounds.push({ output: draft, critic, verdict })
 		if (verdict.passed) {
@@ -262,7 +265,7 @@ export async function runCompositeSystem(topic: string): Promise<CompositeResult
 			[REPORT_TASK, `上一稿被审校打回，逐条修订：\n${verdict.issues.map((s, i) => `${i + 1}. ${s}`).join('\n')}`].join('\n\n'),
 			{ handoff: `研究简报：${result.digest}\n上一稿：${draft}`, tools: [], thinking: false, skipSessionEndHooks: true },
 		)
-		chargeW(revise)
+		chargeW('写手修订', revise)
 		draft = revise.conclusion
 	}
 	result.finalReport = draft
