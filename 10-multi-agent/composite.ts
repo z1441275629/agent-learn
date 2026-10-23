@@ -58,9 +58,6 @@ export const SOURCE_MATERIAL = [
 	'§6 generator-critic：修前熔断 completion 11,724 → 修后通过 7,557；critic 拆穿用字数统计冒充内容数字。',
 ].join('\n')
 
-// 素材的节号上界——从数据推导不硬编码（素材改版不用记得回来改这里）
-const MAX_SECTION = Math.max(...[...SOURCE_MATERIAL.matchAll(/§(\d+)/g)].map((m) => Number(m[1])))
-
 // ---------- 研究员任务书 ----------
 // ZCode 打样（评审意见：①「组织出周报」越权——研究员交简报，周报是写手的活，角色边界要切干净；
 // ② 注意那行照抄了骨架注释的 meta 建议（「例如分组、标重要性」是给写任务书的人的提示），
@@ -152,7 +149,12 @@ export interface CompositeResult {
 	completionTokens: number
 }
 
-export async function runCompositeSystem(topic: string): Promise<CompositeResult> {
+// §11 起加的评测 seam：source 可注入（评测集要喂薄料/变体素材），默认原素材——既有调用零改动；
+// 节号上界按实际素材推导（薄料只有 §1~§2 时，出处 §6 就该被门检判越界）
+export async function runCompositeSystem(topic: string, opts?: { source?: string }): Promise<CompositeResult> {
+	const source = opts?.source ?? SOURCE_MATERIAL
+	const sectionNums = [...source.matchAll(/§(\d+)/g)].map((m) => Number(m[1]))
+	const maxSection = sectionNums.length ? Math.max(...sectionNums) : 0
 	const researchTokens = { prompt: 0, completion: 0 }
 	const writingTokens = { prompt: 0, completion: 0 }
 	// §8/§9 收数口：每发流水（角色 + 双栏账）——窗口级数据从这里收，流转图和账本不用再改代码
@@ -168,7 +170,7 @@ export async function runCompositeSystem(topic: string): Promise<CompositeResult
 	}
 
 	// —— 研究段第一发：研究员（纯文本组织活 tools: []；挂了短路，final 带定位——§3 模式，空手 ≠ 消息丢失）——
-	const research = await spawn(researchPrompt(), { handoff: `原始素材（${topic}）：\n${SOURCE_MATERIAL}`, tools: [], thinking: false, skipSessionEndHooks: true })
+	const research = await spawn(researchPrompt(), { handoff: `原始素材（${topic}）：\n${source}`, tools: [], thinking: false, skipSessionEndHooks: true })
 	chargeR('研究员首发', research)
 
 	const result: CompositeResult = {
@@ -205,11 +207,11 @@ export async function runCompositeSystem(topic: string): Promise<CompositeResult
 	let revises = 0
 	let researchIssues: string[] = []
 	while (true) {
-		const shapeIssues = digestCheck(digest, MAX_SECTION)
+		const shapeIssues = digestCheck(digest, maxSection)
 		let verdict: CriticVerdict
 		if (shapeIssues.length === 0) {
 			// 审校①：独立窗口看素材+简报，看不到研究员的过程（§6 隔离不变）
-			const critic = await spawn(digestCriticPrompt(), { handoff: `原始素材（${topic}）：\n${SOURCE_MATERIAL}\n\n待审简报：${digest}`, tools: [], thinking: false, skipSessionEndHooks: true })
+			const critic = await spawn(digestCriticPrompt(), { handoff: `原始素材（${topic}）：\n${source}\n\n待审简报：${digest}`, tools: [], thinking: false, skipSessionEndHooks: true })
 			chargeR('审校①', critic)
 			verdict = parseCriticVerdict(critic.conclusion)
 			result.researchRounds.push({ output: digest, critic, verdict })
@@ -228,7 +230,7 @@ export async function runCompositeSystem(topic: string): Promise<CompositeResult
 		result.researchSpawns++
 		const revise = await spawn(
 			[researchPrompt(), `上一版简报被打回，逐条修订：\n${verdict.issues.map((s, i) => `${i + 1}. ${s}`).join('\n')}`].join('\n\n'),
-			{ handoff: `原始素材（${topic}）：\n${SOURCE_MATERIAL}\n\n上一版简报：${digest}`, tools: [], thinking: false, skipSessionEndHooks: true },
+			{ handoff: `原始素材（${topic}）：\n${source}\n\n上一版简报：${digest}`, tools: [], thinking: false, skipSessionEndHooks: true },
 		)
 		chargeR('研究员修订', revise)
 		digest = revise.conclusion
