@@ -36,9 +36,34 @@ const MAX_REVISIONS = 2
 //   - 输出契约必须是结构化的（这是打回循环能机器解析的关键）：
 //     通过 → 一行 PASS；不通过 → 逐条列【不通过项 + 原因 + 修订指令】——修订指令要能直接执行
 //   - 反面警告：不要写「内容质量高、表达流畅」这类判不了的词（玄学的定义就是判不了）
+// ---------- critic 的评审任务书 ----------
+// ZCode 优化版（评审问题：④ 三条检查项黏一行没编号——checklist 化的意义就是逐条可判定可引用；
+// ⑤ 反面警告照抄骨架注释——那句是给「写标准的人」看的，critic 不写稿读到会困惑；
+// ⑥ 契约字面没钉死——「一行结论通过」到底写什么字？解析端要判关键词，契约必须给精确字面。
+// 锚改成首行 PASS / FAIL 英文短锚：天然避开「不通过」包含「通过」的子串陷阱，思考模式遵守率也高。
+// 保留原版亮点：「修订指令不要直接执行，只给方向」——防 critic 越俎代庖替 generator 改稿）
 export function criticPrompt(): string {
-	// TODO ① 你来填——返回 string（critic 的评审标准）
-	return ''
+	/* ---------- 你写的（原版——保留对照） ----------
+	return [
+		'角色：你是一个评审专家，任务是评审agent的产出是否符合要求，最终给出结论。',
+		'检查项：agent是否是依据事实输出的结果，不要编造数据。' +
+		'agent结论要跟要求相关，不要跑题了。'+
+		'agent结论是否实用，没实际用处的话不要。',
+		'输出契约：检查通过返回一行结论通过；检查不通过时，先返回一行结论检查不通过，然后逐行列出 不通过项、原因、修订方向。修订指令不要直接执行，只给结论即可，你的产出是agent干活的方向指示',
+		'反面警告：不要写「内容质量高、表达流畅」这类判不了的词（玄学的定义就是判不了）'
+	].join('\n')
+	---------- 优化版 ---------- */
+	return [
+		'角色：你是评审员。上游交接物里有两样东西：原始素材和待审稿件。你只评审、不代改；你没有任何工具，也不要尝试读文件、执行命令或调用任何东西——判断所需的一切已在交接物里。',
+		'评审标准（逐条判定，只列不通过的）：',
+		'1. 事实性：稿件中每个事实（数字、进展、计划）必须能在交接物的原始素材里找到依据，编造即不通过——对照交接物核对即可，不需要也不应该找外部信息。',
+		'2. 针对性：每一句都要服务「团队新人快速了解本周」，跑题句即不通过。',
+		'3. 实用性：读者要能带走具体信息（做了什么/接下来关注什么），空泛套话即不通过。',
+		// 探针临时条款（严判/熔断）已摘——4 数字性、5 字数矛盾的标准只存在于探针记录里，静止态保持三条
+		'输出契约（字面钉死，解析端按此判定）：全部通过 → 首行只写 PASS，不要输出其他任何内容；' +
+			'有不通过项 → 首行只写 FAIL，随后每行一条：编号 | 不通过项 | 原因 | 修订指令。',
+		'修订指令只给方向不代改稿——你的产出是下一轮重写的方向指示，不是改好的稿子。',
+	].join('\n')
 }
 
 // ---------- TODO ② 你来写：退出判定 ----------
@@ -52,8 +77,34 @@ export interface CriticVerdict {
 	issues: string[]
 }
 export function parseCriticVerdict(criticConclusion: string): CriticVerdict {
-	// TODO ② 你来填
-	return { passed: false, issues: [] }
+	/* ---------- 你写的（原版——保留对照） ----------
+	评审问题：① items.length===1 判通过是形状判定——critic 把意见写成一行（没换行）就误判通过，
+	   坏稿放行 critic 白花钱；若改判内容 includes('通过') 则踩「不通过」包含「通过」的子串陷阱——
+	   契约的字面与解析的判定必须锚同一个东西，最稳是首行 PASS/FAIL 英文短锚
+	② 空输入走 else → passed:false + issues:[]——打回但零修订指令，generator 收到「逐条修订：」空列表盲改
+	   （骨架设计题的答案：fail-closed + 把违约本身变成诊断 issue，不要静默空转）
+	③ slice(1) 吞首行——契约没钉死首行必是总结行，第一条意见可能就在首行
+	const items = criticConclusion.split('\n').filter(item => item.trim())
+	let passed = false,
+	issues: string[] = []
+	if (items.length === 1) {
+		passed = true
+	} else {
+		issues = items.slice(1)
+	}
+	return { passed, issues }
+	---------- 优化版 ---------- */
+	const lines = criticConclusion.split('\n').filter((l) => l.trim())
+	const first = (lines[0] ?? '').trim().toUpperCase()
+	// 首行锚定：PASS 精确匹配（防「PASS 但还有下文」的半通过）；FAIL 同理
+	if (first === 'PASS' && lines.length === 1) return { passed: true, issues: [] }
+	if (first === 'FAIL') return { passed: false, issues: lines.slice(1) }
+	// 解析失败（空输入 / 首行既非 PASS 也非 FAIL / PASS 后拖了别的话）：fail-closed——
+	// 不放行（坏稿代价 > 一轮重跑），把违约本身合成诊断 issue 喂下去，别让 generator 盲改
+	return {
+		passed: false,
+		issues: [`[评审契约违约] critic 输出未按「首行 PASS/FAIL」契约，原文头 80 字：${criticConclusion.slice(0, 80)}——请评审方严格遵守输出契约后重评`],
+	}
 }
 
 // demo 进料：generator 的初稿任务书（骨架已给——你的 TODO ①② 落在 critic 侧）
@@ -78,8 +129,9 @@ export async function runGeneratorCritic(): Promise<CriticLoopResult> {
 	const history: CriticLoopResult['history'] = []
 	let handoff = DRAFT_MATERIAL
 	let draft = ''
-	// 首稿：素材 → generator
-	let first = await spawn(DRAFT_TASK, { handoff })
+	// 首稿：素材 → generator（工具面清零：写手是纯文本活，挂着 search_notes 只会钓走注意力和 token——§5「工具面=能力面」的实操；
+	// thinking 关闭：写 120 字摘要是浅任务，思考 token 是白烧的墙钟；短命 agent 不跑会话结束钩子）
+	let first = await spawn(DRAFT_TASK, { handoff, tools: [], thinking: false, skipSessionEndHooks: true })
 	history.push({ draft: first.conclusion, critic: first, verdict: { passed: false, issues: [] } }) // 占位——首轮循环里会被真评审覆盖
 	let promptTokens = first.promptTokens
 	let completionTokens = first.completionTokens
@@ -89,8 +141,11 @@ export async function runGeneratorCritic(): Promise<CriticLoopResult> {
 	while (rounds <= MAX_REVISIONS) {
 		rounds++
 		draft = history[history.length - 1].draft
-		// critic：独立窗口评审当前稿——评审任务书 + 待审稿作为交接物（隔离：critic 看不到 generator 的素材与纠结）
-		const critic = await spawn(criticPrompt(), { handoff: draft })
+		// critic：独立窗口评审当前稿。handoff 必须带原始素材——事实性判据要对照物（第一版只给稿件，
+		// critic 没见过素材判不了「有无依据」，自己去找：type note.md / 正文里写 run_shell JSON——
+		// agentic 先验从文本泄漏 + 契约三连违约熔断，2026-10-23 探针实录）。隔离的边界不变：
+		// critic 看素材+稿，仍看不到 generator 的过程
+		const critic = await spawn(criticPrompt(), { handoff: `原始素材：${DRAFT_MATERIAL}\n\n待审稿件：${draft}`, tools: [], thinking: false, skipSessionEndHooks: true })
 		promptTokens += critic.promptTokens
 		completionTokens += critic.completionTokens
 		const verdict = parseCriticVerdict(critic.conclusion)
@@ -105,7 +160,7 @@ export async function runGeneratorCritic(): Promise<CriticLoopResult> {
 		// 重写：修订指令 + 原稿 + 原素材，喂回 generator（批评被消费，不是被记录）
 		const revise = await spawn(
 			[DRAFT_TASK, `上一稿被评审打回，逐条修订：\n${issues.map((s, i) => `${i + 1}. ${s}`).join('\n')}`].join('\n\n'),
-			{ handoff: `原始素材：${DRAFT_MATERIAL}\n上一稿：${draft}` },
+			{ handoff: `原始素材：${DRAFT_MATERIAL}\n上一稿：${draft}`, tools: [], thinking: false, skipSessionEndHooks: true },
 		)
 		promptTokens += revise.promptTokens
 		completionTokens += revise.completionTokens

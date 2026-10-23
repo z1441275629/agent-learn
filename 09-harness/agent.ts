@@ -156,10 +156,12 @@ export interface AgentLoopOptions {
 	onToolCall?: ToolCallObserver // 回归测试观察者：捕获工具调用序列（含被拒的，result 是错误 JSON）
 	onUsage?: (u: { promptTokens: number; completionTokens: number }) => void // 模块 10 spawn 的账本探针：每次请求上报 token 用量——多 agent 成本核算（×N 记账）的数据入口
 	tools?: string[] // 工具面白名单：undefined=全量（默认，既有调用零改动）；[]=纯文本 agent；数组=只挂列名的（§5 教训的工具化：工具面=能力面）
+	thinking?: boolean // 思考开关：false → 请求体带 thinking:{type:'disabled'}（GLM 端点参数）；undefined/true → 不带（端点默认=开）。浅任务（判形状/转写/对单评审）关掉——completion 大头是思考 token，墙钟≈completion÷输出速度
+	skipSessionEndHooks?: boolean // 短命子 agent 的选择权：结论已回传，过程记忆大概率无价值；钩子虽 fire-and-forget 不挡循环，但会拖住进程退出（Node 等事件循环清空）
 	sessionId?: string // §5 存档 id——传了才落盘，每步一存档
 }
 
-export async function agentLoop(ctx: ContextManager, { maxSteps = 8, onToolCall, onUsage, sessionId, tools: toolNames }: AgentLoopOptions = {}): Promise<string> {
+export async function agentLoop(ctx: ContextManager, { maxSteps = 8, onToolCall, onUsage, sessionId, tools: toolNames, thinking, skipSessionEndHooks }: AgentLoopOptions = {}): Promise<string> {
 	let step = 1
 	const tools = buildToolsParam(toolNames)
 	// §5 检查点：每步工具结果落盘后，进程中途被杀也能从最近一步 resume（08 plan-checkpoint 的教训：
@@ -172,7 +174,7 @@ export async function agentLoop(ctx: ContextManager, { maxSteps = 8, onToolCall,
 		if (step > maxSteps) {
 			await checkpoint()
 			// §3 会话结束钩子（B 策略抽取已迁入 hooks.ts 的挂载点，这里不再内联）
-			void runSessionEndHooks(ctx)
+			if (!skipSessionEndHooks) void runSessionEndHooks(ctx)
 			return JSON.stringify({ error: '(达到最大步数，任务中止)' })
 		}
 		await ctx.ensureBudget()
@@ -182,6 +184,8 @@ export async function agentLoop(ctx: ContextManager, { maxSteps = 8, onToolCall,
 			messages: ctx.getSendView(),
 			// 空工具面省略 tools 字段——空数组在部分 API 是「禁用工具」在部分是错误，省略是唯一安全形态
 			...(tools.length ? { tools } : {}),
+			// 思考开关（GLM 端点参数）：不带=端点默认（开）；disabled=关——浅任务的 completion/墙钟直降
+			...(thinking === false ? { thinking: { type: 'disabled' } } : {}),
 		})
 		console.log('真实token用量：', response.usage?.prompt_tokens)
 		onUsage?.({ promptTokens: response.usage?.prompt_tokens ?? 0, completionTokens: response.usage?.completion_tokens ?? 0 })
@@ -191,7 +195,7 @@ export async function agentLoop(ctx: ContextManager, { maxSteps = 8, onToolCall,
 		if (!toolCalls.length) {
 			await checkpoint()
 			// §3 会话结束钩子（两个出口——正常答完/步数中止——现在共用一个挂载点）
-			void runSessionEndHooks(ctx)
+			if (!skipSessionEndHooks) void runSessionEndHooks(ctx)
 			return message.content || JSON.stringify({ error: '模型未返回内容' })
 		}
 		console.log(`[step ${step}] 调用: ${toolCalls.map((t) => `${t.function.name}(${t.function.arguments})`).join(', ')}`)

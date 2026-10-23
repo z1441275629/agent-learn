@@ -47,7 +47,7 @@ export function renderBrief(task: string, handoff?: string): string {
 
 // spawn：起一个子 agent 干活，拿回结论 + 账单。
 // 子 agent 的权限/沙箱/hook 由 09 dispatch 咽喉自动覆盖——这里不重复操心中关村的事
-export async function spawn(task: string, opts?: { handoff?: string; systemExtra?: string; maxSteps?: number; budgetTokens?: number; tools?: string[] }): Promise<SpawnResult> {
+export async function spawn(task: string, opts?: { handoff?: string; systemExtra?: string; maxSteps?: number; budgetTokens?: number; tools?: string[]; thinking?: boolean; skipSessionEndHooks?: boolean }): Promise<SpawnResult> {
 	const t0 = Date.now()
 	let promptTokens = 0
 	let completionTokens = 0
@@ -56,6 +56,8 @@ export async function spawn(task: string, opts?: { handoff?: string; systemExtra
 		const raw = await agentLoop(ctx, {
 			maxSteps: opts?.maxSteps,
 			tools: opts?.tools,
+			thinking: opts?.thinking,
+			skipSessionEndHooks: opts?.skipSessionEndHooks,
 			onUsage: (u) => {
 				promptTokens += u.promptTokens
 				completionTokens += u.completionTokens
