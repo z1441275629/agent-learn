@@ -37,7 +37,7 @@ const FANOUT_TIMEOUT_MS = Number(process.env.FANOUT_TIMEOUT_MS) || 120_000
 export function spawnWithDeadline(
 	task: string,
 	charge: (r: SpawnResult) => void,
-	opts?: { handoff?: string },
+	opts?: { handoff?: string; tools?: string[] },
 ): Promise<SpawnResult> {
 	/* ---------- 你写的（原版——保留对照） ----------
 	评审问题（按严重度）：
@@ -76,7 +76,7 @@ export function spawnWithDeadline(
 	// 迟到判别：race 先落定 → 之后才落地的真发就是迟到者（赢家的 .then 必先于 race 落定执行）
 	let raceSettled = false
 	// 真发：落地即记账（赢没赢 race 都记）；异常兜成失败样本——兜成 undefined 等于往 samples 里塞类型谎言
-	const real = spawn(task, { handoff: opts?.handoff }).then(
+	const real = spawn(task, { handoff: opts?.handoff, tools: opts?.tools }).then(
 		(r) => {
 			if (raceSettled) {
 				console.log(`[迟到样本] 任务【${task.slice(0, 20)}…】弃子后 ${((r.elapsedMs - FANOUT_TIMEOUT_MS) / 1000).toFixed(1)}s 落地，补记账（钱已烧，不能再看不见）`)
@@ -125,19 +125,19 @@ export interface FanOutResult {
 	ledger: SpawnResult[] // 真账：真 spawn 落地才记（fanIn 也入账）；迟到者在打印时可能还没落地，打印函数会如实标注
 }
 
-export async function runFanOutFanIn(question: string, opts: { n?: number; fanInTask?: string } = {}): Promise<FanOutResult> {
+export async function runFanOutFanIn(question: string, opts: { n?: number; fanInTask?: string; tools?: string[] } = {}): Promise<FanOutResult> {
 	const t0 = Date.now()
 	const n = opts.n ?? 3
 	const ledger: SpawnResult[] = []
 	const charge = (r: SpawnResult) => ledger.push(r)
 	// fan-out：map 出 N 个 promise 一起 await——这是「并行」的全部语法；for-await 逐发就是 §2 的串行老路
-	const samples = await Promise.all(Array.from({ length: n }, () => spawnWithDeadline(question, charge)))
+	const samples = await Promise.all(Array.from({ length: n }, () => spawnWithDeadline(question, charge, { tools: opts.tools })))
 	// 交接物拼接：编号 + 有效/无效标注——无效样本的「缺席」是归纳的信息，不是垃圾（挂的写原因，弃的写超时）
 	const handoff = samples
 		.map((r, i) => `【样本${i + 1}｜${r.ok ? '有效' : `无效（${r.error ?? '未知原因'}）`}】${r.conclusion}`)
 		.join('\n\n')
 	// fan-in：串行收尾——它要等全部样本到齐，天然串行（想想：为什么 fan-in 没法并行？）
-	const fanIn = await spawn(opts.fanInTask ?? DEFAULT_FANIN_TASK, { handoff })
+	const fanIn = await spawn(opts.fanInTask ?? DEFAULT_FANIN_TASK, { handoff, tools: opts.tools })
 	ledger.push(fanIn)
 	const serialSumMs = samples.reduce((s, r) => s + r.elapsedMs, 0) + fanIn.elapsedMs
 	return { samples, fanIn, wallMs: Date.now() - t0, serialSumMs, ledger }
@@ -170,6 +170,6 @@ export function printFanOutResult(result: FanOutResult) {
 const isMain = process.argv[1] !== undefined && import.meta.url === new URL(`file:///${process.argv[1].replace(/\\/g, '/')}`).href
 if (isMain) {
 	console.log(`\n【fan-out 问题】${DEFAULT_QUESTION}\n`)
-	const result = await runFanOutFanIn(DEFAULT_QUESTION)
+	const result = await runFanOutFanIn(DEFAULT_QUESTION, { tools: [] }) // demo 是纯文本题——工具面清零，search_notes 钓不走样本
 	printFanOutResult(result)
 }

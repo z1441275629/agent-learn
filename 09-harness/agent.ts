@@ -155,12 +155,13 @@ export interface AgentLoopOptions {
 	maxSteps?: number // 默认 8——历史步数预算，resume 后重起算
 	onToolCall?: ToolCallObserver // 回归测试观察者：捕获工具调用序列（含被拒的，result 是错误 JSON）
 	onUsage?: (u: { promptTokens: number; completionTokens: number }) => void // 模块 10 spawn 的账本探针：每次请求上报 token 用量——多 agent 成本核算（×N 记账）的数据入口
+	tools?: string[] // 工具面白名单：undefined=全量（默认，既有调用零改动）；[]=纯文本 agent；数组=只挂列名的（§5 教训的工具化：工具面=能力面）
 	sessionId?: string // §5 存档 id——传了才落盘，每步一存档
 }
 
-export async function agentLoop(ctx: ContextManager, { maxSteps = 8, onToolCall, onUsage, sessionId }: AgentLoopOptions = {}): Promise<string> {
+export async function agentLoop(ctx: ContextManager, { maxSteps = 8, onToolCall, onUsage, sessionId, tools: toolNames }: AgentLoopOptions = {}): Promise<string> {
 	let step = 1
-	const tools = buildToolsParam()
+	const tools = buildToolsParam(toolNames)
 	// §5 检查点：每步工具结果落盘后，进程中途被杀也能从最近一步 resume（08 plan-checkpoint 的教训：
 	// 检查点要存「进行到哪」而不是只存「跑完的」）。saveSession 自带永不抛纪律，这里放心 await
 	const checkpoint = async () => {
@@ -179,7 +180,8 @@ export async function agentLoop(ctx: ContextManager, { maxSteps = 8, onToolCall,
 		const response = await client.chat.completions.create({
 			model: MODEL,
 			messages: ctx.getSendView(),
-			tools,
+			// 空工具面省略 tools 字段——空数组在部分 API 是「禁用工具」在部分是错误，省略是唯一安全形态
+			...(tools.length ? { tools } : {}),
 		})
 		console.log('真实token用量：', response.usage?.prompt_tokens)
 		onUsage?.({ promptTokens: response.usage?.prompt_tokens ?? 0, completionTokens: response.usage?.completion_tokens ?? 0 })
@@ -206,8 +208,8 @@ export async function agentLoop(ctx: ContextManager, { maxSteps = 8, onToolCall,
 
 // 启动一个新任务（budgetTokens 可覆盖——回归测试的低预算场景用；默认模块级 BUDGET_TOKENS；
 // systemExtra：追加到 system 末尾的常驻内容——planner 模式用它注入「带勾的最新计划」）
-export async function createAgent(task: string, opts?: { budgetTokens?: number; systemExtra?: string }): Promise<ContextManager> {
-	const ctx = new ContextManager(client, MODEL, { budgetTokens: opts?.budgetTokens ?? BUDGET_TOKENS, toolsDef: buildToolsParam() })
+export async function createAgent(task: string, opts?: { budgetTokens?: number; systemExtra?: string; tools?: string[] }): Promise<ContextManager> {
+	const ctx = new ContextManager(client, MODEL, { budgetTokens: opts?.budgetTokens ?? BUDGET_TOKENS, toolsDef: buildToolsParam(opts?.tools) })
 	const memoryPrompt = await MemoryManager.getSystemPrompt(WRITE_STRATEGY !== 'B')
 	// 清洗历史数据，执行过一次就好了
 	// await historyMemoryToVector()
@@ -336,6 +338,7 @@ if (isMain) {
 			console.error(`会话 ${id} 恢复不了（sessions/ 下没有对应文件，或内容是空的）`)
 			process.exit(1)
 		}
+		// 工具面有意全量：09 主 demo 是 harness 展示位（天气/算数/笔记/记忆/shell 全套），不传白名单 = 全量是这里的选择而非默认
 		const ctx = new ContextManager(client, MODEL, { budgetTokens: BUDGET_TOKENS, toolsDef: buildToolsParam() })
 		for (const msg of ledger) ctx.add(msg)
 		await refreshEnvBlock(ctx) // 边界②：环境块重采——别拿上次的时钟推理

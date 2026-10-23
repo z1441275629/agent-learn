@@ -18,8 +18,7 @@ default 模式下无头跑会被拒——那时把它加进 allow 清单（派�
 而子 agent 的工具全过 09 dispatch 咽喉——闸门在正确的层上，主管这层可以放心开）
 */
 import { createAgent, agentLoop } from '../09-harness/agent.ts'
-import { truncateToolResult } from '../09-harness/context.ts'
-import { registerTool, buildToolsParam } from '../09-harness/tools.ts'
+import { registerTool } from '../09-harness/tools.ts'
 import type { ToolDef } from '../09-harness/type.ts'
 import { spawn, type SpawnResult } from './spawn.ts'
 
@@ -89,10 +88,11 @@ export async function runSupervisor(mission: string): Promise<{ answer: string }
 	resetAccount()
 	dispatchCount = 0
 	// 主管上下文 = 09 人设/记忆/环境 + 主管人设（systemExtra 管子第三次复用）。
-	// 注意：主管的 tools 是全局注册表的 buildToolsParam——它手里其实还有读类工具，
-	// 提示词里「唯一动作是派单」是软约束，v1 接受（想想：真要硬约束该改哪？——§8 流转图的素材）
-	const ctx = await createAgent(mission, { systemExtra: supervisorPrompt() })
+	// 工具面硬约束（§5 皮球探针的教训落地：提示词「唯一动作是派单」是软锚，工具面才是硬闸）：
+	// 只挂 dispatch_task——主管想干别的活，物理上没有工具。§2 留的「真要硬约束该改哪」在此结案
+	const ctx = await createAgent(mission, { systemExtra: supervisorPrompt(), tools: ['dispatch_task'] })
 	const answer = await agentLoop(ctx, {
+		tools: ['dispatch_task'],
 		onUsage: (u) => {
 			account.supervisor.promptTokens += u.promptTokens
 			account.supervisor.completionTokens += u.completionTokens

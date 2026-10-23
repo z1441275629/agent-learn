@@ -129,13 +129,16 @@ export interface HandoffDemoResult {
 export async function runHandoffDemo(userRequest: string): Promise<HandoffDemoResult> {
 	const ledger: SpawnResult[] = []
 	let pkg: HandoffPackage | undefined
-	// A 舞台：09 全家桶 + hand_off 工具 + triagePrompt 人设
+	// A 舞台：09 全家桶 + hand_off 工具 + triagePrompt 人设（tools 与下方 agentLoop 同一白名单——记账面和请求面一致）
 	registerTool('hand_off', handOffTool)
-	const ctx = await createAgent(userRequest, { systemExtra: DEMO_A_PROMPT_EXTRA() })
+	const ctx = await createAgent(userRequest, { systemExtra: DEMO_A_PROMPT_EXTRA(), tools: ['get_weather', 'calculate_total', 'run_shell', 'hand_off'] })
 	let aPrompt = 0
 	let aCompletion = 0
 	const raw = await agentLoop(ctx, {
 		maxSteps: MAX_HANDOFF_STEPS,
+		// A 的工具面 = 分诊能力清单的硬闸（§5 皮球探针的教训）：天气/算数（含 run_shell 验算）+ 逃生舱。
+		// 没挂的工具不存在——search_notes/write_memory 这类对分诊员是纯干扰
+		tools: ['get_weather', 'calculate_total', 'run_shell', 'hand_off'],
 		onToolCall: ({ name, arguments: args }) => {
 			if (name === 'hand_off') pkg = JSON.parse(args) as HandoffPackage
 		},
@@ -151,7 +154,7 @@ export async function runHandoffDemo(userRequest: string): Promise<HandoffDemoRe
 		return { transferred: false, aResult: ledger[0], bResult: null, ledger }
 	}
 	// 转了：B 冷启动接管——干净窗口（createAgent），任务书 = 移交包渲染（user 位），人设 = 专家 systemExtra（system 位）
-	const b = await spawn(renderHandoffBrief(pkg), { systemExtra: EXPERT_B_PROMPT })
+	const b = await spawn(renderHandoffBrief(pkg), { systemExtra: EXPERT_B_PROMPT, tools: [] }) // 专家是纯文本活——评审靠脑子不靠工具
 	ledger.push(b)
 	return { transferred: true, package: pkg, aResult: null, bResult: b, ledger }
 }

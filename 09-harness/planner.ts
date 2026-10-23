@@ -153,6 +153,7 @@ export async function runStep(plan: Plan, step: PlanStep, stepResults: Map<numbe
 		.join('\n')
 	const task = `本步骤指令：${step.description},依赖列表为：${JSON.stringify(step.dependsOn)}， 依赖的执行结果：${dependsOnTexts}`
 
+	// 工具面有意全量：planner 的执行 agent 是真干活的（天气/算数/笔记/记忆都可能用），全量是选择而非默认
 	const ctx = await createAgent(task, { systemExtra })
 	try {
 		// 模型调用成功，也可能是失败（比如：达到最大步数，没有真正的把任务完成），让另一个模型判断是否成功

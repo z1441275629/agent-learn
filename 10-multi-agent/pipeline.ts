@@ -185,7 +185,7 @@ export async function runPipeline(stages: PipelineStage[], initialHandoff = ''):
 			stageCompletion += r.completionTokens
 			stageElapsed += r.elapsedMs
 		}
-		let res = await spawn(stage.task, { handoff, maxSteps: stage.maxSteps })
+		let res = await spawn(stage.task, { handoff, maxSteps: stage.maxSteps, tools: [] })
 		charge(res)
 		let retries = 0
 		let gateReason: string | null = null
@@ -198,6 +198,7 @@ export async function runPipeline(stages: PipelineStage[], initialHandoff = ''):
 			res = await spawn(`${stage.task}\n\n上一次产出被门检打回，理由：【${gateReason}】。请修正后重新交付。`, {
 				handoff,
 				maxSteps: stage.maxSteps,
+				tools: [],
 			})
 			charge(res)
 		}
