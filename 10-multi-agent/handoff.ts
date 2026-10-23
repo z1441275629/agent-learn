@@ -33,16 +33,23 @@ import type { ToolDef } from '../09-harness/type.ts'
 // A 的移交预算：判断「该转交」最多想几次（agentLoop 的 maxSteps 语义在本节复用为「移交预算」）
 const MAX_HANDOFF_STEPS = 4
 
-// ---------- TODO ① 你来写：交接物任务书 ----------
-// 这是 A 退场前收到的最后一道指令（以 systemExtra 注入 A 的系统提示词，见 runHandoffDemo）。
-// 三件套（对照 §4 归纳任务书的三段式，但方向不同——那是「合并多份」，这是「剥离出最小移交包」）：
-//   1. 何时转交：什么条件下 A 该承认自己不是合适人选（给判断标准，不是「你觉得不合适就转」）
-//   2. 移交材料：调用 hand_off 工具时 args 里要装什么——用户原始诉求原文 + A 已有的结论/中间产物
-//   3. 红线：不传过程（工具调用、试错、思考），只传「B 冷启动需要的最小集合」
-// 提示词修辞参考你的 supervisorPrompt 写法（规则条目化，每条带反例或数字锚）
+// ---------- A 的分诊人设 ----------
+// ZCode 优化版（评审问题：① 模板字符串缩进污染第三次复发——跨行必 join('\n')；
+// ② 指代失配——A 的世界里没有「B」只有 hand_off 工具，措辞对齐 agent 实际所见（§2 老坑换马甲）；
+// ③ reason 字段补指引——那是给 B 的第一句话，不是日志。
+// 保留的原版亮点：能力白名单给了可判的转交标准（皮球风险低）、红线一句到位）
 export function triagePrompt(): string {
-	// TODO ① 你来填——返回 string
-	return ''
+	/* ---------- 你写的（原版——保留对照） ----------
+	return `你是一个分诊员，你能干的活是查询天气，进行数学运算。如果来了你不能干的活，就是你能力以外的任务，你可以转交给B，你能干的不要转交。
+	移交时，你需要提供转交材料，通过调用 hand_off 工具实现转交，参数按工具要求的参数来。
+	红线：不传你思考的过程、工具调用的结果等，只按 hand_off 工具要求的参数格式来传`
+	---------- 优化版 ---------- */
+	return [
+		'角色：你是分诊员，只处理两类任务——查天气、数学运算。能做的自己做，做完直接回答用户。',
+		'转交条件：用户诉求超出这两类（如代码审查、深度分析、写作），调用 hand_off 工具转交——这是你唯一的转交动作，能做的不要转。',
+		'移交材料：调用 hand_off 时三个字段都要填——reason 写清「为什么这事超出你的能力」（这是接手者的第一句话，不是给人看的日志）；originalRequest 抄用户原话一字不改；conclusion 写你已有的判断，还没开始就写「尚未开始」。',
+		'红线：不传你的思考过程、工具调用记录、试错经过——接手者只需要冷启动的最小集合。',
+	].join('\n')
 }
 
 // hand_off 工具定义：A 的唯一「逃生舱」——调用它 = 生成移交材料 + 交出控制权
@@ -68,14 +75,27 @@ export const handOffTool: ToolDef = {
 	impl: async () => JSON.stringify({ status: '已交接——请向用户简要说明你已移交，之后不再发言' }),
 }
 
-// ---------- TODO ② 你来写：B 的冷启动任务书 ----------
-// B 的 user 位任务书 = 移交包的展开渲染。想想 §1 renderBrief 的「上下文边界」四字在此怎么落：
-//   装什么：reason（为什么是你）+ originalRequest（原始诉求）+ conclusion（A 留下的）
-//   不装什么：A 的过程、A 的工具定义使用记录、A 对用户的第一印象性描述
-//   契约：B 接手第一句该干什么（向用户自报家门 + 复述诉求确认理解）——交接的礼貌也是契约
+// ---------- B 的冷启动任务书 ----------
+// ZCode 优化版（评审问题：缩进污染同 ①；「遇到问题」措辞失真——A 可能尚未开始就转；
+// 「A原来的任务是」改「用户诉求」——B 看到的主体是用户的活，不是 A 的活。契约句原样保留——写得好）
 export function renderHandoffBrief(pkg: HandoffPackage): string {
-	// TODO ② 你来填——返回 string（B 世界的全部输入）
-	return ''
+	/* ---------- 你写的（原版——保留对照） ----------
+	return `agent A处理任务时，遇到问题请求你继续处理。
+	A原来的任务是 ${pkg.originalRequest}。
+	A转交的原因是 ${pkg.reason}。
+	A转交前得出的结论是 ${pkg.conclusion}。
+	请你继续解决用户的问题。
+	契约：你接手任务后，请礼貌的向用户自报家门，说一下你对问题的理解，让用户知道你在往对的方向走。
+	`
+	---------- 优化版 ---------- */
+	return [
+		`接手背景：分诊员无法处理这个诉求，已通过 hand_off 转给你。`,
+		`用户诉求原文：【${pkg.originalRequest}】`,
+		`转交原因：【${pkg.reason}】`,
+		`分诊员已有的结论：【${pkg.conclusion}】`,
+		'任务：接手这个诉求并给出解决。',
+		'契约：接手第一句先向用户自报家门（你是谁、擅长什么），再复述你对诉求的理解让用户确认方向，然后开始解决。',
+	].join('\n')
 }
 
 // ---------- demo 剧本 ----------
@@ -85,6 +105,10 @@ export function renderHandoffBrief(pkg: HandoffPackage): string {
 //   「武汉今天适合骑车吗」→ A 自己答（不转）
 //   「帮我审查这段代码有没有并发问题」→ A 转 B（移交流）
 const DEMO_A_PROMPT_EXTRA = triagePrompt
+
+// B 的专家人设——handoff 的 B 之所以值得接权，靠的是被专门塑造的身份；按 09 的分层，
+// 「你是谁」走 system 位（systemExtra），「发生了什么」走 user 位（移交包渲染的任务书）——两个位置别混
+export const EXPERT_B_PROMPT = '你是资深代码审查专家，精通并发安全、类型系统与常见缺陷模式。审查时：先说结论，再逐条列问题（按严重度排序），每条带修改建议。不确定的地方明说不确定，不编造。'
 
 // handoff 的实测骨架：A 跑一个带 hand_off 工具的 agentLoop，若 A 调用了 hand_off →
 // 抓住 args 组装移交包 → 起 B（createAgent 干净窗口 + renderHandoffBrief 任务书）→
@@ -112,8 +136,8 @@ export async function runHandoffDemo(userRequest: string): Promise<HandoffDemoRe
 	let aCompletion = 0
 	const raw = await agentLoop(ctx, {
 		maxSteps: MAX_HANDOFF_STEPS,
-		onToolCall: (name, args) => {
-			if (name === 'hand_off') pkg = args as HandoffPackage
+		onToolCall: ({ name, arguments: args }) => {
+			if (name === 'hand_off') pkg = JSON.parse(args) as HandoffPackage
 		},
 		onUsage: (u) => {
 			aPrompt += u.promptTokens
@@ -126,8 +150,8 @@ export async function runHandoffDemo(userRequest: string): Promise<HandoffDemoRe
 		// 未转：A 自己答完——合法路径，B 不出场
 		return { transferred: false, aResult: ledger[0], bResult: null, ledger }
 	}
-	// 转了：B 冷启动接管——干净窗口（createAgent），任务书 = 移交包渲染
-	const b = await spawn(renderHandoffBrief(pkg))
+	// 转了：B 冷启动接管——干净窗口（createAgent），任务书 = 移交包渲染（user 位），人设 = 专家 systemExtra（system 位）
+	const b = await spawn(renderHandoffBrief(pkg), { systemExtra: EXPERT_B_PROMPT })
 	ledger.push(b)
 	return { transferred: true, package: pkg, aResult: null, bResult: b, ledger }
 }
@@ -135,6 +159,7 @@ export async function runHandoffDemo(userRequest: string): Promise<HandoffDemoRe
 // 冒烟口（花 GLM 配额；TODO ①② 没填前 A 没有转交指令=永远不转，跑的是「未转」路径——零浪费验骨架）：
 //   node 10-multi-agent/handoff.ts "武汉今天适合骑车吗？给个建议"        # 期望：不转，A 直接答
 //   node 10-multi-agent/handoff.ts "帮我审查这段 TypeScript 代码有没有并发安全问题"   # 期望：转，移交包三字段齐
+//   node 10-multi-agent/handoff.ts "9.9 和 9.11 哪个大？请说明理由"
 //   皮球探针：TODO ① 写好后故意把转交条件写宽（什么都转）→ 看是否所有诉求都被转走（分诊失职）
 //   红线探针：在 B 的产出里检查是否出现 A 过程的细节（如工具调用叙述）——出现=移交包超载，回头查 TODO ②
 const isMain = process.argv[1] !== undefined && import.meta.url === new URL(`file:///${process.argv[1].replace(/\\/g, '/')}`).href
