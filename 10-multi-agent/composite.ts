@@ -48,7 +48,8 @@ import { criticPrompt, parseCriticVerdict, type CriticVerdict } from './critic.t
 const MAX_REVISIONS = 2
 
 // ---------- 原始素材：本模块六节的真实战果（git log 浓缩，自带数字密度） ----------
-const SOURCE_MATERIAL = [
+// §9 起导出——基线探针 import 同一份（单一事实源：数据也只有一份，改素材两处不会漂移）
+export const SOURCE_MATERIAL = [
 	'§1 spawn 原语：子 agent 只回传结论（≤500 字契约+截断双保险），双 token 栏入账。',
 	'§2 supervisor：失控探针打满 5 单、熔断拦下第 6 单；隔离实测——主管 prompt 13,749，五个子 agent 合计 92,917。',
 	'§3 pipeline：门检三出路（打回/带标注放行/失败短路）；实测抓出打回只记最后一发的账本 bug。',
