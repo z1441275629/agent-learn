@@ -249,9 +249,24 @@ user 位　：renderBrief 拼的三段——【任务书】（各自不同）+�
 
 ## 10. 框架对照 + 一句话总结
 
-- LangGraph.js 的 supervisor 实现；CrewAI / AutoGen 概念（Python 阅读级）
-- 「我手写的 X = 框架里的 Y」对照表补多 agent 行
-- 一句话总结（必填，用你自己的话）
+### 「我手写的 X = 框架里的 Y」——多 agent 行（ZCode 初拟，你当审校）
+
+| 我手写的 X | 框架里的 Y | 备注 |
+|---|---|---|
+| spawn（干净窗口+任务书+只回结论） | LangGraph **子图 subgraph** / OpenAI Agents SDK 的 `agent.as_tool()` | 框架没有「隔离窗口」原语——隔离靠图 state 的作用域；结论回流 = return 值 |
+| supervisor（主管分派+熔断） | **langgraph-supervisor**（create_supervisor + handoff 工具）/ CrewAI hierarchical Process（manager_agent） | 框架把主管做成预置角色；**熔断预算框架不管，要自己加** |
+| pipeline（门检三出路：打回/带标注放行/失败短路） | StateGraph 节点 + **add_conditional_edges** | 门检三出路=条件边的分支设计；「带标注放行」框架里反而没有现成对应，要自己塞 state |
+| fan-out/fan-in | **Send API**（动态扇出）+ reducer（state 累积=扇入） | map-reduce 官方原语；**弃子补账（迟到样本）框架不管**——race 语义自己写 |
+| handoff（控制权转移+三字段移交包） | OpenAI Agents SDK **handoff()** / LangGraph `Command(goto=)` | 移交包三字段 ≈ 框架 handoff 的 input schema——「接手者的第一句话」框架里叫 handoff 输入 |
+| generator-critic（打回循环+熔断） | 条件边循环（revise→critic→route）+ **recursion_limit** | MAX_REVISIONS=2 ≈ 图的循环上限；「批评被消费不是被记录」同样要自己设计路由 |
+| digestCheck 形状门检 | 节点内 zod/**structured output** | 框架叫「结构化输出」；判据混层两头不占的坑框架里同样存在 |
+
+### TODO（这节反过来：框架当对照组，你当审校）
+
+- **① 读 LangGraph.js 文档校正表**：supervisor 例子 + Send/map-reduce 两章（langchain-ai.github.io/langgraphjs，阅读级不写码）——至少确认/修改三行；找**一处框架白送而我们手写了**（提示：checkpointer 的中断恢复）和**一处我们手写了框架没有**（提示：门检三出路里的「带标注放行」）——两个方向的差才是对照的意义
+- **② 一句话总结（必填，自己的话）**：写在下面——写完模块 10 毕业
+
+（一句话总结：＿＿＿＿）
 
 ## 附：本模块踩的坑
 
