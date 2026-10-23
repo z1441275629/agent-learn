@@ -27,7 +27,7 @@ import { spawn, type SpawnResult } from './spawn.ts'
 // 你的依据可以不同，但要能说出来（金笔记第二条）
 const FANOUT_TIMEOUT_MS = Number(process.env.FANOUT_TIMEOUT_MS) || 120_000
 
-// TODO ② 你来写：09 withTimeout 的任务层重写。签约：入参任务书 + 记账回调 + 可选 handoff；出参 Promise<SpawnResult>
+// spawnWithDeadline——09 withTimeout 的任务层重写。签约：入参任务书 + 记账回调 + 可选 handoff；出参 Promise<SpawnResult>
 // 三件套对着 09 写（别复制——层变了细节跟着变）：
 //   1. race：真 spawn vs 超时合成样本（合成 SpawnResult：ok:false、error: '超时弃子：…'、tokens 0——真账由迟到补记）
 //   2. .finally 清计时器
@@ -39,25 +39,80 @@ export function spawnWithDeadline(
 	charge: (r: SpawnResult) => void,
 	opts?: { handoff?: string },
 ): Promise<SpawnResult> {
-	// TODO ② 你来填（占位返回——填完前 fan-out 零消耗；但 fan-in 是真 spawn 照跑，isMain 仍要花一发的钱）
-	void task
-	void charge
-	void opts
-	return Promise.resolve({
-		ok: false,
-		conclusion: '（占位——spawnWithDeadline 未实现）',
-		promptTokens: 0,
-		completionTokens: 0,
-		elapsedMs: 0,
-		error: 'spawnWithDeadline 未实现',
+	/* ---------- 你写的（原版——保留对照） ----------
+	评审问题（按严重度）：
+	① 超时走 reject——方向反了：Promise.all 一发 reject 整团崩（一个慢样本杀死全部样本，弃子变团灭），
+	   且 reject 的是裸字符串（无栈）。设计差异注释里写的正是这条：弃子是正常控制流，resolve 合成样本继续走
+	② catch(err => console.log(...)) 把异常吞成 undefined——catch 的返回值会顶替结果进 race，
+	   下游 r.ok 直接 TypeError；兜错要兜成「失败样本」，不能兜成「没有样本」（err.error 幽灵属性同族）
+	③ 三件套只装了一件半：race ✓ 清计时器 ✓、迟到补账 ✗——charge 收了从未调用，
+	   样本 token 全不进真账（「落地 1/4」常态化）。没接的参数 = 没写的功能（§2 计数器没自增的近亲）
+	④ 小项：占位注释残留；错误日志整份任务书刷屏（slice 头 20 字够用）
+	let res: SpawnResult
+	let timer: NodeJS.Timeout
+	res = await Promise.race([
+		spawn(task, { handoff: opts?.handoff }).catch(err => console.log(`任务${task}运行失败，原因：${err?.message}`)),
+		new Promise<never>((resolve, reject) => timer = setTimeout(() => reject(`spawn超过${FANOUT_TIMEOUT_MS}ms未完成任务`), FANOUT_TIMEOUT_MS))
+	]).finally (() => {
+		clearTimeout(timer)
+	})
+	return res;
+	---------- ZCode 优化版 ---------- */
+	let timer: ReturnType<typeof setTimeout>
+	// 超时合成样本：弃子不是异常，是「带着缺席信息继续走」的正常样本——
+	// reject 的话 Promise.all 一发崩整团（弃子变团灭），这是和 09 withTimeout 的关键差异
+	const deadline = new Promise<SpawnResult>((resolve) => {
+		timer = setTimeout(() => {
+			resolve({
+				ok: false,
+				conclusion: '（超时弃子：内容缺席）',
+				promptTokens: 0,
+				completionTokens: 0,
+				elapsedMs: FANOUT_TIMEOUT_MS,
+				error: `超时弃子：超过 ${FANOUT_TIMEOUT_MS}ms 未返回`,
+			})
+		}, FANOUT_TIMEOUT_MS)
+	})
+	// 迟到判别：race 先落定 → 之后才落地的真发就是迟到者（赢家的 .then 必先于 race 落定执行）
+	let raceSettled = false
+	// 真发：落地即记账（赢没赢 race 都记）；异常兜成失败样本——兜成 undefined 等于往 samples 里塞类型谎言
+	const real = spawn(task, { handoff: opts?.handoff }).then(
+		(r) => {
+			if (raceSettled) {
+				console.log(`[迟到样本] 任务【${task.slice(0, 20)}…】弃子后 ${((r.elapsedMs - FANOUT_TIMEOUT_MS) / 1000).toFixed(1)}s 落地，补记账（钱已烧，不能再看不见）`)
+			}
+			charge(r)
+			return r
+		},
+		(err: any) => {
+			const failed: SpawnResult = {
+				ok: false,
+				conclusion: '（spawn 异常——理论不可达，spawn 自带 catch 兜过）',
+				promptTokens: 0,
+				completionTokens: 0,
+				elapsedMs: 0,
+				error: `spawn 异常：${err?.message ?? String(err)}`,
+			}
+			charge(failed)
+			return failed
+		},
+	)
+	return Promise.race([real, deadline]).finally(() => {
+		raceSettled = true
+		clearTimeout(timer)
 	})
 }
 
-// TODO ① 你来写：fan-in 归纳任务书（demo 默认值）
-// 场景：同题三样本（DEFAULT_QUESTION），交接物是三份编号结论（带 有效/无效 标注）
-// 要点：归纳 ≠ 拼接——去重（三份说的是同一件事）/ 选优（哪份表述最清楚）/ 分分歧标注（样本间矛盾要指出，不要悄悄选边）
-// 契约钉形状：输出几段、多长、要不要说明取舍依据——§3 的「契约精度 ↔ 门检便宜度」在最后一段同样成立
-export const DEFAULT_FANIN_TASK = '【TODO ① 你来写：收到什么 / 怎么合（去重选优分歧标注）/ 交付什么形状】'
+// fan-in 归纳任务书（demo 默认值）——ZCode 打样（你说了不会写；结构与 supervisorPrompt 四件套同宗，对照着看）
+// 三段式：收到什么 / 怎么合 / 交付什么形状——「怎么合」是归纳任务书的灵魂（fan-in ≠ 拼接）
+export const DEFAULT_FANIN_TASK = [
+	'任务：上游交接物是同一问题派给 3 个独立子 agent 的回答样本（带编号和 有效/无效 标注）。请把它们归纳成一份最终回答。',
+	'归纳规则：① 去重——三份说法重合的部分只保留一次，合并为最完整的表述；' +
+		'② 选优——同一观点有多版表述时，选对编程新手最友好的一版；' +
+		'③ 分歧标注——样本之间有实质矛盾时必须明确指出「样本 X 说 A，样本 Y 说 B」，不要悄悄选边或和稀泥；' +
+		'④ 缺席处理——标注「无效」的样本不是内容：不要从无效样本的占位文字里提取任何观点，只用有效样本作答，并在回答开头说明有几个样本无效。',
+	'输出契约：先用一个自然段回答问题本身（150 字以内）；如有分歧或无效样本，另起一行以「备注：」开头说明（50 字以内）。不要列表格式。',
+].join('\n')
 
 // demo 进料：开放解释题——同题多样本才有「归纳」可做（封闭题三份答案一字不差，fan-in 白花钱）
 const DEFAULT_QUESTION = '用三句话给编程新手解释：什么是 token（模型计费与上下文的计量单位）'
