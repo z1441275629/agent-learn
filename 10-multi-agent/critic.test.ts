@@ -43,6 +43,22 @@ test('回归锁：中文「检查不通过」首行不放行——子串陷阱�
 	assert.equal(v.passed, false)
 })
 
+test('同义锚收编（§7 错杀后加）：中文「通过」整串单行 → 放行——实质批准不再被安全网错杀', () => {
+	assert.deepEqual(parseCriticVerdict('通过'), { passed: true, issues: [] })
+})
+
+test('「不通过」整串首行 → 打回收条目（与「通过」的区分靠整串比较，不靠子串）', () => {
+	const v = parseCriticVerdict('不通过\n1 | 事实性 | 编造 | 删除')
+	assert.equal(v.passed, false)
+	assert.equal(v.issues.length, 1)
+})
+
+test('「大致通过」等含糊措辞不收编——宽容度到同义锚为止，歧义照走违约分支', () => {
+	const v = parseCriticVerdict('大致通过，个别地方可改')
+	assert.equal(v.passed, false)
+	assert.match(v.issues[0]!, /契约/)
+})
+
 test('空输入 → 契约违约 fail-closed，不得零修订指令静默空转（原版坑②）', () => {
 	const v = parseCriticVerdict('   \n  ')
 	assert.equal(v.passed, false)

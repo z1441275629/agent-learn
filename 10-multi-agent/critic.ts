@@ -99,6 +99,11 @@ export function parseCriticVerdict(criticConclusion: string): CriticVerdict {
 	// 首行锚定：PASS 精确匹配（防「PASS 但还有下文」的半通过）；FAIL 同理
 	if (first === 'PASS' && lines.length === 1) return { passed: true, issues: [] }
 	if (first === 'FAIL') return { passed: false, issues: lines.slice(1) }
+	// 同义锚收编（§7 实测错杀后加）：critic 实质批准但写中文「通过」——fail-closed 把批准拒收成熔断。
+	// 精确匹配收编是安全的：「不通过」≠「通过」（整串比较，子串陷阱不存在）；宽容度对称于模型实际分布，
+	// 歧义仍然不收（「检查不通过」「大致通过」这类不整串等于锚的，照走违约分支）
+	if (first === '通过' && lines.length === 1) return { passed: true, issues: [] }
+	if (first === '不通过') return { passed: false, issues: lines.slice(1) }
 	// 解析失败（空输入 / 首行既非 PASS 也非 FAIL / PASS 后拖了别的话）：fail-closed——
 	// 不放行（坏稿代价 > 一轮重跑），把违约本身合成诊断 issue 喂下去，别让 generator 盲改
 	return {
