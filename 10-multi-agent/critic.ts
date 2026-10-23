@@ -1,0 +1,138 @@
+/*
+模块 10 §6：generator-critic（生成-评审）——模式五：带否决权的 pipeline（骨架——两个学习核心你来填）
+
+模式一句话：生成者出稿、评审者打回、循环直到通过或熔断。§3 门检和它血脉相连但分工明确：
+  门检（check 函数）：判【形状】——机器可判、零成本、判不了「好不好」
+  critic（spawn 一个 agent）：判【质量】——模型判断、真金白银、能说「这段不行因为…」
+§3 骨架里埋的那句话在此兑现：「判据里混进质量判断，gate 就成了廉价的 critic，两头不占」——
+本节把「不占」补上：真 critic 拿真预算干活。
+
+结构上它是 pipeline 打回循环的升级：打回理由不再来自 check 函数，来自另一个 agent 的评审意见；
+被拒稿不再是「带标注放行」的降级路径，而是【修订指令】喂回生成者重写——批评被消费，不是被记录。
+
+本节两个学习核心（TODO）：
+  ① critic 的评审标准怎么写才不是玄学——checklist 化：把「写得好」拆成可逐条判定的项，
+     每项带通过/不通过的判例（对照 §3「契约精度 ↔ 门检便宜度」：critic 的意见要能转化成修订动作）
+  ② 熔断与退出设计——打回循环的预算给几次？通过的标准是什么（全项通过？N-1 项通过可容忍？）？
+     熔断时交付什么（最后一稿+未解决项清单——诚实降级，不装通过）？
+
+金笔记：
+  - critic 和 generator 必须是两个隔离窗口——同一窗口自评是「自己批自己的作业」，
+    立场污染不可避免（§0 隔离收益在质量维度的应用）
+  - 打回的成本是双份的：critic 一发 + generator 重写一发——熔断次数直接乘在账单上（×N 的 N² 棋局）
+  - 评审意见的结构化程度决定重写质量：「不够好」→ 重写靠猜；「第 2 条与事实不符，缺数据支撑」→ 修订是执行
+  - 与 §4 fan-out 的亲缘：都靠多样性，方向相反——fan-out 用多样本求覆盖，critic 用独立评审求把关
+*/
+import { spawn, type SpawnResult } from './spawn.ts'
+
+// 熔断预算：为什么是 2——打回一轮的成本 = critic 一发 + 重写一发（思考模式一发 10~100s + 千级 token），
+// 两轮改不好大概率不是轮数问题是指令问题；你改这个数之前先算一轮的真实成本
+const MAX_REVISIONS = 2
+
+// ---------- TODO ① 你来写：critic 的评审任务书 ----------
+// 场景（demo）：审一篇「技术周报」短稿（进料 DEFAULT_DRAFT_BRIEF 定主题，generator 产出初稿）
+// 三段式骨架同 §4 归纳任务书，但灵魂在「评审标准」段：
+//   - checklist 化：3~5 条可逐项判定的标准（如：事实性——无编造数据；针对性——每句服务主题；实用性——读者能带走动作）
+//   - 输出契约必须是结构化的（这是打回循环能机器解析的关键）：
+//     通过 → 一行 PASS；不通过 → 逐条列【不通过项 + 原因 + 修订指令】——修订指令要能直接执行
+//   - 反面警告：不要写「内容质量高、表达流畅」这类判不了的词（玄学的定义就是判不了）
+export function criticPrompt(): string {
+	// TODO ① 你来填——返回 string（critic 的评审标准）
+	return ''
+}
+
+// ---------- TODO ② 你来写：退出判定 ----------
+// 输入：critic 的结论。输出：{ passed: boolean; issues: string[] }——passed=true 立即收工，
+// false 时 issues 数组喂给 generator 做修订指令（每条就是一份可执行的修订动作）
+// 判定逻辑很便宜（critic 已经按契约输出了），你的活是设计「什么算通过」：
+//   PASS 一行 → passed=true；结构化意见 → passed=false + 解析出条目
+//   想清楚：解析失败（critic 没按契约说话）算通过还是不通过？——对照 §1「假结论」的教训想
+export interface CriticVerdict {
+	passed: boolean
+	issues: string[]
+}
+export function parseCriticVerdict(criticConclusion: string): CriticVerdict {
+	// TODO ② 你来填
+	return { passed: false, issues: [] }
+}
+
+// demo 进料：generator 的初稿任务书（骨架已给——你的 TODO ①② 落在 critic 侧）
+const DRAFT_TASK = [
+	'任务：基于上游交接物中的素材，写一段给团队新人看的技术周报摘要。',
+	'输出契约：一个自然段，120 字以内；包含一条本周进展 + 一条下周关注；不要列表格式。',
+].join('\n')
+const DRAFT_MATERIAL = '本周素材：完成了会话持久化的原子写入改造（临时文件+重命名，防半截文件）；发现网络沙箱的「禁网」是路径正则的副产品且不一致（npm 可达而 curl 被拦）；下周计划补专用 fetch_url 工具与域名白名单。'
+
+// 生成-评审循环：generator 出稿 → critic 按 checklist 评审 → 不过 → 修订指令喂回重写 → 熔断交付最后一稿+未解决项
+export interface CriticLoopResult {
+	rounds: number // 实际评审轮数（1 = 初稿即过）
+	passed: boolean // 是否通过（false = 熔断，诚实降级交付）
+	finalDraft: string // 最后一稿
+	issues: string[] // 未解决项（passed=true 时为空）
+	history: { draft: string; critic: SpawnResult; verdict: CriticVerdict }[] // 每轮的稿/评审/判定——流转图素材
+	promptTokens: number
+	completionTokens: number
+}
+
+export async function runGeneratorCritic(): Promise<CriticLoopResult> {
+	const history: CriticLoopResult['history'] = []
+	let handoff = DRAFT_MATERIAL
+	let draft = ''
+	// 首稿：素材 → generator
+	let first = await spawn(DRAFT_TASK, { handoff })
+	history.push({ draft: first.conclusion, critic: first, verdict: { passed: false, issues: [] } }) // 占位——首轮循环里会被真评审覆盖
+	let promptTokens = first.promptTokens
+	let completionTokens = first.completionTokens
+	let rounds = 0
+	let passed = false
+	let issues: string[] = []
+	while (rounds <= MAX_REVISIONS) {
+		rounds++
+		draft = history[history.length - 1].draft
+		// critic：独立窗口评审当前稿——评审任务书 + 待审稿作为交接物（隔离：critic 看不到 generator 的素材与纠结）
+		const critic = await spawn(criticPrompt(), { handoff: draft })
+		promptTokens += critic.promptTokens
+		completionTokens += critic.completionTokens
+		const verdict = parseCriticVerdict(critic.conclusion)
+		history[history.length - 1] = { draft, critic, verdict }
+		if (verdict.passed) {
+			passed = true
+			issues = []
+			break
+		}
+		issues = verdict.issues
+		if (rounds > MAX_REVISIONS) break // 熔断：评审预算耗尽，带着未解决项降级交付
+		// 重写：修订指令 + 原稿 + 原素材，喂回 generator（批评被消费，不是被记录）
+		const revise = await spawn(
+			[DRAFT_TASK, `上一稿被评审打回，逐条修订：\n${issues.map((s, i) => `${i + 1}. ${s}`).join('\n')}`].join('\n\n'),
+			{ handoff: `原始素材：${DRAFT_MATERIAL}\n上一稿：${draft}` },
+		)
+		promptTokens += revise.promptTokens
+		completionTokens += revise.completionTokens
+		history.push({ draft: revise.conclusion, critic: revise, verdict: { passed: false, issues: [] } })
+	}
+	return { rounds, passed, finalDraft: draft, issues, history, promptTokens, completionTokens }
+}
+
+export function printCriticResult(r: CriticLoopResult) {
+	console.log('\n===== generator-critic 账单 =====')
+	for (const [i, h] of r.history.entries()) {
+		console.log(`  第${i + 1}稿 → critic [${h.verdict.passed ? '通过' : `打回（${h.verdict.issues.length} 项）`}]: ${h.critic.conclusion.slice(0, 50)}`)
+	}
+	console.log(`结果：${r.passed ? `通过（${r.rounds} 轮评审）` : `熔断（${r.rounds} 轮评审后仍有 ${r.issues.length} 项未解决——诚实降级交付）`}`)
+	console.log(`真账：prompt ${r.promptTokens} / completion ${r.completionTokens}`)
+	console.log(`\n=== 最终稿 ===\n${r.finalDraft}`)
+	if (!r.passed && r.issues.length) console.log(`\n未解决项：\n${r.issues.map((s, i) => `${i + 1}. ${s}`).join('\n')}`)
+}
+
+// 冒烟口（花 GLM 配额；TODO ①② 未填时 criticPrompt 空 + parseCriticVerdict 恒不通过 → 必熔断路径，先验骨架别真跑）：
+//   node 10-multi-agent/critic.ts
+//   期望：1~2 轮内通过（初稿短任务 critic 通常一轮过）；账单看「每轮双发」的成本结构
+//   严判探针：criticPrompt 的标准临时加严（如「必须包含具体数字至少 2 处」——素材里有 120/2 等可数）→ 看打回-修订-复审全循环
+//   熔断探针：标准写成矛盾（「字数必须 ≤100 且 ≥150」）→ 看熔断交付：最后一稿 + 未解决项清单，不装通过
+const isMain = process.argv[1] !== undefined && import.meta.url === new URL(`file:///${process.argv[1].replace(/\\/g, '/')}`).href
+if (isMain) {
+	console.log(`\n【generator-critic demo】周报摘要的生成-评审循环\n`)
+	const result = await runGeneratorCritic()
+	printCriticResult(result)
+}
