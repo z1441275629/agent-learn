@@ -21,7 +21,7 @@
      error 字段留给调用方续判。三个入口全兜住，主管才敢放心派活
 */
 // import 'dotenv/config'
-import { createAgent, agentLoop, parseModelJson } from '../09-harness/agent.ts'
+import { createAgent, agentLoop, parseModelJson, type ModelThinkingLevel } from '../09-harness/agent.ts'
 import { truncateToolResult } from '../09-harness/context.ts'
 
 export interface SpawnResult {
@@ -47,7 +47,7 @@ export function renderBrief(task: string, handoff?: string): string {
 
 // spawn：起一个子 agent 干活，拿回结论 + 账单。
 // 子 agent 的权限/沙箱/hook 由 09 dispatch 咽喉自动覆盖——这里不重复操心中关村的事
-export async function spawn(task: string, opts?: { handoff?: string; systemExtra?: string; maxSteps?: number; budgetTokens?: number; tools?: string[]; thinking?: boolean; skipSessionEndHooks?: boolean }): Promise<SpawnResult> {
+export async function spawn(task: string, opts?: { handoff?: string; systemExtra?: string; maxSteps?: number; budgetTokens?: number; tools?: string[]; thinking?: ModelThinkingLevel; skipSessionEndHooks?: boolean }): Promise<SpawnResult> {
 	const t0 = Date.now()
 	let promptTokens = 0
 	let completionTokens = 0
