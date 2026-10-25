@@ -14,7 +14,6 @@
 //   循环里的约定：每步先 ctx.ensureBudget()，再 ctx.getSendView() 发给 API；
 //   新消息一律 ctx.add()（双写）——不直接 push 任何数组。
 import 'dotenv/config'
-import OpenAI from 'openai'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -29,18 +28,11 @@ import type { PreHookResult } from './hooks.ts'
 import { registry, buildToolsParam } from './tools.ts'
 import type { ToolCallParams } from './type.ts'
 
-// GLM Coding Plan 套餐专用端点（按量付费改 https://open.bigmodel.cn/api/paas/v4）
-const BASE_URL = 'https://open.bigmodel.cn/api/coding/paas/v4'
-export const MODEL = 'glm-5.3'
-export const BUDGET_TOKENS = 6000
-
-const apiKey = process.env.GLM_API_KEY
-if (!apiKey) {
-	console.error('没找到 GLM_API_KEY。请在 ai-agent-lab/.env 里配置')
-	process.exit(1)
-}
-const client = new OpenAI({ apiKey, baseURL: BASE_URL })
-export { client } // planner.ts 的调度层（generatePlan/replan）也用这一个实例，别另开
+// 平台配置全部走 llm.ts（从 .env 读 LLM_BASE_URL/LLM_MODEL/LLM_API_KEY/LLM_BUDGET_TOKENS）——
+// 换平台只改 .env 不改代码。client/MODEL/BUDGET_TOKENS 的唯一事实源在 llm.ts，这里 re-export，
+// 下游（planner.ts、10-multi-agent）照旧 `import { client, MODEL } from './agent.ts'` 不用改。
+import { client, MODEL, BUDGET_TOKENS } from './llm.ts'
+export { client, MODEL, BUDGET_TOKENS }
 
 // ---------- 工具注册 ----------
 // 内置工具在 ./tools.ts 里定义并注册（import 时完成）；记忆工具来自 ./memory.ts，
@@ -147,6 +139,9 @@ const SYSTEM_PROMPT = `你是一个严谨的生活助理。用户问相关问题
 // 每步：ensureBudget（可能触发一次压缩调用）→ 打表 → 用 view 发请求 → 新消息 ctx.add 双写
 export type ToolCallObserver = (info: { name: string; arguments: string; result: string }) => void
 
+// deepseek 模型思考级别
+export type ModelThinkingLevel = 'low' | 'high' | 'max'
+
 // 配置项打包（§5 重构）：可选位置参数堆到两个 + 调用点出现 undefined 洞（(ctx, 8, undefined, sid)）
 // 就是换形状的信号——主题参数（ctx，必选）保持位置参数，配置进对象：调用点自解释，
 // 以后加配置项不再动既有调用点。onToolCall 没并入 §3 post-hook：覆盖面不同——
@@ -156,7 +151,7 @@ export interface AgentLoopOptions {
 	onToolCall?: ToolCallObserver // 回归测试观察者：捕获工具调用序列（含被拒的，result 是错误 JSON）
 	onUsage?: (u: { promptTokens: number; completionTokens: number }) => void // 模块 10 spawn 的账本探针：每次请求上报 token 用量——多 agent 成本核算（×N 记账）的数据入口
 	tools?: string[] // 工具面白名单：undefined=全量（默认，既有调用零改动）；[]=纯文本 agent；数组=只挂列名的（§5 教训的工具化：工具面=能力面）
-	thinking?: boolean // 思考开关：false → 请求体带 thinking:{type:'disabled'}（GLM 端点参数）；undefined/true → 不带（端点默认=开）。浅任务（判形状/转写/对单评审）关掉——completion 大头是思考 token，墙钟≈completion÷输出速度
+	thinking?: ModelThinkingLevel // 思考开关：false → 请求体带 thinking:{type:'disabled'}（GLM 端点参数）；undefined/true → 不带（端点默认=开）。浅任务（判形状/转写/对单评审）关掉——completion 大头是思考 token，墙钟≈completion÷输出速度
 	skipSessionEndHooks?: boolean // 短命子 agent 的选择权：结论已回传，过程记忆大概率无价值；钩子虽 fire-and-forget 不挡循环，但会拖住进程退出（Node 等事件循环清空）
 	sessionId?: string // §5 存档 id——传了才落盘，每步一存档
 }
@@ -185,7 +180,8 @@ export async function agentLoop(ctx: ContextManager, { maxSteps = 8, onToolCall,
 			// 空工具面省略 tools 字段——空数组在部分 API 是「禁用工具」在部分是错误，省略是唯一安全形态
 			...(tools.length ? { tools } : {}),
 			// 思考开关（GLM 端点参数）：不带=端点默认（开）；disabled=关——浅任务的 completion/墙钟直降
-			...(thinking === false ? { thinking: { type: 'disabled' } } : {}),
+			// ...(thinking === false ? { thinking: { type: 'disabled' } } : {}),
+			...{ thinking },
 		})
 		console.log('真实token用量：', response.usage?.prompt_tokens)
 		onUsage?.({ promptTokens: response.usage?.prompt_tokens ?? 0, completionTokens: response.usage?.completion_tokens ?? 0 })
@@ -374,22 +370,22 @@ if (isMain) {
 		}
 		console.log((await renameSession(id, title)) ? `已改名：${title}` : `会话 ${id} 不存在或读不了，改名失败`)
 	} else {
-	let sessions: Record<string, string | string[]> = {}
-	try {
-		sessions = JSON.parse(await fs.readFile(path.resolve(import.meta.dirname, '.sessions.json'), 'utf8'))
-	} catch {
-		console.error('没找到/读不了 09-harness/.sessions.json（个人测试语料，不入库）——缺了就照旧格式新建一份')
-		process.exit(1)
-	}
-	const entry = sessions[SESSION]
-	// 字符串 → 单会话；数组 → 跑批；都没命中 → argv 原文当自由文本（node 09-harness/agent.js "今天天气如何"）
-	const questions = typeof entry === 'string' ? [entry] : Array.isArray(entry) ? entry : [SESSION]
-	for (const q of questions) {
-		const ctx = await createAgent(q)
-		const sid = newSessionId()
-		const answer = await agentLoop(ctx, { sessionId: sid })
-		console.log(`\n=== ${q.slice(0, 24)} ===\n` + answer + `\n[会话已存档 ${sid}——续跑：npm run m9 -- resume ${sid} "下一步指令"]`)
-	}
+		let sessions: Record<string, string | string[]> = {}
+		try {
+			sessions = JSON.parse(await fs.readFile(path.resolve(import.meta.dirname, '.sessions.json'), 'utf8'))
+		} catch {
+			console.error('没找到/读不了 09-harness/.sessions.json（个人测试语料，不入库）——缺了就照旧格式新建一份')
+			process.exit(1)
+		}
+		const entry = sessions[SESSION]
+		// 字符串 → 单会话；数组 → 跑批；都没命中 → argv 原文当自由文本（node 09-harness/agent.js "今天天气如何"）
+		const questions = typeof entry === 'string' ? [entry] : Array.isArray(entry) ? entry : [SESSION]
+		for (const q of questions) {
+			const ctx = await createAgent(q)
+			const sid = newSessionId()
+			const answer = await agentLoop(ctx, { sessionId: sid })
+			console.log(`\n=== ${q.slice(0, 24)} ===\n` + answer + `\n[会话已存档 ${sid}——续跑：npm run m9 -- resume ${sid} "下一步指令"]`)
+		}
 	}
 }
 
@@ -398,5 +394,3 @@ if (isMain) {
 // npm run m9 -- list                          # 显示「测试标题」而不是首条截断 = L3 生效
 // npm run m9 -- resume <id> "随便问点什么"     # 跑完再 list——标题还是「测试标题」
 //                                             # = checkpoint 没把改名冲掉（标题保全生效，最关键一发）
-
-

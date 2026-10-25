@@ -54,10 +54,14 @@ Skill             —— 知识封装层：把"某类任务该怎么做"写成 M
 （一个诚实的提醒：AI 工程岗 JD 里 Python 出现率确实更高，但这套计划练的是**原理理解**，语言只是载体——原理懂了，读 Python 伪代码不成问题，面试时说"我用 Node 实现，原理一致"反而是加分的表达。）
 
 1. 用智谱开放平台的 key：到 https://open.bigmodel.cn/usercenter/apikeys 创建（你已买 GLM）。**买的是 Coding Plan 套餐就用 `.../api/coding/paas/v4` 端点，按量充值就用 `.../api/paas/v4`**——代码里已注释说明，跑冒烟测试 401 就切换一下。
-2. 在 `ai-agent-lab/` 下建一个 `.env` 文件（不要提交到 git）：
+2. 在 `ai-agent-lab/` 下建一个 `.env` 文件（不要提交到 git，复制 `.env.example` 改）：
    ```
-   GLM_API_KEY=你的key
+   LLM_BASE_URL=https://open.bigmodel.cn/api/coding/paas/v4
+   LLM_MODEL=glm-5.3
+   LLM_API_KEY=你的key
+   LLM_BUDGET_TOKENS=6000
    ```
+   > 这是通用 LLM 配置层（09-harness/llm.ts）：换平台（火山 ARK / DeepSeek / Kimi / Qwen 等 OpenAI 兼容接口）只改这几个值，不改代码。
 3. 安装依赖（package.json 已建好，`"type": "module"`）：
    ```bash
    npm install
@@ -67,7 +71,7 @@ Skill             —— 知识封装层：把"某类任务该怎么做"写成 M
    node smoke_test.ts
    ```
    Node 24 支持直接运行 .ts 文件（原生类型剥离，不用配 tsconfig；万一报语法不支持就 `npx tsx smoke_test.ts`）。
-   看到模型回话即完成。**换模型只需改 `BASE_URL` 和 `MODEL` 两个常量**（GLM、DeepSeek、Kimi、Qwen 等 OpenAI 兼容接口都行）——你的 DeepSeek 欠费后切到 GLM 正好验证了这一点，这就是"OpenAI 兼容协议"这个事实标准的意义。
+   看到模型回话即完成。**换模型/换平台只需改 `.env` 里的 `LLM_BASE_URL`/`LLM_MODEL`/`LLM_API_KEY`**（GLM、火山 ARK、DeepSeek、Kimi、Qwen 等 OpenAI 兼容接口都行）——你的 DeepSeek 欠费后切到 GLM 正好验证了这一点，这就是"OpenAI 兼容协议"这个事实标准的意义。
 
 ---
 

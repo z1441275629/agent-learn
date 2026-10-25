@@ -7,19 +7,10 @@
 07 是冻结快照（实验归档），08 是活体，两边各自演化别混写
 */
 
-import OpenAI from 'openai'
 import fs from 'node:fs/promises'
 import path from 'node:path'
+import { embedClient, EMBED_MODEL } from './llm.ts'
 import type { Chunk, MemoryIndexItem, VectorItem } from './type.ts'
-
-// embedding 走按量计费的标准端点（Coding Plan 只包聊天模型）。
-// 报"余额不足/无权限"时两个选择：① bigmodel 充 1~2 元（embedding-3 很便宜）；
-// ② 注册硅基流动（有免费的 BAAI/bge-large-zh-v1.5），改下面两行即可
-const EMBED_BASE_URL = 'https://open.bigmodel.cn/api/paas/v4'
-const EMBED_MODEL = 'embedding-3'
-
-const apiKey = process.env.GLM_API_KEY
-const embedClient = new OpenAI({ apiKey, baseURL: EMBED_BASE_URL })
 
 export async function embed(texts: string[]) {
 	const response = await embedClient.embeddings.create({
