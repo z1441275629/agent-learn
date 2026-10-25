@@ -1,5 +1,5 @@
 /*
-模块 11 §1：evals——评测集与跑分器（骨架——三个学习核心你来填）
+模块 11 §1：evals——评测集与跑分器
 
 「自己考自己」的防线从数据结构开始：Property 的判据锚【任务书契约】，不锚模型输出——
 抄模型某次的输出当黄金标准 = 循环论证，分数再高只说明「和那天一样」，不说明「对了」。
@@ -11,10 +11,8 @@
 评测集自身的账也要记：跑一次 = 每 case 一次产线运行——evals 不是免费的，
 它的价格就是「多久跑一次」的决策依据（报告最后一行）。
 
-本节 TODO：
-  ① numbersTraceable——数字可溯：报告里每个数字必须能在该 case 的素材里找到（编造检测的机械化）
-  ② reportShape——周报形状：一个自然段/150 字以内/无列表（§9 判据缺口的回收：挂评测集不挂 critic）
-  ③ 薄料 case 补全 + 自己再想一个 case（什么输入值得进评测集？想清楚它考什么性质）
+三件交付：numbersTraceable（数字可溯——两侧同正则提取 + 剥千分位 + Set 成员比对）、
+reportShape（§9 判据缺口回收：挂评测集不挂 critic）、乱码 case（四种真实坏档形态——考不可读输入不编造、不直通）。
 */
 import { runCompositeSystem, SOURCE_MATERIAL, type CompositeResult } from '../10-multi-agent/composite.ts'
 
@@ -96,7 +94,30 @@ export function costGuard(maxPrompt = 12000, maxCompletion = 4000): Property {
 	}
 }
 
-// ---------- TODO ① 你来写：数字可溯 ----------
+// ---------- 产出可读（乱码不得直通产出）——ZCode 打样 ----------
+// 判「是不是乱码」不靠认字，靠字符分布的三个机械信号（全零成本）：
+//  ① U+FFFD（�）：解码失败的直接物证，出现即挂
+//  ② 可读字符占比：低于阈值 → 乱码信号——但会被「全 CJK 乱码」骗过（锟斤拷/烫烫烫全是合法常用字）
+//  ③ 高频字命中（关键防线）：真实中文必然出现高频字，乱码串几乎不含——
+//     占比测的是「字符合法性」不是「是不是中文」，判据要测它声称要测的（锚污染同族课）
+export function outputReadable(minRatio = 0.85): Property {
+	const COMMON = '的了是在和有不这我中上为来会说人'
+	return {
+		name: `产出可读（无U+FFFD + 可读占比≥${Math.round(minRatio * 100)}% + 高频字命中）`,
+		check: (r) => {
+			const s = r.finalReport
+			if (s.includes('�')) return { status: 'fail', note: '含解码替换字符 U+FFFD' }
+			const readable = (s.match(/[一-龥a-zA-Z0-9，。：；、（）【】《》\s.,:;()\-—%\/→§~]/g) ?? []).length
+			const ratio = s.length ? readable / s.length : 1
+			if (ratio < minRatio) return { status: 'fail', note: `可读占比 ${(ratio * 100).toFixed(1)}%` }
+			const hits = [...COMMON].filter((ch) => s.includes(ch)).length
+			if (s.length >= 20 && hits === 0) return { status: 'fail', note: '零高频字——全 CJK 乱码骗过占比判据' }
+			return { status: 'pass', note: `可读占比 ${(ratio * 100).toFixed(1)}%，高频字 ${hits}/${COMMON.length}` }
+		},
+	}
+}
+
+// ---------- 你来写：数字可溯 ----------
 // 判据锚：REPORT_TASK「数字直接用简报里的（源头是素材），不要自造」
 // 输入：该 case 的素材。输出：Property——从 r.finalReport 提取全部数字，
 // 每个都必须能在素材里找到（编造=有数字无出处）。
@@ -105,12 +126,58 @@ export function costGuard(maxPrompt = 12000, maxCompletion = 4000): Property {
 //   - 小数：51.1s、11724→7557 里的箭头——提取正则要吃小数点
 //   - 这条判据是「机械化的编造检测」：§7 审校① 的事实性判据（一发真金白银）在这里变成零成本——
 //     代价是它只判「数字有出处」，判不了「数字用得对不对」——判据边界面清楚
+export function numbersTraceable(source = SOURCE_MATERIAL): Property {
+	return {
+		name: '数字有依据（契约：输出周报中，数字来源于原始素材，不自造）',
+		check: (res) => {
+			if (!res.research.ok) {
+				return { status: 'skip', note: '研究阶段未完成' }
+			}
+			if (!res.passed) {
+				return { status: 'skip', note: '写作阶段未完成' }
+			}
+			const NUM = /\d[\d,]*(?:\.\d+)?/g
+			const known = new Set((source.match(NUM) ?? []).map((n) => n.replace(/,/g, '')))
+			const bad = (res.finalReport.match(NUM) ?? []).map((n) => n.replace(/,/g, '')).filter((n) => !known.has(n))
+			if (bad.length > 0) {
+				return { status: 'fail', note: `最终报告中的以下数字在原材料中未找到：${bad.join(' ')}` }
+			}
+			return { status: 'pass' }
+		},
+	}
+}
 
-// ---------- TODO ② 你来写：周报形状 ----------
+// ---------- 你来写：周报形状 ----------
 // 判据锚：REPORT_TASK「一个自然段，150 字以内；不要列表格式」——
 // §9 的判据缺口（门检不验、critric 三条标准没有字数项，产线和基线双双超字数畅通无阻）在这里回收：
 // 改进挂评测集不挂 criticPrompt——evals 管长期质量（每次改动都重判），critic 管单次运行
 // 判什么：段落数（空行分）≤1；无列表行（以 - / * / 数字. 开头）；字数 ≤150
+export const reportShape: Property = {
+	name: '检测周报的格式是否符合要求（契约：一个自然段，150 字以内；不要列表格式）',
+	check(res) {
+		if (!res.research.ok) {
+			return { status: 'skip', note: '研究阶段未完成' }
+		}
+		if (!res.passed) {
+			return { status: 'skip', note: '写作阶段未完成' }
+		}
+		const p = res.finalReport
+			.split('\n')
+			.map((item) => item.trim())
+			.filter((item) => item)
+		if (p.length > 1) {
+			return { status: 'fail', note: `周报不是输出的一个自然段，输出了 ${p.length} 段，不要列表格式，应该是一个自然段` }
+		}
+		const maxLength = 150
+		if (res.finalReport.length > maxLength) {
+			return { status: 'fail', note: `周报输出了${res.finalReport.length}个字，超了目标${maxLength}` }
+		}
+		if (/^\s?(-\s|\*\s|\d\.)/.test(res.finalReport)) {
+			return { status: 'fail', note: `周报不应该以列表的形式返回，即不能以“ - / * / 数字. ”开头` }
+		}
+		return { status: 'pass' }
+	},
+}
 
 // ---------- 评测集 ----------
 // case 1：全料正常路径（来自 §8 实测运行——出身：真实探针，不是拍脑袋）
@@ -120,29 +187,46 @@ export const CASE_FULL: EvalCase = {
 	topic: '模块10 多Agent六节战果',
 	source: SOURCE_MATERIAL, // import 而非复制——单一事实源（契约漂移的教训第三次用上）
 	expectPass: true,
-	properties: [
-		expectOutcome(true),
-		failureCarriesLocation,
-		meltIsHonest,
-		costGuard(),
-		// TODO ①② 完成后挂进来：numbersTraceable(SOURCE_MATERIAL), reportShape
-	],
+	properties: [expectOutcome(true), failureCarriesLocation, meltIsHonest, costGuard(), numbersTraceable(SOURCE_MATERIAL), reportShape],
 }
 
+const THIN_MATERIAL = [
+	'§1 spawn 原语：子 agent 只回传结论（≤500 字契约+截断双保险），双 token 栏入账。',
+	'§2 supervisor：失控探针打满 5 单、熔断拦下第 6 单；隔离实测——主管 prompt 13,749，五个子 agent 合计 92,917。',
+].join('\n')
 // case 2：薄料（来自 §7 薄料探针——考「无料可核时是否诚实」）
 export const CASE_THIN: EvalCase = {
 	id: 'thin',
 	description: '薄料素材——验诚实：不编造、失败带诊断；通过/熔断都合法（不声明 expectPass）',
 	topic: '模块10 战果（薄料）',
-	source: 'TODO ③：砍到两条（建议留带数字的），直接写字面量',
+	source: THIN_MATERIAL,
 	properties: [
-		// TODO ③：至少挂 numbersTraceable(你的薄素材) + meltIsHonest + failureCarriesLocation
+		// 至少挂 numbersTraceable(你的薄素材) + meltIsHonest + failureCarriesLocation
 		// 想清楚：薄料下哪些性质会被真正触发（skip 和 pass 不是一回事——被触发才算覆盖）
+		numbersTraceable(THIN_MATERIAL),
+		meltIsHonest,
+		failureCarriesLocation,
+		costGuard(),
 	],
 }
 
-// TODO ③ 后半：再想一个 case 进集（候选方向：乱码素材/A 版约束张力、单节素材、素材里混一条与主题无关的）——
-// 进集标准：它考的性质是别的 case 考不到的，且出身说得清（来自哪次真实观察/担心什么退化）
+// case 3：乱码素材（ZCode 打样，用户选的 TODO ③ 方向）——出身：§7 A 版探针的输入侧变体
+// （那次乱码出现在产出前缀——词表样乱码+真简报；这次把乱码挪进素材）。
+// 考什么：不可读输入下的两条错路都要被拦——①编造内容冒充（乱码素材里没有可溯源数字，
+// numbersTraceable 挂）②乱码直通产出（outputReadable 挂）；期望路径 = 诚实失败（门检拦形状/审校①拦编造/熔断带诊断）
+const GARBAGE_MATERIAL = [
+	'§1 烫烫烫烫烫烫烫烫烫烫烫烫烫烫烫烫烫烫烫烫烫烫烫锟斤拷锟斤拷锟斤拷锟斤拷锟斤拷', // MSVC 堆内存 + UTF-8 替换符再编码
+	'§2 鿆鿜鿟䲜䲟䲠𠀀𠀁𠀂𠀃𣁊𣁋𣁌𣺮𣺯𤄕𤄖𤗬𤗭𥗩𥗪', // CJK 扩展区生僻字——占比判据的天敌，高频字防线的主场
+	'§3 H4sIAAAAAAAAA+zMzMzAmytWrGBgYmJiZmYGAIDbXo8uAAAA', // base64——结构完全合法，语义完全为零
+	'§4 spawn 鍘熷鍦嬫槸锟芥枡涓嶅彲璇诲彇鐨勬枃浠躲', // GBK 误解码 UTF-8（原理上是材料不可读取的文件）——真实坏档最常见形态
+].join('\n')
+export const CASE_GARBAGE: EvalCase = {
+	id: 'garbage',
+	description: '乱码素材四种真实形态——考「不可读输入不编造、不直通」：诚实失败是唯一合法出口',
+	topic: '模块10 战果（乱码）',
+	source: GARBAGE_MATERIAL,
+	properties: [outputReadable(), numbersTraceable(GARBAGE_MATERIAL), failureCarriesLocation, meltIsHonest],
+}
 
 // ---------- 跑分器 ----------
 export async function runEvalSet(cases: EvalCase[]): Promise<EvalReport> {
@@ -170,6 +254,13 @@ export function printEvalReport(rep: EvalReport) {
 	console.log('\n===== evals 跑分 =====')
 	for (const c of rep.cases) {
 		console.log(`\n[${c.caseId}] ${c.passed} 过 / ${c.failed} 挂 / ${c.skipped} 跳`)
+		if (!c.result.passed) {
+			// 跑分的职责是指认，不止判决——未通过的 case 要能顺着报告找到「谁说不、说了什么」
+			console.log(`  ⚠ ${c.result.finalReport.slice(0, 60)}`)
+			for (const issue of c.result.openIssues.slice(0, 2)) console.log(`    · ${issue.slice(0, 60)}`)
+			// 熔断在门检时 digest 是判别证据：真违约还是字面锚错杀（PITFALLS 23 族），看末版原文就知道
+			if (c.result.digest) console.log(`    · digest 末版：${c.result.digest.slice(0, 120).replace(/\n/g, ' ⏎ ')}`)
+		}
 		for (const r of c.results) {
 			const mark = r.status === 'pass' ? '✓' : r.status === 'fail' ? '✗' : '−'
 			console.log(`  ${mark} ${r.property}${r.note ? ` — ${r.note.slice(0, 50)}` : ''}`)
@@ -180,12 +271,11 @@ export function printEvalReport(rep: EvalReport) {
 	console.log(`评测集自身的价格：prompt ${rep.promptTokens} / completion ${rep.completionTokens}——多久跑一次的决策依据`)
 }
 
-// 冒烟口（花 GLM 配额：每 case 一次产线运行；TODO 未填时薄料 case 空性质照跑——先验骨架）：
+// 冒烟口（花 GLM 配额：每 case 一次产线运行——评测集的价格打在报告末行）：
 //   node 11-production/evals.ts
-//   期望：全料 case 四性质过；TODO ①②③ 补齐后跑出完整分数
 const isMain = process.argv[1] !== undefined && import.meta.url === new URL(`file:///${process.argv[1].replace(/\\/g, '/')}`).href
 if (isMain) {
 	console.log(`\n【evals §1】产线评测集 v1\n`)
-	const rep = await runEvalSet([CASE_FULL]) // 先只跑全料省钱；补齐 case 后改为全量
+	const rep = await runEvalSet([CASE_FULL, CASE_THIN, CASE_GARBAGE]) // 三个 case 全量——每 case 一次产线运行
 	printEvalReport(rep)
 }
