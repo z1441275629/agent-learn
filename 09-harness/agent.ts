@@ -179,7 +179,7 @@ export interface AgentLoopOptions {
 	useBackupModel?: boolean // §7 配额 failover：主档撞 quota 429 后由 spawnReliable 置 true 重发（备用档优先于小档路由——逃生覆盖省钱）
 }
 
-export async function agentLoop(ctx: ContextManager, { maxSteps = 8, onToolCall, onUsage, sessionId, tools: toolNames, thinking, skipSessionEndHooks, useLightModel }: AgentLoopOptions = {}): Promise<string> {
+export async function agentLoop(ctx: ContextManager, { maxSteps = 8, onToolCall, onUsage, sessionId, tools: toolNames, thinking, skipSessionEndHooks, useLightModel, useBackupModel }: AgentLoopOptions = {}): Promise<string> {
 	let step = 1
 	const tools = buildToolsParam(toolNames)
 	// §5 检查点：每步工具结果落盘后，进程中途被杀也能从最近一步 resume（08 plan-checkpoint 的教训：

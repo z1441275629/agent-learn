@@ -133,9 +133,10 @@
 - [reliability.ts](reliability.ts) 三个核心件：
   - **错误分类先于重试决策**（`classifyError`）：429 两面——quota 429 重试永远不成功（配额窗口问题不是时间问题），fail-fast 把「等重置」决策交回调用方；纯限流才值得退避。分类签名锚 `quota` 词本身不锚 `exceeded`（「Rate limit exceeded」也含 exceeded——探针逮过这个误触）
   - **重试是白名单行为**（`spawnReliable`）：仅 transient 重试（2 轮、2s/4s 指数退避——瞬态恢复尺度是秒级，太快的重试只是排队）；quota/auth/bad-request/**unknown** 一律不重——不确定时按「不再发」处理，同权限闸 fail-closed 思想。`onRetry` 回调接 trace.event，重试进流转图
-  - **配额 failover**（增补）：quota 429 等待无用但换路有用——`shouldFailover` 决策器（quota 才切/只切一次/配了才切）→ 置 `useBackupModel` 立即重发（不退避不占重试预算——换路≠重试同一条路）。**备用必须跨配额池**：5h/周/月墙是账号/端点级，同端点同 key 的备用=假备用；配置回落小档（flash/deepseek 按量端点无 5h 窗口），配了小档即零配置获得 failover。备用也 quota（按量余额尽）→ fail-fast 带原文回落，不做主⇄备链式互切
+  - **故障 failover**（语义：主/light 路由优先，**任何档**故障切备用）：quota 立即切（配额墙不因退避移动）+ transient 重试用尽后切（退避救不回的瞬态——light 端点持续挂，换档是最后一招不是重试的延长）；只切一次（主⇄备链式互切是死循环另一种写法）、**自切无效不切**（备用回落小档时，light 窗口故障切过去=同模型同端点——`BACKUP≠当前档` 才值得切，防「假备用」的运行时形态）；auth/bad-request 不切（换端点大概率同错，fail-fast 暴露配置问题比静默切换健康）。**备用必须跨配额池**：5h/周/月墙是账号/端点级——现配置主=GLM 包月 / light=glm-5.3-flash 按量 / 备用=火山 deepseek（跨平台，GLM 全塌火山接）
   - composite 5 个调用点全换 `reliable()`：瞬态自动救回，配额墙切档续跑，确定性失败仍带原文回落给主管决策
-- 机械探针 17 例（零 LLM 成本）：8 分类 + 重试白名单 + failover 决策矩阵 5 例 + **seam 切换路径 3 场景**（`_spawn` 注入假 spawn——配额健康时 failover 路径永远不触发，同 §6 dataGuard 的归因纪律：没法触发的路径验证不了；真实 quota 实录等配额窗口）。分类器两个盲区（`exceeded` 误触 quota、`timed out` 带空格不匹配）都是探针逮的——正例探针在分类器上复现了 §6 审计签名同款价值（PITFALLS #30 补记第二例证）。探针自己也会写错：切换B 首跑挂——断言把正确行为 `[主档,备用]` 写成两发同档，**探针挂先查断言再查实现**
+- 机械探针 19 例（零 LLM 成本）：8 分类 + 重试白名单 + failover 决策矩阵 5 例 + **seam 切换路径 5 场景**（`_spawn` 注入假 spawn——配额健康时 failover 路径永远不触发，同 §6 dataGuard 的归因纪律：没法触发的路径验证不了；真实 quota 实录等配额窗口）。分类器两个盲区（`exceeded` 误触 quota、`timed out` 带空格不匹配）都是探针逮的——正例探针在分类器上复现了 §6 审计签名同款价值（PITFALLS #30 补记第二例证）。探针自己也会写错：切换B 首跑挂——断言把正确行为 `[主档,备用]` 写成两发同档，**探针挂先查断言再查实现**
+- **探针绿 ≠ 链路绿（实战付了一发学费）**：探针 17/17 提交后用户跑产线当场 `useBackupModel is not defined`——`agentLoop` 接口加了字段、解构参数漏加，假 spawn 在 spawn 层截断、agentLoop 那行从未被任何探针执行（PITFALLS #33）。修法定型：**seam 探针 + 最小真链冒烟双件套**——修复后 `useBackupModel:true` 一发最小任务（417/2 tokens、3.1s、答「2。」、`model: deepseek-v4-flash`）把解构修复/三路路由/火山端点连通一次验全
 - **大小模型路由**（TODO ⑧，用数据说话不拍脑袋）：
   - 规则：判断题/转写类浅窗口走小档 `glm-5.3-flash`（按量端点，输入 0.8 元/百万）。数据依据 = 模块 10/11 窗口账：审校①② completion 2~422、写手首稿 81~204（判断+转写）；研究员/写手修订 thinking high 是重活，留主档
   - 实现：llm.ts light 三件套（model/baseURL/key，key 缺回落主 key）→ agent.ts `useLightModel` 路由挂点（**client+model 成对换**——小档在按量端点，只换 model 不换 client 会打到包月端点报 404）→ spawn 透传 → composite 三个浅窗口打标

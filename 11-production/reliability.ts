@@ -12,10 +12,11 @@
      fail-fast 把「等重置」的决策交回调用方；只有已知瞬态才值得退避重试
   ② 重试可观测——onRetry 回调把重试轮次上报（产线接 trace.event，图里看得见）
   ③ 跨步一致性——agentLoop 中途崩掉，从 spawn 层整重来（干净上下文，不续崩到一半的会话）
-  ④ 配额 failover（§7 增补）——quota 429 等待无用但换路有用：切备用档（默认回落小档
-     glm-5.3-flash 按量端点，跨配额池——5h/周/月墙是账号/端点级，同端点备用=假备用）。
-     只切一次不做链式互切（备用也 quota=按量余额尽，fail-fast 带原文回落）；
-     切换不占重试预算、不退避——换路不是重试同一条路，配额也不因 2s 等待恢复
+  ④ 故障 failover（§7 增补）——主/light 路由优先，任何档故障切备用续跑：quota 立即切
+     （配额墙不因退避移动）+ transient 重试用尽后切（退避救不回的瞬态，换档是最后一招）；
+     备用必须跨配额池（5h/周/月墙是账号/端点级，同端点同 key 的备用=假备用）。
+     只切一次不做链式互切；自切无效不切（备用回落小档时 light 故障切过去=同模型同端点）；
+     切换不占重试预算、不退避——换路不是重试同一条路
 
 纪律：重试是白名单行为——transient 之外（unknown 也含在内）一律不重试，
 fail-fast 带原文返回。和权限闸同思想：不确定时按「不再发」处理。
@@ -23,7 +24,7 @@ failover 同纪律的镜像：quota 才换路（auth 换路也没用——key �
 如果备用配了独立 key 才值得换，那是配置问题不是本层问题）。
 */
 import { spawn, type SpawnResult } from '../10-multi-agent/spawn.ts'
-import { BACKUP_MODEL } from '../09-harness/llm.ts'
+import { MODEL, LIGHT_MODEL, BACKUP_MODEL } from '../09-harness/llm.ts'
 
 // ---------- 错误分类：重试决策的前置 ----------
 // 分类依据是错误文本+状态码的组合模式（跨平台尽力），不是精确 API——分类错顶多多等一轮/少等一轮
@@ -49,10 +50,20 @@ export function classifyError(error: string | undefined): ErrorClass {
 const retryable = (c: ErrorClass) => c === 'transient'
 
 // ---------- 配额 failover：决策先于切换（分类先于重试的同族） ----------
-// 切不切是纯决策（quota 才切 / 只切一次 / 配了备用才切）——独立成函数，探针零成本打矩阵；
-// 真切换在 spawnReliable 循环里（置 useBackupModel 重发，agentLoop 的备用档优先于小档路由）
-export function shouldFailover(errorClass: ErrorClass, alreadySwitched: boolean, backupConfigured: boolean): boolean {
-	return errorClass === 'quota' && !alreadySwitched && backupConfigured
+// 切不切是纯决策——独立成函数，探针零成本打矩阵；真切换在 spawnReliable 循环里
+// （置 useBackupModel 重发，agentLoop 的备用档优先于小档路由——主/light 路由逻辑保持优先，
+// 备用只在故障时介入）。三条规则：
+//   ① quota 立即切：等待无用（配额墙不因退避移动）
+//   ② transient 重试用尽后切：退避救不回的瞬态（light 端点持续挂），换档是最后一招
+//   ③ 切了有用才切：备用回落小档时，light 窗口故障切过去是同一个模型同一个端点——
+//      自切无效（BACKUP≠当前档才值得切），防「假备用」的运行时形态
+// auth/bad-request 不切：换端点大概率同样错（参数不兼容/平台侧拒绝），fail-fast 暴露配置问题
+// 比静默切换健康；真需要 auth 切换（light 独立 key 坏）再加，别预先复杂化
+export function shouldFailover(errorClass: ErrorClass, alreadySwitched: boolean, switchUseful: boolean): boolean {
+	if (alreadySwitched || !switchUseful) return false
+	if (errorClass === 'quota') return true
+	// transient 的「立即切」由调用方把关（重试用尽才走这里传 transient）——决策器只管切不切
+	return errorClass === 'transient'
 }
 
 // ---------- 可靠 spawn：分类 + 退避重试 + 配额 failover + 可观测 ----------
@@ -79,15 +90,28 @@ export async function spawnReliable(task: string, opts?: ReliableSpawnOptions): 
 		const r = await spawnImpl(task, spawnOpts)
 		if (r.ok) return r
 		const ec = classifyError(r.error)
+		// 切了有用才切：备用档 ≠ 当前档（备用回落小档时，light 窗口故障切过去=同模型同端点，自切无效）
+		const currentModel = spawnOpts.useBackupModel ? BACKUP_MODEL : spawnOpts.useLightModel && LIGHT_MODEL ? LIGHT_MODEL : MODEL
+		const switchUseful = BACKUP_MODEL !== '' && BACKUP_MODEL !== currentModel
 		// 配额 failover：决策器判可切 → 置备用档立即重发（不退避：配额墙不因等待移动；不占重试预算：换路≠重试）
-		if (shouldFailover(ec, switched, BACKUP_MODEL !== '')) {
+		if (ec === 'quota' && shouldFailover(ec, switched, switchUseful)) {
 			switched = true
 			spawnOpts.useBackupModel = true
 			onFailover?.(BACKUP_MODEL, r.error ?? '')
 			attempt = -1
 			continue
 		}
-		if (!retryable(ec) || attempt >= retries) return r // fail-fast：非瞬态 / 预算用尽 / 备用档也挂，原文带回落给调用方
+		if (!retryable(ec) || attempt >= retries) {
+			// transient 重试用尽：退避救不回的瞬态（如 light 端点持续挂）——换档是最后一招，不是重试的延长
+			if (retryable(ec) && shouldFailover(ec, switched, switchUseful)) {
+				switched = true
+				spawnOpts.useBackupModel = true
+				onFailover?.(BACKUP_MODEL, r.error ?? '')
+				attempt = -1
+				continue
+			}
+			return r // fail-fast：非瞬态 / 预算用尽 / 备用档也挂 / 自切无效，原文带回落给调用方
+		}
 		onRetry?.(attempt + 1, ec, r.error ?? '')
 		// 退避翻倍：500ms 起？不——首轮就 2s：瞬态故障的恢复尺度是秒级不是毫秒级，太快的重试只是排队
 		await new Promise((res) => setTimeout(res, baseBackoffMs * 2 ** attempt))
@@ -121,12 +145,12 @@ if (isMain) {
 	// 重试白名单抽查：quota/auth/unknown 必须不重试
 	check('重试白名单：仅 transient', (['quota', 'auth', 'bad-request', 'unknown'] as ErrorClass[]).every((c) => !retryable(c)))
 
-	// ② failover 决策矩阵：quota 才切 / 只切一次 / 没配不切
-	check('failover：quota+未切+已配 → 切', shouldFailover('quota', false, true))
-	check('failover：transient 不切（退避重试管）', !shouldFailover('transient', false, true))
-	check('failover：auth 不切（key 坏换档不救）', !shouldFailover('auth', false, true))
+	// ② failover 决策矩阵：quota 立即切 / transient 可切（调用方在重试用尽后才传）/ 只切一次 / 自切无效不切 / auth 不切
+	check('failover：quota+未切+切了有用 → 切', shouldFailover('quota', false, true))
+	check('failover：transient 可切（重试用尽后由调用方传）', shouldFailover('transient', false, true))
+	check('failover：auth 不切（换端点大概率同错）', !shouldFailover('auth', false, true))
 	check('failover：已切过不切（不做链式互切）', !shouldFailover('quota', true, true))
-	check('failover：没配备用不切（回落 fail-fast）', !shouldFailover('quota', false, false))
+	check('failover：自切无效不切（备用回落=当前 light 档）', !shouldFailover('quota', false, false))
 
 	// ③ 切换路径（seam 注入假 spawn——配额健康时唯一能验 failover 真跑通的路）：
 	//    A 主档 quota → 切备用 → 成功：第二发必须带着 useBackupModel、onFailover 上报、结果 ok
@@ -166,7 +190,36 @@ if (isMain) {
 			},
 			retry: { baseBackoffMs: 1 },
 		})
-		check('切换C：transient 走重试不走 failover', r.ok && seen.length === 2 && !seen[1], `ok=${r.ok} 备用档被误置=${seen[1]}`)
+		check('切换C：transient 重试期内救回不走 failover', r.ok && seen.length === 2 && !seen[1], `ok=${r.ok} 备用档被误置=${seen[1]}`)
+	}
+	//    D light 窗口 quota（备用≠light）→ 切备用成功：切档不抹原路由（useLightModel 保留、backup 优先）。
+	//    环境边界：备用回落小档（BACKUP==LIGHT）时该场景自切无效——决策矩阵已覆盖（switchUseful=false 不切），
+	//    这里只在配置了独立备用档的环境跑整链，不满足就明说 skip（探针不硬跑出环境的假 ✗）
+	if (BACKUP_MODEL !== LIGHT_MODEL) {
+		const pairs: { light?: boolean; backup?: boolean }[] = []
+		const r = await spawnReliable('t', {
+			useLightModel: true,
+			_spawn: async (_t, o) => {
+				pairs.push({ light: o?.useLightModel, backup: o?.useBackupModel })
+				return pairs.length === 1 ? mk(false, '429 quota exceeded 余额不足') : mk(true)
+			},
+			retry: { baseBackoffMs: 1 },
+		})
+		check('切换D：light 窗口 quota → 切备用（路由保留）', r.ok && pairs.length === 2 && pairs[0].light === true && !pairs[0].backup && pairs[1].backup === true, JSON.stringify(pairs))
+	} else {
+		console.log(`− 切换D：skip（备用回落小档=${LIGHT_MODEL}，light 故障自切无效——矩阵「自切无效不切」已覆盖）`)
+	}
+	//    E transient 重试用尽 → 切备用（退避救不回的瞬态，换档是最后一招）：2 轮 transient 都挂后第 3 发切档成功
+	{
+		const pairs: (boolean | undefined)[] = []
+		const r = await spawnReliable('t', {
+			_spawn: async (_t, o) => {
+				pairs.push(o?.useBackupModel)
+				return pairs.length <= 2 ? mk(false, '503 Service Unavailable') : mk(true)
+			},
+			retry: { retries: 1, baseBackoffMs: 1 },
+		})
+		check('切换E：transient 重试用尽 → 切备用', r.ok && pairs.length === 3 && !pairs[0] && !pairs[1] && pairs[2] === true, JSON.stringify(pairs))
 	}
 	console.log(`\n可靠层探针：${pass}/${total} 通过`)
 }
