@@ -43,6 +43,7 @@ import 不重写（组装赛的证明，v2 加码）：
 import { spawn, type SpawnResult } from './spawn.ts'
 import { criticPrompt, parseCriticVerdict, type CriticVerdict } from './critic.ts'
 import { TraceCollector } from '../11-production/trace.ts'
+import * as lf from '../11-production/langfuse.ts' // §4 Langfuse 双写对照——key 缺时内部 no-op，产线照常
 
 // 熔断预算：每段各持 2——分段验下轮预算独立，研究段的 2 轮不挤占写作段的
 // （为什么是 2：一轮 = critic 一发 + 重写一发，两轮改不好大概率是指令问题不是轮数问题——§6 结论沿用）
@@ -162,6 +163,8 @@ export async function runCompositeSystem(topic: string, opts?: { source?: string
     topic,
     source,
   })
+  // §4 双写：同一 run 一份喂给 Langfuse 云端（key 缺 = null，下面全 no-op）——溯源同一 source，对照时名字对得上
+  const lfRun = lf.makeRun(topic, source)
   const sectionNums = [...source.matchAll(/§(\d+)/g)].map((m) => Number(m[1]))
   const maxSection = sectionNums.length ? Math.max(...sectionNums) : 0
   const researchTokens = { prompt: 0, completion: 0 }
@@ -170,15 +173,17 @@ export async function runCompositeSystem(topic: string, opts?: { source?: string
   const chargeR = (role: string, r: SpawnResult) => {
     researchTokens.prompt += r.promptTokens
     researchTokens.completion += r.completionTokens
-    // §8/§9 收数口保留（[账] console.log 不能注释掉——baseline 对比/教程贴日志都靠它）；trace 并行收一份落盘
+    // §8/§9 收数口保留（[账] console.log 不能注释掉——baseline 对比/教程贴日志都靠它）；trace 并行收一份落盘 + Langfuse 双写云端
     console.log(`  [账] ${role}: prompt ${r.promptTokens} / completion ${r.completionTokens}${r.ok ? '' : `（失败：${(r.error ?? '').slice(0, 40)}）`}`)
     trace.spawn({ role, ...r })
+    lf.spawnWindow(lfRun, role, r)
   }
   const chargeW = (role: string, r: SpawnResult) => {
     writingTokens.prompt += r.promptTokens
     writingTokens.completion += r.completionTokens
     console.log(`  [账] ${role}: prompt ${r.promptTokens} / completion ${r.completionTokens}${r.ok ? '' : `（失败：${(r.error ?? '').slice(0, 40)}）`}`)
     trace.spawn({ role, ...r })
+    lf.spawnWindow(lfRun, role, r)
   }
 
   // —— 研究段第一发：研究员（纯文本组织活 tools: []；挂了短路，final 带定位——§3 模式，空手 ≠ 消息丢失）——
@@ -216,6 +221,7 @@ export async function runCompositeSystem(topic: string, opts?: { source?: string
       .save()
       .then((p) => console.log(`  [账] trace 落盘 ${p}`))
       .catch((e) => console.log(`  [账] trace 落盘失败：${(e as Error).message}`))
+    lf.finish(lfRun) // §4 Langfuse 收尾：root.end + forceFlush 到云端（fire-and-forget，不阻塞返回）
     return result
   }
 
@@ -238,6 +244,7 @@ export async function runCompositeSystem(topic: string, opts?: { source?: string
       shapeIssues.length === 0 ? 'pass' : `reject:${shapeIssues.length}条`,
       shapeIssues.length === 0 ? '' : shapeIssues.join('\n').slice(0, 30),
     )
+    lf.event(lfRun, '形状门检', 'shape-gate', shapeIssues.length === 0 ? 'pass' : `reject:${shapeIssues.length}条`)
     let verdict: CriticVerdict
     if (shapeIssues.length === 0) {
       // 审校①：独立窗口看素材+简报，看不到研究员的过程（§6 隔离不变）
@@ -262,8 +269,9 @@ export async function runCompositeSystem(topic: string, opts?: { source?: string
     }
     researchIssues = verdict.issues
     if (revises >= MAX_REVISIONS) {
-      // 研究段熔断——中间段停机，未验简报不下流（见文件头）；短路归因进 trace 树（图里画「为什么停」）
+      // 研究段熔断——中间段停机，未验简报不下流（见文件头）；短路归因进 trace 树（图里画「为什么停」）+ Langfuse event
       trace.event(`研究段熔断`, 'short-circuit', `reject:研究阶段超过次数熔断，后续写作短路`)
+      lf.event(lfRun, '研究段熔断', 'short-circuit', `reject:研究阶段超过次数熔断，后续写作短路`)
       break
     }
     revises++
@@ -324,6 +332,7 @@ export async function runCompositeSystem(topic: string, opts?: { source?: string
     if (wRevises >= MAX_REVISIONS) {
       // 写作段熔断——末端段：诚实降级交付最后一稿（§6 语义原样）；归因进 trace 树
       trace.event(`写作段熔断`, 'melt', `reject:写作阶段超过次数熔断`)
+      lf.event(lfRun, '写作段熔断', 'melt', `reject:写作阶段超过次数熔断`)
       break
     }
     wRevises++

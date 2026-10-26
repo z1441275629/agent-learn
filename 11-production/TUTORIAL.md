@@ -61,9 +61,16 @@
 
 ## 4. 接 Langfuse：同一套 trace 双写对照
 
-- Langfuse（开源、TS 友好）：云端免费层 or docker 自托管——成本敏感先云端免费层
-- 手写优先→框架对照的老路线：§3 先手写，这节看框架白送什么（UI 回放/趋势图/成本聚合）、我们手写的什么是框架没有的
-- TODO ⑤ 接入 + 同一次运行双写，截图对照
+- **路线**：§3 手写 trace → 这节接框架。选「手写优先→框架对照」不是替换——同一次产线 run，§3 落盘 JSON+流转图 txt 与 §4 Langfuse 云端并存
+- **接入**（[langfuse.ts](langfuse.ts)）：OTel 基新栈 `@langfuse/tracing`+`@langfuse/otel`。对象映射——一次 run = root span；每次 spawn = generation（token/耗时/结论白送，从 SpawnResult 拿、不包装 OpenAI client）；门检/熔断 = event（零成本，Langfuse 也吃得了）。key 只进 `.env`，缺 key 全 no-op，产线照常
+- **object 模型对照**：generation 带 token 双栏 `usageDetails`、model、output；event 自动 end、`statusMessage` 装 verdict——和 §3 手写 span 的 role/verdict 语义对齐，改名换 monkey 都不换语义
+- **v6 兼容坑（Node 直跑 ESM 实测）**：otlp-transformer 0.300 要 `api>=1.10`（才有 `SeverityNumber`），但 langfuse peer 要 `core ^2`——升 api 会连累 npm 把 core 顶到 3.x 超 langfuse 范围。修法：package.json `overrides` 锁 `@opentelemetry/api 1.10.0` + otlp 三件套 `0.202.0`（api1.9 时代），保住 core 2.12 / sdk-trace-node 2.11（都是 langfuse 验证过的版本）
+- **实测对照**（一次全链双写通过，forceFlush 达云端，run-2026-10-26T08-34-47：5 generation + shape-gate event）：
+  - **Langfuse 白送**：开箱 UI 逐帧回放 / 趋势图 / 成本聚合 / OTel 语义约定，存云端多端看——这些 §3 手写全要自己做
+  - **我们手写的它没有**：`renderFlow` 落盘 txt 本地无损、可 grep、零成本事件带逐条归因 verdict 进树——Langfuse event 也有但依赖 OTel 缓冲（进程强杀丢最后一批）
+  - **结论**：不是「框架一定更好」——§3 手写换来本地无损速查，Langfuse 换来远程可用与成本聚合，**各占一头**
+- **边界记档**：OTel span 走 BatchSpanProcessor，`.end()` 后进缓冲；**进程退出前必须 `forceFlush()`，否则缓冲里最后一批 span 丢**（产线转长驻服务要接 shutdown/信号钩子）
+- TODO ⑤ 接入 + 同一次运行双写，截图对照 ✓
 
 ## 5. 攻：prompt injection 实攻——先攻破自己一次
 
