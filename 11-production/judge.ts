@@ -209,8 +209,9 @@ if (isMain) {
 	const humanVerdicts: { caseId: string; humanPassed: boolean }[] = []
 	for (const c of judge.cases) {
 		const [first] = c.results
+		const fr = free.cases.find((x) => x.caseId === c.caseId)?.result.finalReport ?? '(无成稿)'
 		console.log(`\n[${c.caseId}] judge: ${first?.status}${first?.note ? ` — ${first.note.slice(0, 50)}` : ''}`)
-		console.log(`   成稿：${c.caseId === 'full' && free.cases.find((x) => x.caseId === c.caseId)?.result.finalReport.slice(0, 60)}`) // 摘录，人凭这个裁决
+		console.log(`   成稿：${fr.slice(0, 80)}`) // 每个 case 都摘录真实 finalReport——人审要能看到全部（含诊断），judge skip 得对不对才有得判
 		// 人裁决：这里硬编码成「和 judge 一致」当 demo——真实场景由人键入 P/F 后 push 进来
 		humanVerdicts.push({ caseId: c.caseId, humanPassed: first?.status === 'pass' })
 	}
