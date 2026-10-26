@@ -29,6 +29,11 @@ const EMBED_BASE_URL = process.env.LLM_EMBED_BASE_URL || 'https://open.bigmodel.
 const EMBED_MODEL = process.env.LLM_EMBED_MODEL || 'embedding-3'
 // embed 的 key 可选：同平台省略回落 LLM_API_KEY；挂独立平台（免费 embed）填它自己的 key
 const embedKey = process.env.LLM_EMBED_API_KEY || apiKey
+// §7 大小模型路由的「小」档（模块 11）：判断题/转写类浅窗口走便宜模型——同 embed 的模式，
+// 按量端点 + 可选独立 key（缺 LLM_LIGHT_MODEL = 没配小档，调用点自动回落主模型，产线照常跑）
+const LIGHT_BASE_URL = process.env.LLM_LIGHT_BASE_URL || 'https://open.bigmodel.cn/api/paas/v4'
+const LIGHT_MODEL = process.env.LLM_LIGHT_MODEL || ''
+const lightKey = process.env.LLM_LIGHT_API_KEY || apiKey
 // thinking 协议标识：模型怎么表达思考开关——换模型只改这一个值，agent 翻译层读它
 //   openapi → 火山/GLM/DeepSeek 风格：{ thinking: { type: enabled|disabled } } + reasoning_effort
 //   bool    → 某些 OpenAI 兼容模型：thinking: true|false（单布尔）
@@ -48,5 +53,7 @@ if (missing.length) {
 
 const client = new OpenAI({ apiKey, baseURL: BASE_URL! })
 const embedClient = new OpenAI({ apiKey: embedKey, baseURL: EMBED_BASE_URL })
+// 小档客户端只在配了 LLM_LIGHT_MODEL 才建（null = 未配置，路由层据此回落主模型）
+export const lightClient = LIGHT_MODEL ? new OpenAI({ apiKey: lightKey, baseURL: LIGHT_BASE_URL }) : null
 export { client, embedClient }
-export { MODEL, BUDGET_TOKENS, EMBED_MODEL }
+export { MODEL, BUDGET_TOKENS, EMBED_MODEL, LIGHT_MODEL }

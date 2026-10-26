@@ -40,7 +40,9 @@ import 不重写（组装赛的证明，v2 加码）：
   - 账：最好 4 发（v1 是 3 发，多一道审校①）；最坏 12 发（v1 是 7 发）——最坏账买的是
     「每次修订都修在对的段上」+「写作预算不替研究段的错买单」
 */
-import { spawn, type SpawnResult } from './spawn.ts'
+import type { SpawnResult } from './spawn.ts'
+import { spawnReliable } from '../11-production/reliability.ts' // §7 可靠层：瞬态退避重试 + quota fail-fast
+import { MODEL, LIGHT_MODEL } from '../09-harness/llm.ts'
 import { criticPrompt, parseCriticVerdict, type CriticVerdict } from './critic.ts'
 import { TraceCollector } from '../11-production/trace.ts'
 import * as lf from '../11-production/langfuse.ts' // §4 Langfuse 双写对照——key 缺时内部 no-op，产线照常
@@ -81,9 +83,6 @@ export const SOURCE_MATERIAL = [
   '§5 handoff：皮球探针实测——白名单是软锚不是硬闸，删了「数学运算」四个字模型照样自答。',
   '§6 generator-critic：修前熔断 completion 11,724 → 修后通过 7,557；critic 拆穿用字数统计冒充内容数字。',
 ].join('\n')
-
-// 素材的节号上界——从数据推导不硬编码（素材改版不用记得回来改这里）
-const MAX_SECTION = Math.max(...[...SOURCE_MATERIAL.matchAll(/§(\d+)/g)].map((m) => Number(m[1])))
 
 // ---------- 研究员任务书 ----------
 // ZCode 打样（评审意见：①「组织出周报」越权——研究员交简报，周报是写手的活，角色边界要切干净；
@@ -206,27 +205,41 @@ export async function runCompositeSystem(topic: string, opts?: { source?: string
   const researchTokens = { prompt: 0, completion: 0 }
   const writingTokens = { prompt: 0, completion: 0 }
   // §8/§9 收数口：每发流水（角色 + 双栏账）——窗口级数据从这里收，流转图和账本不用再改代码
+  // §7 小档标签：路由到非主模型的窗口在 [账] 里标出来（主模型窗口不带标签——老 baseline 日志格式不变，对比不受扰）
+  const lightTag = (r: SpawnResult) => (r.model && r.model !== MODEL ? `〔${LIGHT_MODEL ? r.model : '?'}〕` : '')
   const chargeR = (role: string, r: SpawnResult) => {
     researchTokens.prompt += r.promptTokens
     researchTokens.completion += r.completionTokens
     // §8/§9 收数口保留（[账] console.log 不能注释掉——baseline 对比/教程贴日志都靠它）；trace 并行收一份落盘 + Langfuse 双写云端
-    console.log(`  [账] ${role}: prompt ${r.promptTokens} / completion ${r.completionTokens}${r.ok ? '' : `（失败：${(r.error ?? '').slice(0, 40)}）`}`)
+    console.log(`  [账] ${role}${lightTag(r)}: prompt ${r.promptTokens} / completion ${r.completionTokens}${r.ok ? '' : `（失败：${(r.error ?? '').slice(0, 40)}）`}`)
     trace.spawn({ role, ...r })
     lf.spawnWindow(lfRun, role, r)
   }
   const chargeW = (role: string, r: SpawnResult) => {
     writingTokens.prompt += r.promptTokens
     writingTokens.completion += r.completionTokens
-    console.log(`  [账] ${role}: prompt ${r.promptTokens} / completion ${r.completionTokens}${r.ok ? '' : `（失败：${(r.error ?? '').slice(0, 40)}）`}`)
+    console.log(`  [账] ${role}${lightTag(r)}: prompt ${r.promptTokens} / completion ${r.completionTokens}${r.ok ? '' : `（失败：${(r.error ?? '').slice(0, 40)}）`}`)
     trace.spawn({ role, ...r })
     lf.spawnWindow(lfRun, role, r)
   }
   // §6 防线一记账口：整 run 已烧（双段合计）——下一发 spawn 前查，超顶不再发
   const spent = () => researchTokens.prompt + researchTokens.completion + writingTokens.prompt + writingTokens.completion
   const overBudget = () => spent() > costCeiling
+  // §7 可靠层接线：所有窗口走 spawnReliable——瞬态（5xx/网络/限流）退避重试，quota/鉴权/参数错 fail-fast 带原文落；
+  // 重试轮次进 trace 树（免费节点，图里看得见「第几轮为什么重发」）
+  const reliable = (task: string, o?: Parameters<typeof spawnReliable>[1]) =>
+    spawnReliable(task, {
+      ...o,
+      retry: {
+        onRetry: (n, ec) => {
+          trace.event(`瞬态重试#${n}`, 'retry', 'fail', `${ec}——退避后重发`)
+          lf.event(lfRun, `瞬态重试#${n}`, 'retry', `reject:${ec}`)
+        },
+      },
+    })
 
   // —— 研究段第一发：研究员（纯文本组织活 tools: []；挂了短路，final 带定位——§3 模式，空手 ≠ 消息丢失）——
-  const research = await spawn(researchPrompt(), {
+  const research = await reliable(researchPrompt(), {
     handoff: material,
     tools: [],
     thinking: 'high',
@@ -308,11 +321,13 @@ export async function runCompositeSystem(topic: string, opts?: { source?: string
     if (shapeIssues.length === 0) {
       // 审校①：独立窗口看素材+简报，看不到研究员的过程（§6 隔离不变）
       // 审校①是判断题（只回 PASS/FAIL + 逐条意见），浅任务不空转思考——completion 大头是思考 token，墙钟≈completion÷速度
-      const critic = await spawn(digestCriticPrompt(), {
+      // §7 路由：判断题走小档（账本数据：审校①窗口 completion 2~422，判断质量对模型档位不敏感——TODO ⑧ 用数据说话）
+      const critic = await reliable(digestCriticPrompt(), {
         handoff: `${material}\n\n待审简报：${digest}`,
         tools: [],
         thinking: 'off',
         skipSessionEndHooks: true,
+        useLightModel: true,
       })
       chargeR('审校①#' + (revises + 1), critic)
       verdict = parseCriticVerdict(critic.conclusion)
@@ -336,7 +351,7 @@ export async function runCompositeSystem(topic: string, opts?: { source?: string
     }
     revises++
     result.researchSpawns++
-    const revise = await spawn(
+    const revise = await reliable(
       [
         researchPrompt(),
         `上一版简报被打回，逐条修订：\n${verdict.issues.map((s, i) => `${i + 1}. ${s}`).join('\n')}`,
@@ -387,11 +402,13 @@ export async function runCompositeSystem(topic: string, opts?: { source?: string
   // criticPrompt 从 §6 import 一字不改：每段的「原始素材」= 它的直接上游交接物——
   // 简报对写作段就是源头（它已被审校① 验过，这是审校② 敢只看简报的全部前提）
   // 写手首稿是转写（简报已验过是源头），150 字周报是浅任务——不空转思考
-  const first = await spawn(REPORT_TASK, {
+  // §7 路由：转写走小档（账本数据：写手首稿 completion 81~204——浅转写不吃旗舰推理）
+  const first = await reliable(REPORT_TASK, {
     handoff: `研究简报：${result.digest}`,
     tools: [],
     thinking: 'off',
     skipSessionEndHooks: true,
+    useLightModel: true,
   })
   chargeW('写手首稿', first)
   result.writerSpawns = 1
@@ -405,12 +422,13 @@ export async function runCompositeSystem(topic: string, opts?: { source?: string
       result.openIssues = [...result.openIssues, `成本护栏：写作段停机（已烧 ${spent()} / 硬顶 ${costCeiling}），诚实降级交付最后一稿`]
       break
     }
-    // 审校②也是判断题——浅任务不空转思考
-    const critic = await spawn(criticPrompt(), {
+    // 审校②也是判断题——浅任务不空转思考；§7 路由：判断题走小档（同审校①）
+    const critic = await reliable(criticPrompt(), {
       handoff: `原始素材：${result.digest}\n\n待审稿件：${draft}`,
       tools: [],
       thinking: 'off',
       skipSessionEndHooks: true,
+      useLightModel: true,
     })
     chargeW('审校②#' + (wRevises + 1), critic)
     const verdict = parseCriticVerdict(critic.conclusion)
@@ -435,7 +453,7 @@ export async function runCompositeSystem(topic: string, opts?: { source?: string
     }
     wRevises++
     result.writerSpawns++
-    const revise = await spawn(
+    const revise = await reliable(
       [REPORT_TASK, `上一稿被审校打回，逐条修订：\n${verdict.issues.map((s, i) => `${i + 1}. ${s}`).join('\n')}`].join(
         '\n\n',
       ),

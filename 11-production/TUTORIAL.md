@@ -121,9 +121,27 @@
 
 ## 7. 可靠性与成本：散装知识收拢
 
-- 重试/超时/降级系统化：模块 08 的散装（withTimeout / spawnWithDeadline / 熔断）收进一个可靠性层
-- **大小模型路由**：简单任务走便宜模型——§9 账本给路由规则提供数据（哪个角色的活最便宜模型干得动）
-- TODO ⑧ 路由规则一版（用数据说话，不拍脑袋）
+- 散装收拢地图（收拢前各管一层，**缺一层**：瞬态故障重试——§6 e2a 实录 429 把研究员段直接打失败、零重试）：
+
+  | 层 | 件 | 管什么 | 出处 |
+  |---|---|---|---|
+  | hook 层 | `withTimeout` | 单个工具调用超时 | 09 hooks.ts |
+  | 任务层 | `spawnWithDeadline` | fan-out 迟到样本弃子 | 10 fanout.ts |
+  | 产线层 | 修订熔断 + §6 成本护栏 | 死循环止损 + run 级 token 硬顶 | 10 composite |
+  | 瞬态层 | `spawnReliable`（本节新补） | 429/5xx/网络瞬态的退避重试 | [reliability.ts](reliability.ts) |
+
+- [reliability.ts](reliability.ts) 两个核心件：
+  - **错误分类先于重试决策**（`classifyError`）：429 两面——quota 429 重试永远不成功（配额窗口问题不是时间问题），fail-fast 把「等重置」决策交回调用方；纯限流才值得退避。分类签名锚 `quota` 词本身不锚 `exceeded`（「Rate limit exceeded」也含 exceeded——探针逮过这个误触）
+  - **重试是白名单行为**（`spawnReliable`）：仅 transient 重试（2 轮、2s/4s 指数退避——瞬态恢复尺度是秒级，太快的重试只是排队）；quota/auth/bad-request/**unknown** 一律不重——不确定时按「不再发」处理，同权限闸 fail-closed 思想。`onRetry` 回调接 trace.event，重试进流转图
+  - composite 5 个调用点全换 `reliable()`：瞬态自动救回，确定性失败仍带原文回落给主管决策
+- 机械探针（零 LLM 成本）：8 分类用例 + 白名单抽查全过；逮出两个分类盲区——`exceeded` 误触 quota、`timed out`（带空格）不匹配 timeout——正例探针在分类器上复现了 §6 审计签名同款价值（PITFALLS #30 补记第二例证）
+- **大小模型路由**（TODO ⑧，用数据说话不拍脑袋）：
+  - 规则：判断题/转写类浅窗口走小档 `glm-5.3-flash`（按量端点，输入 0.8 元/百万）。数据依据 = 模块 10/11 窗口账：审校①② completion 2~422、写手首稿 81~204（判断+转写）；研究员/写手修订 thinking high 是重活，留主档
+  - 实现：llm.ts light 三件套（model/baseURL/key，key 缺回落主 key）→ agent.ts `useLightModel` 路由挂点（**client+model 成对换**——小档在按量端点，只换 model 不换 client 会打到包月端点报 404）→ spawn 透传 → composite 三个浅窗口打标
+  - **路由必须可观测**，不然 Langfuse 成本聚合把 flash 的账全记到主模型头上：SpawnResult.model 三层落账——[账] 日志〔glm-5.3-flash〕标签 / trace flow 窗口行带模型名 / Langfuse generation 的 model 字段按窗口实报
+  - 验证 run（路由开）：4 窗口全过、判得全对（审校①② PASS、终稿数字与素材全对）；研究员〔主档〕890/3559，审校①〔flash〕1543/3、写手首稿〔flash〕807/246、审校②〔flash〕1337/89；全账 4577/3897 vs §6 clean 基线 4407~4411/2998~5402——量级持平
+  - **成本反转的诚实记录**：包月 coding plan 下主模型边际成本 0，浅窗口路由到按量 flash 反而是新增支出（本 run flash 侧 3687 in / 338 out ≈ 0.004 元，限时免费期 0 元）——**路由省钱的前提是按量部署**；本实验证明的是路由可行 + 判得动 + 账可分，不是当下省钱
+  - TODO ⑧ ✓ 规则一版 + 验证 + 全链路由 run 落档
 
 ## 8. 验收：闭环跑一次全的
 

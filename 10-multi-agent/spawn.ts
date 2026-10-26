@@ -23,6 +23,7 @@
 // import 'dotenv/config'
 import { createAgent, agentLoop, parseModelJson, type ModelThinkingLevel } from '../09-harness/agent.ts'
 import { truncateToolResult } from '../09-harness/context.ts'
+import { MODEL, LIGHT_MODEL } from '../09-harness/llm.ts'
 
 export interface SpawnResult {
 	ok: boolean
@@ -30,6 +31,7 @@ export interface SpawnResult {
 	promptTokens: number
 	completionTokens: number
 	elapsedMs: number
+	model?: string // §7 路由可观测：这个窗口实际用的模型（大小档路由后账必须跟得上——Langfuse/trace 的 model 字段不许撒谎）
 	error?: string // ok=false 必有：①原文 ②模型侧 error——喂给主管做 重试/换路/放弃 的决策
 }
 
@@ -47,10 +49,12 @@ export function renderBrief(task: string, handoff?: string): string {
 
 // spawn：起一个子 agent 干活，拿回结论 + 账单。
 // 子 agent 的权限/沙箱/hook 由 09 dispatch 咽喉自动覆盖——这里不重复操心中关村的事
-export async function spawn(task: string, opts?: { handoff?: string; systemExtra?: string; maxSteps?: number; budgetTokens?: number; tools?: string[]; thinking?: ModelThinkingLevel; skipSessionEndHooks?: boolean }): Promise<SpawnResult> {
+export async function spawn(task: string, opts?: { handoff?: string; systemExtra?: string; maxSteps?: number; budgetTokens?: number; tools?: string[]; thinking?: ModelThinkingLevel; skipSessionEndHooks?: boolean; useLightModel?: boolean }): Promise<SpawnResult> {
 	const t0 = Date.now()
 	let promptTokens = 0
 	let completionTokens = 0
+	// §7 路由决策落账：useLightModel 且配了小档才真换（没配自动回落主模型——回落也要记主模型名，不是留空）
+	const usedModel = opts?.useLightModel && LIGHT_MODEL ? LIGHT_MODEL : MODEL
 	try {
 		const ctx = await createAgent(renderBrief(task, opts?.handoff), { systemExtra: opts?.systemExtra, budgetTokens: opts?.budgetTokens, tools: opts?.tools })
 		const raw = await agentLoop(ctx, {
@@ -58,6 +62,7 @@ export async function spawn(task: string, opts?: { handoff?: string; systemExtra
 			tools: opts?.tools,
 			thinking: opts?.thinking,
 			skipSessionEndHooks: opts?.skipSessionEndHooks,
+			useLightModel: opts?.useLightModel,
 			onUsage: (u) => {
 				promptTokens += u.promptTokens
 				completionTokens += u.completionTokens
@@ -76,6 +81,7 @@ export async function spawn(task: string, opts?: { handoff?: string; systemExtra
 				promptTokens,
 				completionTokens,
 				elapsedMs: Date.now() - t0,
+				model: usedModel,
 				error: resJson.error,
 			}
 		}
@@ -85,6 +91,7 @@ export async function spawn(task: string, opts?: { handoff?: string; systemExtra
 			promptTokens,
 			completionTokens,
 			elapsedMs: Date.now() - t0,
+			model: usedModel,
 		}
 	} catch (err: any) {
 		// ① 真异常：ok:false + error 原文——token 账照记（花掉的钱不因失败而看不见，×N 记账要的是全量真数）
@@ -94,6 +101,7 @@ export async function spawn(task: string, opts?: { handoff?: string; systemExtra
 			promptTokens,
 			completionTokens,
 			elapsedMs: Date.now() - t0,
+			model: usedModel,
 			error: err?.message,
 		}
 	}

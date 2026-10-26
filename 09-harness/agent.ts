@@ -31,8 +31,8 @@ import type { ToolCallParams } from './type.ts'
 // 平台配置全部走 llm.ts（从 .env 读 LLM_BASE_URL/LLM_MODEL/LLM_API_KEY/LLM_BUDGET_TOKENS）——
 // 换平台只改 .env 不改代码。client/MODEL/BUDGET_TOKENS 的唯一事实源在 llm.ts，这里 re-export，
 // 下游（planner.ts、10-multi-agent）照旧 `import { client, MODEL } from './agent.ts'` 不用改。
-import { client, MODEL, BUDGET_TOKENS, THINKING_STYLE } from './llm.ts'
-export { client, MODEL, BUDGET_TOKENS }
+import { client, MODEL, BUDGET_TOKENS, THINKING_STYLE, lightClient, LIGHT_MODEL } from './llm.ts'
+export { client, MODEL, BUDGET_TOKENS, lightClient, LIGHT_MODEL }
 
 // ---------- 工具注册 ----------
 // 内置工具在 ./tools.ts 里定义并注册（import 时完成）；记忆工具来自 ./memory.ts，
@@ -173,11 +173,12 @@ export interface AgentLoopOptions {
 	onUsage?: (u: { promptTokens: number; completionTokens: number }) => void // 模块 10 spawn 的账本探针：每次请求上报 token 用量——多 agent 成本核算（×N 记账）的数据入口
 	tools?: string[] // 工具面白名单：undefined=全量（默认，既有调用零改动）；[]=纯文本 agent；数组=只挂列名的（§5 教训的工具化：工具面=能力面）
 	thinking?: ModelThinkingLevel // 思考开关：false → 请求体带 thinking:{type:'disabled'}（GLM 端点参数）；undefined/true → 不带（端点默认=开）。浅任务（判形状/转写/对单评审）关掉——completion 大头是思考 token，墙钟≈completion÷输出速度
-	skipSessionEndHooks?: boolean // 短命子 agent 的选择权：结论已回传，过程记忆大概率无价值；钩子虽 fire-and-forget 不挡循环，但会拖住进程退出（Node 等事件循环清空）
+	skipSessionEndHooks?: boolean // 短命子 agent 的选择权：结论已回传，过程记忆大概率无价值；钩子虽 fire-and-forget 不挡循环，但会拖住进程退出（Node 等事件清空）
 	sessionId?: string // §5 存档 id——传了才落盘，每步一存档
+	useLightModel?: boolean // 模块 11 §7 大小模型路由：true=浅窗口走便宜小档（llm.ts 的 LLM_LIGHT_*；未配小档自动回落主模型——配置缺省不是错误）
 }
 
-export async function agentLoop(ctx: ContextManager, { maxSteps = 8, onToolCall, onUsage, sessionId, tools: toolNames, thinking, skipSessionEndHooks }: AgentLoopOptions = {}): Promise<string> {
+export async function agentLoop(ctx: ContextManager, { maxSteps = 8, onToolCall, onUsage, sessionId, tools: toolNames, thinking, skipSessionEndHooks, useLightModel }: AgentLoopOptions = {}): Promise<string> {
 	let step = 1
 	const tools = buildToolsParam(toolNames)
 	// §5 检查点：每步工具结果落盘后，进程中途被杀也能从最近一步 resume（08 plan-checkpoint 的教训：
@@ -195,8 +196,11 @@ export async function agentLoop(ctx: ContextManager, { maxSteps = 8, onToolCall,
 		}
 		await ctx.ensureBudget()
 		ctx.logBreakdown()
-		const response = await client.chat.completions.create({
-			model: MODEL,
+		// §7 路由：浅窗口换小档（client+model 成对换——小档可能在按量端点上，不能只换名不换端点）；未配小档双双回落主模型
+		const chat = useLightModel && lightClient ? lightClient : client
+		const chatModel = useLightModel && LIGHT_MODEL ? LIGHT_MODEL : MODEL
+		const response = await chat.chat.completions.create({
+			model: chatModel,
 			messages: ctx.getSendView(),
 			// 空工具面省略 tools 字段——空数组在部分 API 是「禁用工具」在部分是错误，省略是唯一安全形态
 			...(tools.length ? { tools } : {}),

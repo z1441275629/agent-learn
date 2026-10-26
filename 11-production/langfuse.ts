@@ -59,7 +59,7 @@ export function spawnWindow(handle: RunHandle | null, role: string, r: SpawnResu
   const gen: LangfuseGeneration = startObservation(
     role, // 语义 role 名（研究员修订#1 天然带序号）——Langfuse 和 §3 吃同一份，对照时名字对得上
     {
-      model: MODEL,
+      model: r.model ?? MODEL, // §7 路由后按窗口实报（SpawnResult.model）——没路由的老窗口回落主模型名，云端成本聚合才不分错账
       usageDetails: { input: r.promptTokens, output: r.completionTokens }, // input/output 是 Langfuse 的 token 双栏口径
       input: r.error ? `失败：${r.error}` : `输出长度 ${r.conclusion?.length ?? 0} 字`,
       output: r.conclusion,
@@ -96,5 +96,6 @@ interface SpawnResult {
   promptTokens: number
   completionTokens: number
   elapsedMs: number
+  model?: string
   error?: string
 }

@@ -24,6 +24,7 @@ export interface Span {
   promptTokens: number
   completionTokens: number
   elapsedMs: number
+  model?: string // §7 路由：这个窗口实际跑的模型（大小档路由后，token 账要能按模型分账——不然成本聚合全记到主模型头上）
   conclusion?: string // 结论摘要（截断）
   verdict?: 'pass' | 'fail' | 'skip' | `reject:${string}` // 门检/评审判据——零成本事件的落点
   event?: EventKind // 免费节点的分类（不烧 token 的编排事件）
@@ -88,7 +89,7 @@ export class TraceCollector {
           w++
           res.push(
             [
-              `| ${w}/${windowCount} 窗口 ${role}`,
+              `| ${w}/${windowCount} 窗口 ${role}${span.model ? `〔${span.model}〕` : ''}`,
               `|    账：prompt: ${promptTokens} / completion: ${completionTokens}`,
               `|    状态：${ok ? '通过' : '失败'}`,
               `|    结论：${conclusion}`,
