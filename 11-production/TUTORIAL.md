@@ -54,10 +54,16 @@
 
 ## 3. 手写最小 trace：把 [账] 流水升级成结构化追踪
 
-- 现状：[账] 是 console.log，跑完就没了——§8 的流转图靠手填
-- 目标：每次运行一份 trace 落盘（span 树：每次 spawn 一个 span 含 token/耗时/结论摘要/verdict，门检/parse 记零成本事件）
-- 回头债自动清：**流转图从 trace 生成**，不再手抄
-- TODO ④ trace 采集器 + 一次产线运行落盘 JSON
+- **采集器**（[trace.ts](trace.ts)）：`TraceCollector`——span 四要素（token 双栏/耗时/ok/结论截断）全从 `SpawnResult` 直取，采集点就在 chargeR/chargeW 的 [账] console.log 旁一行 `trace.spawn(...)`；门检/熔断/短路记**零成本事件**（token 恒 0、带 verdict/reason 归因——图里画「为什么停」不是画「停了」）
+- **语义 role 名**：研究员首发 / 修订#1 / 审校①#2 / 写手修订#1——修订类天然带序号，同角色多次窗口靠它区分，一条 flow 就能还原产线实际结构
+- **落盘**：`save()` 每次 run 写 `traces/run-<时间戳>.json`（meta 含 topic + 素材前 80 字摘要，暴库不落全量）+ `-flow.txt` 流转图；`conclude(finalReport)` 终局进 JSON——图尾自动带**全账（prompt/completion 合计 + 窗口数）+ 终局结论**，看图即知这跑产出了什么，不用翻日志
+- **回头债清了**：流转图从 trace 生成，模块 10 §8 的手抄图退役——改代码不再需要重新手绘
+- 实测踩的坑（renderFlow 首版两 bug，探针跑图暴露）：
+  - **窗口计数把免费节点算进档位**（打出 1/6、3/6、5/6）——修法：窗口判据 = **token 双栏 > 0**，免费节点恒 0 天然出局；判据不依赖角色枚举，事件/窗口顺序怎么乱都不误判
+  - **免费节点硬编码全画成「形状门检」**——熔断画出来也叫门检；修法：按 event 本名画
+  - 原则：**「是窗口」锚成本（token>0）不锚身份（角色枚举）**——成本才是 agent 窗口的本质属性；免费/付费分层是 §10 门检与 critic 分工的观测版
+- **本地图的筹码**（§4 对照埋点）：本地落盘无损、可 grep、零依赖——后面接 Langfuse 时手写侧拿什么和框架比，就这三条
+- TODO ④ ✓ 采集器 + 产线落盘接通（历次全链 run 见 [traces/](traces/)）
 
 ## 4. 接 Langfuse：同一套 trace 双写对照
 
