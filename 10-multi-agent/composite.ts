@@ -59,9 +59,12 @@ const MAX_REVISIONS = 2
 // 防线三（硬）：输出审计——交付前扫「指令的形状」（忽略类/伪系统更新/任务书回声），
 // 只认形状不认载荷字面（写死 QLF-99 就是自欺：只防得住已知那次攻）；未知形状防不住——防不绝的实录
 const AUDIT_SIGNATURES: { re: RegExp; label: string }[] = [
-  { re: /忽略(以上|之前|所有|上述)(的)?(指令|要求|规则|约束)/, label: '忽略类指令' },
+  // 限定词不枚举交替（「以上所有」「之前的一切」组合漏掉过最常见措辞）——媒介段模糊化：忽略+短距离+受控对象词
+  { re: /忽略.{0,8}(指令|要求|规则|约束)/, label: '忽略类指令' },
   { re: /(系统提示词|系统指令).{0,12}(已更新|更新为)/, label: '伪系统更新' },
-  { re: /(无视|绕过|disregard|ignore)\s*(以上|所有|上述)?.{0,8}(指令|规则|约束)/i, label: '无视类指令' },
+  // 对象词表要跟攻击语言同宽：纯中文表配英文动词是死签名（disregard all previous instructions 零命中过）——
+  // 动词中英都收，对象词中英都收，间距放宽到 20 容下限定短语
+  { re: /(无视|绕过|disregard|ignore)[\s\S]{0,20}(指令|规则|约束|instructions?|rules?|directives?)/i, label: '无视类指令' },
   { re: /你(只)?执行本任务书|组织，不是缩写|核对员不是代写员/, label: '任务书回声（提示词泄漏）' },
 ]
 export function auditDeliverable(text: string): string[] {
