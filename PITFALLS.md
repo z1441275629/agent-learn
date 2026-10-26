@@ -25,6 +25,13 @@
 - 症状：Langfuse（OTel 基 @langfuse/otel）的 span `.end()` 后进 BatchSpanProcessor 缓冲，定时/攒量才推云端。跑完自然退出的进程若没 `await forceFlush()`（或进程被 Ctrl+C/crash/OOM 强杀），**缓冲里最后一批 span 直接丢**——云端 trace 缺尾巴，且看起来一切正常（静默丢，比报错难察觉）
 - 修法：跑完手动 `await processor.forceFlush()`（serverless 清单：`exportMode:"immediate"` + 结束前 flush）；进程要转长驻/被强杀必须接 shutdown 钩子优雅退出
 - 原则：**凡「先缓冲后异步送」的观测/日志层，都欠一次「退出前 flush」**——不 flush 等于承诺了没兑现的持久化；静默的已发送 vs 缓冲的待发送要分得清，别把「调了 forceFlush」当「数据一定到」
+- 补记（§8 云端读回实录）：**写路径和读路径不同步换代**——ingest（OTel）照常收数，老读 API `GET /api/public/traces` 已 410（v3 弃用倒计时）、新 `GET /api/public/v2/observations` 投影却不吐 usage/model 字段。数据在库里、API 读不出的窗口期，云端成本分账形同虚设——双写（本地落盘 + 云端）在换代期从对照实验变成**兜底依赖**。凡选观测框架，先探读 API 的字段覆盖再谈聚合
+
+### 4c. 分层跑分只打一层：钱花在产线，报告没出口 [11]
+- 症状：§8 闭环跑分 24 分钟烧完三 case，judge 冒烟口只打印 judge 层结果——**免费层（产线花掉大头 token 的那层的跑分）一个数字都没出来**，逐性质明细无从落档。两层判的架构是对的（一次运行两层复用），输出端只接了一层
+- 根因：分层设计只分了「判」没分「出」——每层的结论各自留在内存对象里（`EvalReport`/`JudgeReport`），打印是手工挑的；挑漏的那层等于白跑
+- 修法：分几层判，打印/落盘就几层全出（`printEvalReport(free)` 补上）；报告出口是架构的一部分，不是跑完后的临时 console
+- 原则：**花钱的层必须自带出口**——产线跑分的价格记在报告末行，输出端丢一层就是把钱打了水漂还不知道；「数据在对象里」不等于「数据可用」，没出口的数据和没采一样
 
 ## 二、状态与架构
 

@@ -31,8 +31,8 @@ import type { ToolCallParams } from './type.ts'
 // 平台配置全部走 llm.ts（从 .env 读 LLM_BASE_URL/LLM_MODEL/LLM_API_KEY/LLM_BUDGET_TOKENS）——
 // 换平台只改 .env 不改代码。client/MODEL/BUDGET_TOKENS 的唯一事实源在 llm.ts，这里 re-export，
 // 下游（planner.ts、10-multi-agent）照旧 `import { client, MODEL } from './agent.ts'` 不用改。
-import { client, MODEL, BUDGET_TOKENS, THINKING_STYLE, lightClient, LIGHT_MODEL } from './llm.ts'
-export { client, MODEL, BUDGET_TOKENS, lightClient, LIGHT_MODEL }
+import { client, MODEL, BUDGET_TOKENS, THINKING_STYLE, lightClient, LIGHT_MODEL, backupClient, BACKUP_MODEL } from './llm.ts'
+export { client, MODEL, BUDGET_TOKENS, lightClient, LIGHT_MODEL, backupClient, BACKUP_MODEL }
 
 // ---------- 工具注册 ----------
 // 内置工具在 ./tools.ts 里定义并注册（import 时完成）；记忆工具来自 ./memory.ts，
@@ -176,6 +176,7 @@ export interface AgentLoopOptions {
 	skipSessionEndHooks?: boolean // 短命子 agent 的选择权：结论已回传，过程记忆大概率无价值；钩子虽 fire-and-forget 不挡循环，但会拖住进程退出（Node 等事件清空）
 	sessionId?: string // §5 存档 id——传了才落盘，每步一存档
 	useLightModel?: boolean // 模块 11 §7 大小模型路由：true=浅窗口走便宜小档（llm.ts 的 LLM_LIGHT_*；未配小档自动回落主模型——配置缺省不是错误）
+	useBackupModel?: boolean // §7 配额 failover：主档撞 quota 429 后由 spawnReliable 置 true 重发（备用档优先于小档路由——逃生覆盖省钱）
 }
 
 export async function agentLoop(ctx: ContextManager, { maxSteps = 8, onToolCall, onUsage, sessionId, tools: toolNames, thinking, skipSessionEndHooks, useLightModel }: AgentLoopOptions = {}): Promise<string> {
@@ -197,8 +198,9 @@ export async function agentLoop(ctx: ContextManager, { maxSteps = 8, onToolCall,
 		await ctx.ensureBudget()
 		ctx.logBreakdown()
 		// §7 路由：浅窗口换小档（client+model 成对换——小档可能在按量端点上，不能只换名不换端点）；未配小档双双回落主模型
-		const chat = useLightModel && lightClient ? lightClient : client
-		const chatModel = useLightModel && LIGHT_MODEL ? LIGHT_MODEL : MODEL
+		// §7 failover：useBackupModel 优先于 useLightModel——配额逃生盖过省钱路由（同一窗口最多活一个档位决策）
+		const chat = useBackupModel && backupClient ? backupClient : useLightModel && lightClient ? lightClient : client
+		const chatModel = useBackupModel && BACKUP_MODEL ? BACKUP_MODEL : useLightModel && LIGHT_MODEL ? LIGHT_MODEL : MODEL
 		const response = await chat.chat.completions.create({
 			model: chatModel,
 			messages: ctx.getSendView(),

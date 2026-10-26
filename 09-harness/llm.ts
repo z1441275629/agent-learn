@@ -34,6 +34,13 @@ const embedKey = process.env.LLM_EMBED_API_KEY || apiKey
 const LIGHT_BASE_URL = process.env.LLM_LIGHT_BASE_URL || 'https://open.bigmodel.cn/api/paas/v4'
 const LIGHT_MODEL = process.env.LLM_LIGHT_MODEL || ''
 const lightKey = process.env.LLM_LIGHT_API_KEY || apiKey
+// §7 配额 failover 的「备用」档（模块 11）：主档撞 5h/周/月配额墙（quota 429）时逃生。
+// 备用必须跨配额池——包月配额是账号/端点级，同端点同 key 的备用=假备用（主档挂它跟着挂）；
+// 默认回落小档配置（flash 在按量端点，无 5h 窗口——配了 light 即零配置获得 failover）。
+// 跨平台备用（如火山）要配自己的 BASE_URL + KEY——key 回落链省配置不保正确
+const BACKUP_BASE_URL = process.env.LLM_BACKUP_BASE_URL || LIGHT_BASE_URL
+const BACKUP_MODEL = process.env.LLM_BACKUP_MODEL || LIGHT_MODEL
+const backupKey = process.env.LLM_BACKUP_API_KEY || lightKey
 // thinking 协议标识：模型怎么表达思考开关——换模型只改这一个值，agent 翻译层读它
 //   openapi → 火山/GLM/DeepSeek 风格：{ thinking: { type: enabled|disabled } } + reasoning_effort
 //   bool    → 某些 OpenAI 兼容模型：thinking: true|false（单布尔）
@@ -55,5 +62,7 @@ const client = new OpenAI({ apiKey, baseURL: BASE_URL! })
 const embedClient = new OpenAI({ apiKey: embedKey, baseURL: EMBED_BASE_URL })
 // 小档客户端只在配了 LLM_LIGHT_MODEL 才建（null = 未配置，路由层据此回落主模型）
 export const lightClient = LIGHT_MODEL ? new OpenAI({ apiKey: lightKey, baseURL: LIGHT_BASE_URL }) : null
+// 备用档同理：BACKUP_MODEL 解析出来非空（自带或回落小档）才建——failover 层据此决定切不切
+export const backupClient = BACKUP_MODEL ? new OpenAI({ apiKey: backupKey, baseURL: BACKUP_BASE_URL }) : null
 export { client, embedClient }
-export { MODEL, BUDGET_TOKENS, EMBED_MODEL, LIGHT_MODEL }
+export { MODEL, BUDGET_TOKENS, EMBED_MODEL, LIGHT_MODEL, BACKUP_MODEL }

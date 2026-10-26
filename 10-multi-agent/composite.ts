@@ -107,24 +107,32 @@ export function researchPrompt(): string {
 }
 
 // ---------- 研究段门检：形状层（零成本，§3 的 check 上产线） ----------
-// 四个字面锚：条数 3~5 / 首行【主线】/ ≥2 条含数字 / 出处标注且编号在素材范围内。
+// 四个字面锚：条数 3~5 / 主线标注 / ≥2 条含数字 / 出处标注且编号在素材范围内。
 // 边界设计：出处「有标注、编号不越界」机器判得了；「编号指对内容」判不了——内容真假是审校① 的活。
 // 门检混进内容判断就成了廉价 critic，两头不占（§3 预言的门检版）
+//
+// §8 实验 B（§1 钦点）：门检诊断升级——治「反馈描述 generator 没犯的错」。
+// 旧版两病灶（§1 两连熔断 + 11:00 复熔断三实证）：①条数数所有非空行——模型自加标题行把 5 条合法简报
+// 数成 6 条错杀；②主线只看物理首行——【主线】被标题挤到第 2 行时报「首行未标注」，模型明明标了，
+// 修订无从收敛（契约漂移的镜像）。升级：要点行 = 带「出处：§N」的行（契约要件，机器可判），
+// 标题/说明行不计数；主线报真位置不给假反馈；每个意见都带修法方向
 export function digestCheck(digest: string, maxSection: number): string[] {
   const lines = digest.split('\n').filter((l) => l.trim())
+  const points = lines.filter((l) => /出处：§\d+/.test(l)) // 要点行：带出处标注（契约要件——缺出处的行走「非要点行」意见）
   const issues: string[] = []
-  if (lines.length < 3 || lines.length > 5) issues.push(`条数 ${lines.length} 不在 3~5 契约内`)
-  if (!lines[0]?.includes('【主线】')) issues.push('首行未标注【主线】（契约：主线放第一行并标注）')
+  if (points.length < 3 || points.length > 5) issues.push(`要点 ${points.length} 条不在 3~5 契约内（只数带「出处：§N」的要点行）`)
+  const mainIdx = points.findIndex((l) => l.includes('【主线】'))
+  if (mainIdx === -1) issues.push('没有任何要点行标注【主线】（契约：主线放第一行并标注）')
+  else if (mainIdx > 0) issues.push(`【主线】在第 ${mainIdx + 1} 个要点行，契约要求第一行——上移该条`)
   // 锚的独立性（单测逮出的坑）：出处自带数字（§1 的 1），不剥掉它，「含数字」锚就成了出处锚的影子——
   // 两条契约各测各的，验数字只看剥掉出处后的正文
   const contentOf = (l: string) => l.replace(/（出处：§\d+）/, '').replace(/出处：§\d+/, '')
-  const numbered = lines.filter((l) => /\d/.test(contentOf(l)))
+  const numbered = points.filter((l) => /\d/.test(contentOf(l)))
   if (numbered.length < 2) issues.push(`含数字的要点仅 ${numbered.length} 条，契约要求至少 2 条`)
-  const badRef = lines.filter((l) => {
-    const m = l.match(/出处：§(\d+)/)
-    return !m || Number(m[1]!) > maxSection
-  })
-  if (badRef.length) issues.push(`${badRef.length} 条缺「出处：§N」标注或编号越界（素材范围 §1~§${maxSection}）`)
+  const nonPoints = lines.filter((l) => !/出处：§\d+/.test(l))
+  if (nonPoints.length) issues.push(`${nonPoints.length} 行不是要点行（缺「（出处：§N）」标注）：标题/说明行直接删除；是要点就补出处`)
+  const outOfRange = points.filter((l) => Number(l.match(/出处：§(\d+)/)![1]) > maxSection)
+  if (outOfRange.length) issues.push(`${outOfRange.length} 条出处编号越界（素材范围 §1~§${maxSection}）`)
   return issues
 }
 
@@ -226,6 +234,7 @@ export async function runCompositeSystem(topic: string, opts?: { source?: string
   const spent = () => researchTokens.prompt + researchTokens.completion + writingTokens.prompt + writingTokens.completion
   const overBudget = () => spent() > costCeiling
   // §7 可靠层接线：所有窗口走 spawnReliable——瞬态（5xx/网络/限流）退避重试，quota/鉴权/参数错 fail-fast 带原文落；
+  // quota 特例：配了备用档（默认回落小档）先切档续跑，切档也进 trace 树；
   // 重试轮次进 trace 树（免费节点，图里看得见「第几轮为什么重发」）
   const reliable = (task: string, o?: Parameters<typeof spawnReliable>[1]) =>
     spawnReliable(task, {
@@ -234,6 +243,10 @@ export async function runCompositeSystem(topic: string, opts?: { source?: string
         onRetry: (n, ec) => {
           trace.event(`瞬态重试#${n}`, 'retry', 'fail', `${ec}——退避后重发`)
           lf.event(lfRun, `瞬态重试#${n}`, 'retry', `reject:${ec}`)
+        },
+        onFailover: (model, err) => {
+          trace.event(`配额failover`, 'failover', 'fail', `主档配额耗尽（${err.slice(0, 40)}）——切备用档 ${model} 续跑`)
+          lf.event(lfRun, `配额failover`, 'failover', `reject:主档quota→${model}`)
         },
       },
     })

@@ -23,7 +23,7 @@
 // import 'dotenv/config'
 import { createAgent, agentLoop, parseModelJson, type ModelThinkingLevel } from '../09-harness/agent.ts'
 import { truncateToolResult } from '../09-harness/context.ts'
-import { MODEL, LIGHT_MODEL } from '../09-harness/llm.ts'
+import { MODEL, LIGHT_MODEL, BACKUP_MODEL } from '../09-harness/llm.ts'
 
 export interface SpawnResult {
 	ok: boolean
@@ -49,12 +49,13 @@ export function renderBrief(task: string, handoff?: string): string {
 
 // spawn：起一个子 agent 干活，拿回结论 + 账单。
 // 子 agent 的权限/沙箱/hook 由 09 dispatch 咽喉自动覆盖——这里不重复操心中关村的事
-export async function spawn(task: string, opts?: { handoff?: string; systemExtra?: string; maxSteps?: number; budgetTokens?: number; tools?: string[]; thinking?: ModelThinkingLevel; skipSessionEndHooks?: boolean; useLightModel?: boolean }): Promise<SpawnResult> {
+export async function spawn(task: string, opts?: { handoff?: string; systemExtra?: string; maxSteps?: number; budgetTokens?: number; tools?: string[]; thinking?: ModelThinkingLevel; skipSessionEndHooks?: boolean; useLightModel?: boolean; useBackupModel?: boolean }): Promise<SpawnResult> {
 	const t0 = Date.now()
 	let promptTokens = 0
 	let completionTokens = 0
-	// §7 路由决策落账：useLightModel 且配了小档才真换（没配自动回落主模型——回落也要记主模型名，不是留空）
-	const usedModel = opts?.useLightModel && LIGHT_MODEL ? LIGHT_MODEL : MODEL
+	// §7 路由决策落账：useLightModel 且配了小档才真换（没配自动回落主模型——回落也要记主模型名，不是留空）；
+	// failover 换档（useBackupModel）优先于路由——与 agentLoop 同一优先级，账和实跑必须一致
+	const usedModel = opts?.useBackupModel && BACKUP_MODEL ? BACKUP_MODEL : opts?.useLightModel && LIGHT_MODEL ? LIGHT_MODEL : MODEL
 	try {
 		const ctx = await createAgent(renderBrief(task, opts?.handoff), { systemExtra: opts?.systemExtra, budgetTokens: opts?.budgetTokens, tools: opts?.tools })
 		const raw = await agentLoop(ctx, {
@@ -63,6 +64,7 @@ export async function spawn(task: string, opts?: { handoff?: string; systemExtra
 			thinking: opts?.thinking,
 			skipSessionEndHooks: opts?.skipSessionEndHooks,
 			useLightModel: opts?.useLightModel,
+			useBackupModel: opts?.useBackupModel,
 			onUsage: (u) => {
 				promptTokens += u.promptTokens
 				completionTokens += u.completionTokens
