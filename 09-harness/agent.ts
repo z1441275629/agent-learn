@@ -31,7 +31,7 @@ import type { ToolCallParams } from './type.ts'
 // 平台配置全部走 llm.ts（从 .env 读 LLM_BASE_URL/LLM_MODEL/LLM_API_KEY/LLM_BUDGET_TOKENS）——
 // 换平台只改 .env 不改代码。client/MODEL/BUDGET_TOKENS 的唯一事实源在 llm.ts，这里 re-export，
 // 下游（planner.ts、10-multi-agent）照旧 `import { client, MODEL } from './agent.ts'` 不用改。
-import { client, MODEL, BUDGET_TOKENS } from './llm.ts'
+import { client, MODEL, BUDGET_TOKENS, THINKING_STYLE } from './llm.ts'
 export { client, MODEL, BUDGET_TOKENS }
 
 // ---------- 工具注册 ----------
@@ -139,8 +139,29 @@ const SYSTEM_PROMPT = `你是一个严谨的生活助理。用户问相关问题
 // 每步：ensureBudget（可能触发一次压缩调用）→ 打表 → 用 view 发请求 → 新消息 ctx.add 双写
 export type ToolCallObserver = (info: { name: string; arguments: string; result: string }) => void
 
-// deepseek 模型思考级别
-export type ModelThinkingLevel = 'low' | 'high' | 'max'
+// 思考级别（人类可读意图）——具体怎么翻译成平台载荷由 buildThinkingParam 管（协议是平台相关的，
+// 读 .env 的 LLM_THINKING_STYLE 决定，换模型只改配置不改代码）：
+//   undefined → 不带参数（端点默认）
+//   'low' | 'high' | 'max' → 开启思考 + 给强度；'off' → 关闭思考
+// 低思考的浅任务（判形状/critic 对审）用 off，别让 completion 大头烧在思考 token 上
+export type ModelThinkingLevel = 'low' | 'high' | 'max' | 'off'
+
+// 把思考意图翻译成 OpenAI-compatible 载荷——协议随 LLM_THINKING_STYLE 走（火山/GLM/DeepSeek 用
+// {type:enabled/disabled}+reasoning_effort；bool 模型用单个 true/false；none 不传）。
+// 教训：曾裸传字符串 'high' 撞出火山 "Mismatch type openapi.Thinking"——翻译层必须知道模型协议，
+// 而协议是配置不是代码。reasoning_effort 只在该发时发（high 常是默认，低/高差异才值得带参数）
+export function buildThinkingParam(level?: ModelThinkingLevel): object {
+	const style = THINKING_STYLE
+	if (style === 'none') return {}
+	if (style === 'bool') {
+		if (!level) return {}
+		return { thinking: level !== 'off' }
+	}
+	// openapi（火山/GLM/DeepSeek）风格
+	if (!level || level === 'off') return level === 'off' ? { thinking: { type: 'disabled' } } : {}
+	const strength = level === 'low' || level === 'max' ? { reasoning_effort: level } : {}
+	return { thinking: { type: 'enabled' }, ...strength }
+}
 
 // 配置项打包（§5 重构）：可选位置参数堆到两个 + 调用点出现 undefined 洞（(ctx, 8, undefined, sid)）
 // 就是换形状的信号——主题参数（ctx，必选）保持位置参数，配置进对象：调用点自解释，
@@ -179,9 +200,9 @@ export async function agentLoop(ctx: ContextManager, { maxSteps = 8, onToolCall,
 			messages: ctx.getSendView(),
 			// 空工具面省略 tools 字段——空数组在部分 API 是「禁用工具」在部分是错误，省略是唯一安全形态
 			...(tools.length ? { tools } : {}),
-			// 思考开关（GLM 端点参数）：不带=端点默认（开）；disabled=关——浅任务的 completion/墙钟直降
-			// ...(thinking === false ? { thinking: { type: 'disabled' } } : {}),
-			...{ thinking },
+			// 思考参数：由 buildThinkingParam 把人类可读级别翻译成平台载荷（thinking.type: enabled/disabled
+			// 是火山/GLM 协议）——别直接透传字符串（撞过 400 Mismatch type openapi.Thinking）
+			...buildThinkingParam(thinking),
 		})
 		console.log('真实token用量：', response.usage?.prompt_tokens)
 		onUsage?.({ promptTokens: response.usage?.prompt_tokens ?? 0, completionTokens: response.usage?.completion_tokens ?? 0 })

@@ -136,7 +136,7 @@ export async function runGeneratorCritic(): Promise<CriticLoopResult> {
 	let draft = ''
 	// 首稿：素材 → generator（工具面清零：写手是纯文本活，挂着 search_notes 只会钓走注意力和 token——§5「工具面=能力面」的实操；
 	// thinking 关闭：写 120 字摘要是浅任务，思考 token 是白烧的墙钟；短命 agent 不跑会话结束钩子）
-	let first = await spawn(DRAFT_TASK, { handoff, tools: [], thinking: false, skipSessionEndHooks: true })
+	let first = await spawn(DRAFT_TASK, { handoff, tools: [], thinking: 'high', skipSessionEndHooks: true })
 	history.push({ draft: first.conclusion, critic: first, verdict: { passed: false, issues: [] } }) // 占位——首轮循环里会被真评审覆盖
 	let promptTokens = first.promptTokens
 	let completionTokens = first.completionTokens
@@ -150,7 +150,7 @@ export async function runGeneratorCritic(): Promise<CriticLoopResult> {
 		// critic 没见过素材判不了「有无依据」，自己去找：type note.md / 正文里写 run_shell JSON——
 		// agentic 先验从文本泄漏 + 契约三连违约熔断，2026-10-23 探针实录）。隔离的边界不变：
 		// critic 看素材+稿，仍看不到 generator 的过程
-		const critic = await spawn(criticPrompt(), { handoff: `原始素材：${DRAFT_MATERIAL}\n\n待审稿件：${draft}`, tools: [], thinking: false, skipSessionEndHooks: true })
+		const critic = await spawn(criticPrompt(), { handoff: `原始素材：${DRAFT_MATERIAL}\n\n待审稿件：${draft}`, tools: [], thinking: 'high', skipSessionEndHooks: true })
 		promptTokens += critic.promptTokens
 		completionTokens += critic.completionTokens
 		const verdict = parseCriticVerdict(critic.conclusion)
@@ -165,7 +165,7 @@ export async function runGeneratorCritic(): Promise<CriticLoopResult> {
 		// 重写：修订指令 + 原稿 + 原素材，喂回 generator（批评被消费，不是被记录）
 		const revise = await spawn(
 			[DRAFT_TASK, `上一稿被评审打回，逐条修订：\n${issues.map((s, i) => `${i + 1}. ${s}`).join('\n')}`].join('\n\n'),
-			{ handoff: `原始素材：${DRAFT_MATERIAL}\n上一稿：${draft}`, tools: [], thinking: false, skipSessionEndHooks: true },
+			{ handoff: `原始素材：${DRAFT_MATERIAL}\n上一稿：${draft}`, tools: [], thinking: 'high', skipSessionEndHooks: true },
 		)
 		promptTokens += revise.promptTokens
 		completionTokens += revise.completionTokens

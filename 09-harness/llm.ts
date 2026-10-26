@@ -29,6 +29,13 @@ const EMBED_BASE_URL = process.env.LLM_EMBED_BASE_URL || 'https://open.bigmodel.
 const EMBED_MODEL = process.env.LLM_EMBED_MODEL || 'embedding-3'
 // embed 的 key 可选：同平台省略回落 LLM_API_KEY；挂独立平台（免费 embed）填它自己的 key
 const embedKey = process.env.LLM_EMBED_API_KEY || apiKey
+// thinking 协议标识：模型怎么表达思考开关——换模型只改这一个值，agent 翻译层读它
+//   openapi → 火山/GLM/DeepSeek 风格：{ thinking: { type: enabled|disabled } } + reasoning_effort
+//   bool    → 某些 OpenAI 兼容模型：thinking: true|false（单布尔）
+//   none    → 不支持思考参数（就别传，省得撞 400）
+export type ThinkingStyle = 'openapi' | 'bool' | 'none'
+const THINKING_STYLE = (process.env.LLM_THINKING_STYLE ?? 'openapi') as ThinkingStyle
+export { THINKING_STYLE }
 
 const missing: string[] = []
 if (!BASE_URL) missing.push('LLM_BASE_URL')

@@ -4,7 +4,7 @@
 对比设计（公平参数钉死——改任何一个，×N 就没有意义）：
   同一份素材（import 自 composite——单一事实源，契约漂移的教训反过来用在数据上）
   同一个交付契约（与产线 REPORT_TASK 的输出契约逐字对齐：一个自然段/150字/主线+下周方向/数字不造）
-  同一套窗口配置（tools:[] / thinking:false / skipSessionEndHooks:true——与产线六个窗口完全一致）
+  同一套窗口配置（tools:[] / thinking:'off' / skipSessionEndHooks:true——与产线六个窗口完全一致）
   唯一的变量：结构——单窗口一发干完「研究+写作」，没有门检、没有审校、没有熔断
 
 基线是什么：裸 agent。它的账单是「不上多 agent」的价格锚点——
@@ -20,7 +20,7 @@ const BASELINE_TASK = [
 ].join('\n')
 
 export async function runBaseline(): Promise<SpawnResult> {
-	return spawn(BASELINE_TASK, { handoff: `原始素材（模块10 多Agent六节战果）：\n${SOURCE_MATERIAL}`, tools: [], thinking: false, skipSessionEndHooks: true })
+	return spawn(BASELINE_TASK, { handoff: `原始素材（模块10 多Agent六节战果）：\n${SOURCE_MATERIAL}`, tools: [], thinking: 'off', skipSessionEndHooks: true })
 }
 
 // 冒烟口（花 GLM 配额，一发）：

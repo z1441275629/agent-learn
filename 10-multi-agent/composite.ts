@@ -269,7 +269,7 @@ export async function runCompositeSystem(topic: string, opts?: { source?: string
 		result.writerSpawns++
 		const revise = await spawn(
 			[REPORT_TASK, `上一稿被审校打回，逐条修订：\n${verdict.issues.map((s, i) => `${i + 1}. ${s}`).join('\n')}`].join('\n\n'),
-			{ handoff: `研究简报：${result.digest}\n上一稿：${draft}`, tools: [], thinking: false, skipSessionEndHooks: true },
+			{ handoff: `研究简报：${result.digest}\n上一稿：${draft}`, tools: [], thinking: 'high', skipSessionEndHooks: true },
 	)
 		chargeW('写手修订', revise)
 		draft = revise.conclusion
