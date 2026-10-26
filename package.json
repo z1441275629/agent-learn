@@ -16,6 +16,7 @@
     "m8-plan": "node 08-planner/planner.ts",
     "m8-cron": "node 08-planner/cron.ts",
     "m9": "node 09-harness/agent.ts",
+    "check": "tsc --noEmit",
     "format": "prettier --write .",
     "format:check": "prettier --check ."
   },
@@ -30,7 +31,8 @@
   },
   "devDependencies": {
     "@types/node": "^26.6.5",
-    "prettier": "^3.9.10"
+    "prettier": "^3.9.10",
+    "typescript": "^7.0.2"
   },
   "overrides": {
     "@opentelemetry/api": "1.10.0",

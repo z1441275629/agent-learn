@@ -71,9 +71,9 @@ function wmoCodeToWeather(code: number): string {
 // ---------- 第二部分：真正的工具实现（你的本地函数） ----------
 async function getWeather(city: string): Promise<string> {
   // 第 1 步：geocoding 只干一件事——城市名换坐标（检索索引只认拼音/英文）
-  const geo = await (await fetch(
+  const geo = (await (await fetch(
     `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(city)}&count=1&language=zh`
-  )).json();
+  )).json()) as { results?: { latitude: number; longitude: number; name: string }[] };
   if (!geo.results?.length) {
     // 查不到也返回结构化错误，模型拿到后会自己决定下一步（比如换拼音重试）
     return JSON.stringify({ error: `未找到城市"${city}"，需用拼音或英文，如 Beijing` });
@@ -81,9 +81,9 @@ async function getWeather(city: string): Promise<string> {
   const { latitude, longitude, name } = geo.results[0];
 
   // 第 2 步：forecast 拿坐标换天气（temperature_2m 默认摄氏度，单位见响应里的 current_units）
-  const wx = await (await fetch(
+  const wx = (await (await fetch(
     `https://api.open-meteo.com/v1/forecast?latitude=${latitude}&longitude=${longitude}&current=temperature_2m,weather_code&timezone=auto`
-  )).json();
+  )).json()) as { current: { weather_code: number; temperature_2m: number } };
 
   return JSON.stringify({
     city: name,
@@ -150,8 +150,8 @@ function calculate(expression: string): string {
   }
 }
 
-// 名字 -> 函数 的映射，模型报出名字，你在这里找到真身
-const TOOL_IMPL: Record<string, (args: any) => Promise<string>> = {
+// 名字 -> 函数 的映射，模型报出名字，你在这里找到真身（同步/异步实现都收——调用方 await 兼容两者）
+const TOOL_IMPL: Record<string, (args: any) => string | Promise<string>> = {
   get_weather: (args) => getWeather(args.city),
   calculate: (args) => calculate(args.expression),
 };
@@ -172,7 +172,7 @@ async function run(userQuestion: string): Promise<string> {
     const response = await client.chat.completions.create({
       model: MODEL,
       messages,
-      tools: TOOLS
+      tools: [...TOOLS] // TOOLS 是 as const 的 readonly 字面量（教学保类型），SDK 参数要 mutable——展开复制一份
     });
     return response;
   }
@@ -186,7 +186,7 @@ async function run(userQuestion: string): Promise<string> {
   //        push 进 messages；再把每个工具的执行结果作为
   //        { role: "tool", tool_call_id: toolCall.id, content: 结果字符串 } push 进去
   //   思考：如果忘了把 assistant 消息 push 进去，API 会报什么错？为什么？
-  async function callFn(response) {
+  async function callFn(response: Awaited<ReturnType<typeof request>>) {
     console.log('++++++++++++++++');
     console.log(response.choices);
     console.log('++++++++++++++++');
@@ -195,7 +195,9 @@ async function run(userQuestion: string): Promise<string> {
     if (toolCalls.length) {
       messages.push(message);
     }
-    for (const toolCall of toolCalls) {
+    // openai SDK 的 tool_calls 是联合类型（function call / custom tool call 两种变体），
+    // 这里只支持 function 变体——断言成窄类型（模块 3 同款处理）
+    for (const toolCall of toolCalls as { id: string; function: { name: string; arguments: string } }[]) {
       const toolName = toolCall.function.name;
       const args = JSON.parse(toolCall.function.arguments);
       const result = await TOOL_IMPL[toolName](args);
@@ -218,7 +220,7 @@ async function run(userQuestion: string): Promise<string> {
     const response = await request();
     const message = await callFn(response);
     if (!message.tool_calls || message.tool_calls.length === 0) {
-      return message.content;
+      return message.content ?? "";
     }
     steps++;
   }

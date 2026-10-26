@@ -22,7 +22,7 @@ export function estimateTokens(text: string): number {
 // message.content + message.tool_calls的name+arguments 的 token 估算
 function getMessagesTokens(messages: any[]): number {
 	return messages.reduce((sum, m) => {
-		const toolCallsTokens = m.tool_calls ? m.tool_calls.reduce((toolSum, t: any) => toolSum + estimateTokens(`${t.function.name}(${t.function.arguments})`), 0) : 0
+		const toolCallsTokens = m.tool_calls ? m.tool_calls.reduce((toolSum: number, t: any) => toolSum + estimateTokens(`${t.function.name}(${t.function.arguments})`), 0) : 0
 		return sum + estimateTokens(m.content) + toolCallsTokens
 	}, 0)
 }

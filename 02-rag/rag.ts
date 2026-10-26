@@ -189,7 +189,8 @@ const QUESTIONS = [
 await evaluate("关键词检索", async (q) => searchKeyword(q, chunks), QUESTIONS);
 
 // 阶段 B：向量版，写完 TODO 3 再解开下面注释（embedding 报错不影响阶段 A）
-const embedded = chunks.map((c, i) => ({ ...c }));
+// embedding 先占位空数组（下一行立刻被真向量填上）——不占位则类型是纯 Chunk，赋值 embedding 报属性不存在
+const embedded = chunks.map((c) => ({ ...c, embedding: [] as number[] }));
 {
   const vectors = await embedAll(chunks.map((c) => c.text));
   vectors.forEach((v, i) => (embedded[i].embedding = v));

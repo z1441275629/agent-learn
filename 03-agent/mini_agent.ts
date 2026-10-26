@@ -140,7 +140,7 @@ async function agentLoop(messages: any[], maxSteps = 8): Promise<string> {
 		const promises = message.tool_calls.map(async (tool) => await dispatch(tool))
 		const toolRes = await Promise.all(promises)
 		toolRes.forEach((item, index) => {
-      console.log(`[step ${step}] 工具结果: ${message.tool_calls?.[index].function.name} -> ${item}`)
+      console.log(`[step ${step}] 工具结果: ${(message.tool_calls?.[index] as any)?.function?.name} -> ${item}`)
 			messages.push({ role: 'tool', tool_call_id: message.tool_calls?.[index].id, content: item })
 		})
 		step++

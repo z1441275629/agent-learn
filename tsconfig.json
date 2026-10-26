@@ -1,0 +1,23 @@
+{
+	// 类型检查专用配置（node --experimental-strip-types 直跑不读它——运行时零影响）：
+	// 缘起 PITFALLS #33——agentLoop 接口加了字段、解构漏加，运行时才炸；静态检查本可秒逮。
+	// 用法：npm run check（= tsc --noEmit）
+	"compilerOptions": {
+		// 本仓库 import 全带 .ts 扩展名（strip-types 直跑的形态）——allowImportingTsExtensions 是必须项，
+		// 它要求 noEmit（我们本来就不编译，node 自己剥类型）
+		"allowImportingTsExtensions": true,
+		"noEmit": true,
+		"module": "preserve",
+		"moduleResolution": "bundler",
+		"target": "esnext",
+		"lib": ["esnext"],
+		"types": ["node"],
+		"strict": true,
+		// node_modules 里 OTel 系的老 .d.ts 互相冲突会炸出海——不检查库的类型，只检查我们的代码
+		"skipLibCheck": true,
+		"esModuleInterop": true,
+		"forceConsistentCasingInFileNames": true
+	},
+	"include": ["**/*.ts"],
+	"exclude": ["node_modules", "11-production/traces"]
+}
