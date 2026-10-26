@@ -229,10 +229,28 @@ export const CASE_GARBAGE: EvalCase = {
 }
 
 // ---------- 跑分器 ----------
-export async function runEvalSet(cases: EvalCase[]): Promise<EvalReport> {
+// concurrency：并行度——产线的 coding plan 并发受限制也容易失败，默认 2 路（不撞限流）；
+// 1 = 串行（最稳每条都毕）；3 = 三 case 全开（快但撞限流风险）。按空闲时段调。
+export async function runEvalSet(cases: EvalCase[], opts: { concurrency?: number } = {}): Promise<EvalReport> {
+	const { concurrency = 2 } = opts
 	const report: EvalReport = { overall: { passed: 0, failed: 0, skipped: 0 }, cases: [], promptTokens: 0, completionTokens: 0 }
-	for (const c of cases) {
-		const result = await runCompositeSystem(c.topic, { source: c.source }) // 每 case 一次产线运行——评测集的价格单位
+	// 每 case 独立跑产线 + 判性质——结果按原顺序填进 report 的占位槽（并发完成顺序是乱的，不能边跑边 push）
+	const buckets: (CompositeResult | null)[] = cases.map(() => null)
+	let cursor = 0
+	while (cursor < cases.length) {
+		const batch = cases.slice(cursor, cursor + concurrency) // 一批把并发度内几路同时跑
+		await Promise.all(
+			batch.map(async (c, i) => {
+				const result = await runCompositeSystem(c.topic, { source: c.source }) // 每 case 一次产线运行——评测集的价格单位
+				buckets[cursor + i] = result
+			}),
+		)
+		cursor += concurrency
+	}
+	for (let i = 0; i < cases.length; i++) {
+		// 性质判据是纯函数零成本（§1 分层）——免费层在产线回齐后逐 case 判，不计入并发窗口
+		const c = cases[i]
+		const result = buckets[i]!
 		const results = c.properties.map((p) => {
 			const cr = p.check(result)
 			return { property: p.name, status: cr.status, note: cr.note }

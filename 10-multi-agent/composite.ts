@@ -214,7 +214,8 @@ export async function runCompositeSystem(topic: string, opts?: { source?: string
 		let verdict: CriticVerdict
 		if (shapeIssues.length === 0) {
 			// 审校①：独立窗口看素材+简报，看不到研究员的过程（§6 隔离不变）
-			const critic = await spawn(digestCriticPrompt(), { handoff: `原始素材（${topic}）：\n${source}\n\n待审简报：${digest}`, tools: [], thinking: 'high', skipSessionEndHooks: true })
+			// 审校①是判断题（只回 PASS/FAIL + 逐条意见），浅任务不空转思考——completion 大头是思考 token，墙钟≈completion÷速度
+			const critic = await spawn(digestCriticPrompt(), { handoff: `原始素材（${topic}）：\n${source}\n\n待审简报：${digest}`, tools: [], thinking: 'off', skipSessionEndHooks: true })
 			chargeR('审校①', critic)
 			verdict = parseCriticVerdict(critic.conclusion)
 			result.researchRounds.push({ output: digest, critic, verdict })
@@ -248,13 +249,15 @@ export async function runCompositeSystem(topic: string, opts?: { source?: string
 	// —— 写作段：写手 ⇄ 审校②（一级验）——
 	// criticPrompt 从 §6 import 一字不改：每段的「原始素材」= 它的直接上游交接物——
 	// 简报对写作段就是源头（它已被审校① 验过，这是审校② 敢只看简报的全部前提）
-	const first = await spawn(REPORT_TASK, { handoff: `研究简报：${result.digest}`, tools: [], thinking: 'high', skipSessionEndHooks: true })
+	// 写手首稿是转写（简报已验过是源头），150 字周报是浅任务——不空转思考
+	const first = await spawn(REPORT_TASK, { handoff: `研究简报：${result.digest}`, tools: [], thinking: 'off', skipSessionEndHooks: true })
 	chargeW('写手首稿', first)
 	result.writerSpawns = 1
 	let draft = first.conclusion
 	let wRevises = 0
 	while (true) {
-		const critic = await spawn(criticPrompt(), { handoff: `原始素材：${result.digest}\n\n待审稿件：${draft}`, tools: [], thinking: 'high', skipSessionEndHooks: true })
+		// 审校②也是判断题——浅任务不空转思考
+		const critic = await spawn(criticPrompt(), { handoff: `原始素材：${result.digest}\n\n待审稿件：${draft}`, tools: [], thinking: 'off', skipSessionEndHooks: true })
 		chargeW('审校②', critic)
 		const verdict = parseCriticVerdict(critic.conclusion)
 		result.writingRounds.push({ output: draft, critic, verdict })

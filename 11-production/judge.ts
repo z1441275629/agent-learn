@@ -198,7 +198,9 @@ const isMain = process.argv[1] !== undefined && import.meta.url === new URL(`fil
 if (isMain) {
 	const { runEvalSet, CASE_FULL, CASE_THIN, CASE_GARBAGE } = await import('./evals.ts')
 	console.log('【judge §2】免费层跑分 → judge 层对账——一次产线运行两层判')
+	const t0 = Date.now() // 总墙钟打点——加速实验（浅窗 off）的对比基线
 	const free = await runEvalSet([CASE_FULL, CASE_THIN, CASE_GARBAGE]) // 产线跑一次（免费性质判）
+	console.log(`产线总墙钟：${((Date.now() - t0) / 1000).toFixed(1)}s（三 case + judge 后判混在内）`)
 	const judge = await runJudgeLayer(free, JUDGE_CRITERIA) // judge 后判，复用 result 不重跑
 	console.log(`\njudge 层：${judge.overall.passed} 过 / ${judge.overall.failed} 挂 / ${judge.overall.skipped} 跳（prompt ${judge.promptTokens} / completion ${judge.completionTokens}）`)
 	// —— 人审对账输入环（你问的：人的判定从哪来）——
