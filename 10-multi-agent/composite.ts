@@ -210,7 +210,8 @@ export async function runCompositeSystem(topic: string, opts?: { source?: string
   const settle = () => {
     result.promptTokens = researchTokens.prompt + writingTokens.prompt
     result.completionTokens = researchTokens.completion + writingTokens.completion
-    // §3 落盘接上：trace 已收完所有 span（token 双栏 + 结论 + 门检/熔断判据），fire-and-forget 写 traces/{id}.json + {id}-flow.txt（不阻塞返回；失败不吞产线结果）
+    // §3 落盘接上：trace 已收完所有 span，补终局结论（finalReport）+ fire-and-forget 写 traces/{id}.json + {id}-flow.txt（不阻塞返回；失败不吞产线结果）
+    trace.conclude(result.finalReport)
     trace
       .save()
       .then((p) => console.log(`  [账] trace 落盘 ${p}`))

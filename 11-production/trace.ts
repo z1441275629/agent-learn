@@ -43,6 +43,7 @@ export class TraceCollector {
   readonly startMs = Date.now()
   private readonly meta: TraceMeta
   private readonly traceId: string // 落盘文件名用——缺了 save 会写出 undefined.json
+  private outcome?: string // 终局结论（产线 finalReport）——renderFlow 末尾画「全账+终局」，JSON 落盘同带
   constructor(meta: TraceMeta) {
     this.meta = meta
     this.traceId = `run-${new Date().toISOString().replace(/[:.]/g, '-')}`
@@ -65,6 +66,11 @@ export class TraceCollector {
       verdict,
       ...(reason ? { conclusion: reason } : {}),
     })
+  }
+
+  // 终局结论（产线 finalReport）——settle 收尾喂；图缺了它就只有窗口没有「这一跑到底产出什么」
+  conclude(conclusion: string) {
+    this.outcome = conclusion
   }
 
   // 从 this.spans 生成 §8 那种流转图文本。骨架预填图例，图体靠你的布局决策。
@@ -97,10 +103,20 @@ export class TraceCollector {
       return res.map((line) => line) // 保留 children 递归的层空间留给 §TODO③
     }
 
+    // 全账聚合：从 agent 窗口 token 求和（免费点恒 0，天然只算真金白银）——终局结论同图落底
+    const windows = this.spans.filter(isWindow)
+    const sumP = windows.reduce((a, s) => a + s.promptTokens, 0)
+    const sumC = windows.reduce((a, s) => a + s.completionTokens, 0)
+    const tail = [
+      '     │ ══ 全账 ══',
+      `     prompt ${sumP} / completion ${sumC}（${windows.length} 个 agent 窗口）`,
+    ]
+    if (this.outcome) tail.push('     │ ══ 终局结论 ══', `     ${this.outcome}`)
     return [
       '图例：┃ agent 窗口（每一发都是真金白银）  ◆ 免费节点（纯函数/编排代码，token 为零）',
       '     │ 交接物流向',
       renderSpans(this.spans).join('\n'),
+      ...tail,
     ].join('\n')
   }
 
@@ -119,6 +135,7 @@ export class TraceCollector {
           startMs: this.startMs,
           durationMs: Date.now() - this.startMs,
           spans: this.spans,
+          ...(this.outcome ? { outcome: this.outcome } : {}),
         },
         null,
         2,
