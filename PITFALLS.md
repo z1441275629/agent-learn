@@ -21,6 +21,11 @@
 - 症状：「写完了，token 965」——但配对对不对、任务成没成、追问质量如何全都不知道
 - 原则：有损优化的验收 = 成本数字 **配** 成功率/质量，缺一不可；实验前先列「要收集哪几个数」
 
+### 4b. 观测框架的缓冲式 batch flush：进程强杀丢最后一批 [11]
+- 症状：Langfuse（OTel 基 @langfuse/otel）的 span `.end()` 后进 BatchSpanProcessor 缓冲，定时/攒量才推云端。跑完自然退出的进程若没 `await forceFlush()`（或进程被 Ctrl+C/crash/OOM 强杀），**缓冲里最后一批 span 直接丢**——云端 trace 缺尾巴，且看起来一切正常（静默丢，比报错难察觉）
+- 修法：跑完手动 `await processor.forceFlush()`（serverless 清单：`exportMode:"immediate"` + 结束前 flush）；进程要转长驻/被强杀必须接 shutdown 钩子优雅退出
+- 原则：**凡「先缓冲后异步送」的观测/日志层，都欠一次「退出前 flush」**——不 flush 等于承诺了没兑现的持久化；静默的已发送 vs 缓冲的待发送要分得清，别把「调了 forceFlush」当「数据一定到」
+
 ## 二、状态与架构
 
 ### 4. 局部重赋值断开调用方引用（compaction 三连坑）[06]
