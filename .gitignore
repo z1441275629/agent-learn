@@ -29,3 +29,6 @@ node_modules/
 09-harness/sandbox/
 09-harness/.sessions.json
 09-harness/sessions/
+
+# 11-production trace 运行时产物（每次产线运行落盘，不入库）
+11-production/traces/
