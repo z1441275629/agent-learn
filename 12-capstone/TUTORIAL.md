@@ -66,6 +66,17 @@
 7. ChatOpenAI 直连 GLM 零障碍（`configuration.baseURL`）——和 Vercel AI SDK 的 `.chat()` 同一课：OpenAI 兼容端点是事实标准，框架层选型不受厂商锁定
 - 代码量：手写 317 行 vs 图版 ~230 行（其中探针 100 行）——纯业务对照约 317 vs 130。省的是骨架，不省的是脑子该想的事
 
+### 增补：Send fan-out 并行版（2026-10-27，用户 review 逮出）
+
+首版 executeSteps 把整批 runnable 关在**一个节点里 for 串行**——手写版默认 `PARALLEL=Promise.all` 的行为差异没声明。比「节点内补 Promise.all」更对的是图形态的正统并行：**dispatch 条件边 `Send` fan-out 到 executeOne，并行升进图拓扑**。探针 9/9 → 11/11（新增 P1b 真并发断言 inFlight 峰值=3、P5 并发写拦截），真链冒烟全通（GLM 出依赖链计划、逐批推进全 done）。
+
+三个新对照发现：
+
+1. **状态被迫分离**：`status/retries` 原来塞在 `plan.steps` 里（手写版「一个对象走天下」，落盘方便）——并发节点各写各的步骤状态，必须拆出 `stepStatus` channel（merge reducer 按 key 归并）。静态计划与动态执行态分离不是洁癖，是**并发的物理前提**
+2. **框架把隐性竞态变成显式报错（P5 实证）**：无 reducer 的 LastValue channel 被并发写 → `InvalidUpdateError: "LastValue can only receive one value per step"`。模块 8 金笔记②「Promise.all 并发写同名文件互相覆盖」是静默出错，LangGraph 直接拒绝执行——**归并语义从「祈祷没错」变成「必须声明」**。`stepResults` channel 也因此从覆盖语义升 merge
+3. **recursionLimit 是图形态的隐性税（PITFALLS #35）**：P3 熔断探针当场 `GraphRecursionError`——图形态把重试/replan 摊进拓扑，**每趟 dispatch/executeOne 都计一步递归**，默认上限 25 按节点执行数计；熔断路径（3 重试 × 3 replan × dispatch+executeOne 交替）≈26 次节点执行刚好爆表。手写版 while 循环没有这种税——图越细粒度，递归预算越要是显式参数
+4. **附带 n=1 复课**：首版冒烟过了、重构版冒烟当场炸在 ```json 围栏——「简版」省掉模块 8 的围栏剥除保险，上一发没围栏纯属运气（模块 11 §8 n=1 方差边界同课）。修法：花括号切片（比剥 fence 鲁棒——围栏/寒暄/尾随句全剥）
+
 ## 3. Claude Agent SDK：产品级循环——和你的 09 harness 对照
 
 - **任务**：读它的 agent 循环 + 权限 + hooks 结构（你每天在用的 ZCode 的近亲），对照模块 09 手写的壳
