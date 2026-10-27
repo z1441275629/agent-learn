@@ -114,6 +114,22 @@
 - 你能读懂它文档里每个概念的 TS 对应物——这就是「Python 阅读力」的验收
 - 数据槽：三个框架各一句「它的 X = 我手写的 Y」：____ / ____ / ____
 
+### 实做记录（2026-10-27）
+
+三份官方文档通读（docs.langchain.com LangGraph Python overview / openai.github.io/openai-agents-python / docs.crewai.com agents+crews 概念页），零 LLM 配额。验收自答：**三家概念表逐条能映射回手写件或 §1~3 实做的 TS 框架，无一个生词**——Python 阅读力达成。
+
+对照发现：
+
+1. **控制流归谁是三家的分水岭**：LangGraph 你画图它管状态流（orchestration runtime）、OpenAI Agents SDK 它管循环你填 Agent（runtime 白送 turns/工具执行/交接）、CrewAI 它管流程你填角色（连执行顺序都不用你操心，Process 一句话）。抽象高度递增、可干预度递减——和「手写 while → 图 → 产品 harness」的自由度梯度同构
+2. **LangGraph 官方自己给了横评的分层背书**：文档明说自家生态 = framework（LangChain，agent 抽象）/ runtime（LangGraph，编排）/ harness（Deep Agents，产品化组装）——§1~3 三个 TS 框架恰好各占一层（Vercel AI SDK≈调用层库、LangGraph=runtime、Claude Agent SDK=harness）。Deep Agents（planning+subagents+文件系统+上下文管理打包）就是模块 06/08/10 的产品化合体形状
+3. **Python↔JS 的差异主体是声明语法不是概念**：LangGraph Python 状态用 `TypedDict` + `Annotated[list, add_messages]`（reducer 挂在类型注解里）= §2 JS `Annotation.Root({...})`（函数调用式声明）——同一套 channel/reducer 语义换载体。StateGraph/条件边/Command/Send/interrupt/checkpointer 全部同名同义（JS 版本就是从 Python 移植的）。Python 版自述受 Pregel/Apache Beam 启发——§2 实测的 superstep 并行语义有出处
+4. **OpenAI Agents SDK 的 handoffs = 模块 10 spawn 的官方形状**：Agent 定义里声明「可以交接给谁」，循环中 LLM 主动触发——和我手写的委派（把子 agent 当工具调）机制相同，差别在它是 SDK 一等公民（类型/追踪/校验都认它）。Guardrails（输入/输出校验，与主调用并行跑、fail fast）= 模块 08 zod 校验+自修的运行时前移版；Sessions = 模块 07 记忆/09 会话恢复；内建 tracing = 模块 11 TraceCollector 的平台版。文档原话「只用 Responses API 自己管循环，还是 SDK 替你管」——§1 那句「手写 while = stopWhen」的官方口径版
+5. **CrewAI 把我手写的三件套摊平成配置项**：`planning=True`（AgentPlanner 执行前给每个 Task 预计划）= 模块 08 planner-executor；`respect_context_window`（超窗自动摘要）= 模块 06 ContextManager；hierarchical Process（manager_llm 协调/委派/验证）= 模块 10 composite 的管理者模式。Agent(role/goal/backstory)+Task(description/expected_output) 的角色范式 = 我的 researcher/writer/critic 人格从「函数+prompt」变「配置对象」；`crewai replay -t <task_id>` = 模块 08「保 done 不重跑」+ 09 resume 的合体
+6. **三家殊途同归的收束点**（每一层坑的收敛证据）：步数上限家家有（maxTurns / max_iter 默认 20 / recursionLimit 25——#35 同族，框架默认值都替你踩过）、结构化校验收敛到 schema（zod/pydantic）、human-in-the-loop 各有门（canUseTool / interrupt / Crew human_input）、token 记账全白送。手写踩过的坑，三家都以某种形态接住了——除了**任务设计、业务正确性、硬边界**（CrewAI 文档对沙箱只字未提，和 §3 的发现同款空白）
+
+数据槽：LangGraph 的 `Annotated` reducer = 我 langgraph-planner.ts 的 `Annotation.Root` merge channel（概念同构声明异构）；OpenAI Agents SDK 的 `Runner` 循环+handoffs = 我模块 03 while dispatch + 模块 10 spawn 委派；CrewAI 的 hierarchical `Process`(manager_llm) = 我模块 10 composite 产线（角色编排把我手写的流水线摊平成配置）。
+
+
 ## 5. 对照表：「我手写的 X = 框架里的 Y」（横评收官）
 
 - 产出一张全仓对照表（agent 循环/上下文管理/记忆/规划/多 agent/evals/trace/护栏 × 手写件/SDK 概念）
@@ -149,7 +165,7 @@
 - [x] ① Vercel AI SDK 重写 mini_agent + streamText 冒烟（2026-10-26，一发全通，对照发现 6 条见 §1）
 - [x] ② LangGraph.js 重写 planner-executor + checkpointer 对照（2026-10-27，探针 9/9 + 真链 interrupt 恢复全通，#34 落 PITFALLS）
 - [x] ③ Claude Agent SDK 试跑（2026-10-27，GLM anthropic 端点验通真跑，三版迭代全链通过，PITFALLS #36）
-- [ ] ④ Python 三框架概念对照（阅读级）
+- [x] ④ Python 三框架概念对照（2026-10-27，阅读级零烧，概念全数映射回手写件，无生词）
 - [ ] ⑤ 全仓对照表落档
 - [ ] ⑥ 毕业项目选型 + 搭建
 - [ ] ⑦ 前端交付（SSE / 可视化 / 会话 API）
