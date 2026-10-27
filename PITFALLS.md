@@ -194,6 +194,12 @@
   - 修法：两把锁对称落地——「判据全集就是上面三条，不加戏、无不合格即 PASS」（criticPrompt，治移动目标）+「首轮必须一次列全所有不合格项，后续只复核不新增」（digestCriticPrompt，治挤牙膏），判据本身一字未动。实测写作段 3 轮熔断 → 首稿 PASS；研究段防漂移不防真错（真实算错照拦）
   - 合流原则：**判据漂移不只「主观重写」，还有「该一次说清的不说清 + 不该加的乱加」——锁判据 = 首轮列全 + 全集固定 + 禁加戏**
 
+### 34. 图 channel 没人首赋值 = undefined 参与路由：类型系统说有值、运行时是 undefined [12]
+- 症状：LangGraph 重写 planner-executor——`replans: Annotation<number>()` 不带 default，makePlan 节点只返回 plan/log；路由函数里 `state.replans < MAX_REPLANS` 恒为 false（undefined < 3），replan 分支永远不触发（两条探针同时挂、症状却分散）；另一条路径 `Object.keys(state.stepResults)` 直接炸 undefined
+- 根因：手写版变量作用域逼你初始化（`let replans = 0` 不写就编译/阅读都看得见），图的状态字段可以「从未被赋值却参与判断」——`Annotation<number>` 生成的 State 类型标注是 number（不含 undefined），**类型系统替你撒谎**，tsc 逮不住
+- 修法：首个经过的节点返回全量字段补齐（等价于手写主循环开头的初始化块），或每个 channel 都写 default 工厂；探针覆盖异常路由（replan/熔断）才逮得住这种「静默走错分支」——快乐路径探针永远发现不了
+- 原则：声明式状态（channels）把初始化从「语法强制」降级成「约定」——**从声明推不出「谁负责首赋值」**，跑起来才暴露；与 #33 同族：类型/探针说有值 ≠ 运行时真有值，缺的那层要靠真链与异常路径探针补
+
 ## 八、Agent 安全攻防
 
 ### 29. 注入没被执行也能打进成本：内容守住、钱包失守 [11]

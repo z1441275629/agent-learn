@@ -51,6 +51,21 @@
 - 引导问题：LangGraph 的「图」比 if-else 循环好在哪？什么规模以下它纯属负担？
 - 数据槽：同任务两版成功率/结构对照：手写 ____，LangGraph ____
 
+### 实做记录（2026-10-27）
+
+[langgraph-planner.ts](langgraph-planner.ts)：StateGraph 四节点（makePlan / executeSteps / replanNode / finish）+ 条件边路由，重写模块 8 的调度层。探针 9/9（P1 全 done + 依赖顺序 / P2 失败→重试耗尽→replan 保 done / P3 replan 熔断 / P4 interrupt 中断 + Command 恢复，全零 token 假 LLM）+ 真链冒烟一发全通（GLM 出 3 步计划 8.6s，interrupt 人工门触发 → `yes` 恢复 → 全 done，报告成型）。
+
+对照发现：
+
+1. **图 channel 没人首赋值 = undefined 参与路由（PITFALLS #34）**：`replans: Annotation<number>()` 无 default，makePlan 只返回 plan/log——路由里 `undefined < MAX_REPLANS` 恒 false，**replan 分支永远不会走**，类型系统还说它是 number（tsc 逮不住）。手写版 `let replans = 0` 的语法强制，图形态降级成约定。修法 = 首节点补齐全量字段。这次是探针逮的：异常路由探针（replan/熔断）在，静默走错分支就现形
+2. **reducer 不是必需品**：plan/stepResults/replans 全用默认覆盖语义（LastValue）——恰好就是手写版 `plan = await replan(...)` 的赋值语义。唯一自定义 reducer 是 log（appendOnly），价值在多节点并发追加不丢——手写版靠单线程顺序天然安全，图形态并发了才需要显式归并
+3. **不可变状态语义**：节点里改 plan 要先 `structuredClone`（返回新引用）；手写版直接改闭包对象。图逼你回答「谁拥有状态」——手写版答案靠纪律（executePlan 独占 stepResults），图形态答案靠机制
+4. **interrupt()/Command({resume}) = 模块 09 confirm 的框架版**：一次调用暂停整图、checkpointer 自动存快照、恢复用 Command——手写版要自己设计「暂停点存档+恢复协议」；getState 白送断点检查（`next=["executeSteps"]`）。真链 8.6s 出图即停、恢复续跑，中间态零丢失
+5. **框架管「状态怎么流」，不管「业务对不对」**：zod 校验+自修一轮、步间交接文本、重试打勾、「保 done 不重跑」——模块 8 的业务逻辑全部原样搬运，一行没省。省的只是 while 循环骨架和落盘存档（saveCheckpoint 20 行 → checkpointer 一个参数）
+6. **探针断言又错一次**（P2 重试计数没算 replan 后替换步骤的合法第 4 次调用）——「探针挂先查断言再查实现」第二次兑现（第一次见模块 11 §7）
+7. ChatOpenAI 直连 GLM 零障碍（`configuration.baseURL`）——和 Vercel AI SDK 的 `.chat()` 同一课：OpenAI 兼容端点是事实标准，框架层选型不受厂商锁定
+- 代码量：手写 317 行 vs 图版 ~230 行（其中探针 100 行）——纯业务对照约 317 vs 130。省的是骨架，不省的是脑子该想的事
+
 ## 3. Claude Agent SDK：产品级循环——和你的 09 harness 对照
 
 - **任务**：读它的 agent 循环 + 权限 + hooks 结构（你每天在用的 ZCode 的近亲），对照模块 09 手写的壳
@@ -98,7 +113,7 @@
 ## TODO 索引
 
 - [x] ① Vercel AI SDK 重写 mini_agent + streamText 冒烟（2026-10-26，一发全通，对照发现 6 条见 §1）
-- [ ] ② LangGraph.js 重写 planner-executor + checkpointer 对照
+- [x] ② LangGraph.js 重写 planner-executor + checkpointer 对照（2026-10-27，探针 9/9 + 真链 interrupt 恢复全通，#34 落 PITFALLS）
 - [ ] ③ Claude Agent SDK 阅读/试跑（端点兼容性先验证）
 - [ ] ④ Python 三框架概念对照（阅读级）
 - [ ] ⑤ 全仓对照表落档
