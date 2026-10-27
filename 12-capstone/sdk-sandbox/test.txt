@@ -1,0 +1,3 @@
+模块 12 §3 沙箱素材：Claude Agent SDK 的 agent 将在沙箱目录里工作。
+这个文件的内容是：三个 TS 框架的定位一句话——Vercel AI SDK 是模型调用层，
+LangGraph 是编排层，Claude Agent SDK 是成品 agent 运行时。

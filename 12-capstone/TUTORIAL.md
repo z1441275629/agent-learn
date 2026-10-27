@@ -85,6 +85,29 @@
 - 引导问题：产品级 SDK 在你手写版之上多花了多少代码在「敢给别人用」上？
 - 数据槽：能跑则记一次运行的账 ____/____；不能跑则记「兼容性卡点：____」
 
+### 实做记录（2026-10-27）
+
+**端点验证先行**：GLM 的 anthropic 兼容端点（`open.bigmodel.cn/api/anthropic`）最小请求 HTTP 200——glm-5.3 走 anthropic 协议连 thinking 块都带，SDK 可真跑（不降级阅读级）。SDK 版 @anthropic-ai/claude-agent-sdk 0.3.311。
+
+[claude-agent-demo.ts](claude-agent-demo.ts)：一条任务链看全三层——Bash(ls) 列目录 → Read 素材 → Write 建文件（过 confirm）→ record 落台账（MCP 自定义工具）。**三版迭代才跑通**，每版暴露一层产品级默认行为（全部落 PITFALLS #36）：
+
+| 版本 | 症状 | 根因 |
+|---|---|---|
+| v1 | 106s/7turns 全烧在 ToolSearch 上，GLM 三轮搜索全空、诚实汇报「工具不存在」 | 工具默认 **defer 到 ToolSearch 后**（对官方模型省 prompt token 的优化）；修：`tools` 显式列出 + MCP server `alwaysLoad: true` |
+| v2 | Bash/Write 全静默执行，canUseTool 一次不响 | permissionMode 不显式时 Write 疑似被 acceptEdits 类默认放行；修：显式 `permissionMode: 'default'` |
+| v3 | record 连拒 3 次 → maxTurns 8 熔断 | 权限层收到的工具名是**全名** `mcp__demo-tools__record`，回调里匹配短名永远不中；修：全名匹配 + maxTurns 留出 deny-重试预算 |
+
+**v3 全链通过**：confirm 触发 2 次（Write 同意、record 同意）、放行副作用 done.txt 真写入沙箱、MCP 台账落账、6 turns / 4678/1222 / 42.3s / success。跑完自动清场（可重复跑）。
+
+对照发现：
+
+1. **自定义工具体就是 MCP**——`createSdkMcpServer({tools:[tool(...)]})` 一行 = 模块 4 手写的 McpServer + 模块 09 registry 的合体；zod shape 即 schema（§1 Vercel AI SDK 同款收敛）
+2. **CLI 内置命令分级**：Bash(ls) 这类只读命令走默认安全规则直接放行，canUseTool 不响——模块 09 手写的 allowlist 之上，产品级 harness 还有一层「命令安全分级」
+3. **cwd 是工作目录不是沙箱**（最扎的一条）：`cwd=sdk-sandbox` 下 agent 被 deny 后拿 Glob/Read **读到了仓库根的 PITFALLS.md**（还自动按仓库惯例准备记坑）——白名单工具没有路径边界。对照模块 09 手写的路径检查：**硬边界要自己造（路径检查/OS 级容器），框架的 cwd 只是默认落脚点**
+4. **产品级 harness 白送的**：权限分级/审批回调/工作目录/分块消息流/usage 记账/步数保险——对照模块 09 一件件手写的清单，SDK 一个 options 对象收走
+5. **deny-重试烧 turns**：被拒的模型会换着法子重试（短名/全名/换工具），每次都是一轮——maxTurns 预算要含失败路径（与 #35 递归预算同族：产线每种资源都有上限）
+6. **协议兼容 ≠ 行为兼容**（PITFALLS #36 总纲）：anthropic 协议通了只保证 API 200，产品默认行为（工具发现/权限默认/边界语义）全是官方假设——冒烟按「任务全链完成」验收，不按「API 返回 200」
+
 ## 4. Python 阅读级：LangGraph / OpenAI Agents SDK / CrewAI 概念对照
 
 - 不动手，读概念：三者的 agent 抽象各是什么形状（图 / runner / 角色编排）
@@ -125,7 +148,7 @@
 
 - [x] ① Vercel AI SDK 重写 mini_agent + streamText 冒烟（2026-10-26，一发全通，对照发现 6 条见 §1）
 - [x] ② LangGraph.js 重写 planner-executor + checkpointer 对照（2026-10-27，探针 9/9 + 真链 interrupt 恢复全通，#34 落 PITFALLS）
-- [ ] ③ Claude Agent SDK 阅读/试跑（端点兼容性先验证）
+- [x] ③ Claude Agent SDK 试跑（2026-10-27，GLM anthropic 端点验通真跑，三版迭代全链通过，PITFALLS #36）
 - [ ] ④ Python 三框架概念对照（阅读级）
 - [ ] ⑤ 全仓对照表落档
 - [ ] ⑥ 毕业项目选型 + 搭建
