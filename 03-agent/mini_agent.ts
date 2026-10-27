@@ -13,10 +13,14 @@ import 'dotenv/config'
 import OpenAI from 'openai'
 
 // GLM Coding Plan 套餐专用端点（按量付费改 https://open.bigmodel.cn/api/paas/v4）
-const BASE_URL = 'https://open.bigmodel.cn/api/coding/paas/v4'
-const MODEL = 'glm-4.6'
+// const BASE_URL = 'https://open.bigmodel.cn/api/coding/paas/v4'
+// const MODEL = 'glm-4.6'
+// const apiKey = process.env.GLM_API_KEY
 
-const apiKey = process.env.GLM_API_KEY
+const BASE_URL = process.env.LLM_BASE_URL || ''
+const MODEL = process.env.LLM_MODEL || ''
+const apiKey = process.env.LLM_API_KEY || ''
+
 if (!apiKey) {
 	console.error('没找到 GLM_API_KEY。请在 ai-agent-lab/.env 里配置')
 	process.exit(1)
@@ -121,9 +125,12 @@ async function agentLoop(messages: any[], maxSteps = 8): Promise<string> {
 	// throw new Error("TODO 3：实现 Agent 循环");
 	let step = 1
 
+	let inputTokens = 0, outputTokens = 0
+
 	const tools = buildToolsParam()
 	while (true) {
 		if (step > maxSteps) {
+			console.log(`【总账】输入/输出 ${inputTokens}/${outputTokens}`)
 			return JSON.stringify({ error: '(达到最大步数，任务中止)' })
 		}
 		const response = await client.chat.completions.create({
@@ -131,16 +138,20 @@ async function agentLoop(messages: any[], maxSteps = 8): Promise<string> {
 			messages,
 			tools,
 		})
+		inputTokens += response?.usage?.prompt_tokens || 0
+		outputTokens += response?.usage?.completion_tokens || 0
+		console.log(`【step ${step} 账】输入/输出 ${response?.usage?.prompt_tokens}/${response?.usage?.completion_tokens}`)
 		const message = response.choices[0].message
 		if (!message.tool_calls || message.tool_calls.length === 0) {
-      return message.content || JSON.stringify({ error: '模型未返回内容' })
+      console.log(`【总账】输入/输出 ${inputTokens}/${outputTokens}`)
+			return message.content || JSON.stringify({ error: '模型未返回内容' })
 		}
     console.log(`[step ${step}] 调用: ${message.tool_calls?.map((t: any) => `${t.function.name}(${t.function.arguments})`).join(', ')}`)
 		messages.push(message)
 		const promises = message.tool_calls.map(async (tool) => await dispatch(tool))
 		const toolRes = await Promise.all(promises)
 		toolRes.forEach((item, index) => {
-      console.log(`[step ${step}] 工具结果: ${(message.tool_calls?.[index] as any)?.function?.name} -> ${item}`)
+      console.log(`[step ${step}] 工具结果: ${message.tool_calls?.[index].function.name} -> ${item}`)
 			messages.push({ role: 'tool', tool_call_id: message.tool_calls?.[index].id, content: item })
 		})
 		step++
