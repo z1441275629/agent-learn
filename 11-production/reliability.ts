@@ -95,6 +95,7 @@ export async function spawnReliable(task: string, opts?: ReliableSpawnOptions): 
 		const switchUseful = BACKUP_MODEL !== '' && BACKUP_MODEL !== currentModel
 		// 配额 failover：决策器判可切 → 置备用档立即重发（不退避：配额墙不因等待移动；不占重试预算：换路≠重试）
 		if (ec === 'quota' && shouldFailover(ec, switched, switchUseful)) {
+			console.log('故障转移，启用备用模型', onFailover)
 			switched = true
 			spawnOpts.useBackupModel = true
 			onFailover?.(BACKUP_MODEL, r.error ?? '')
