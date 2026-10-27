@@ -16,6 +16,7 @@
     "m8-plan": "node 08-planner/planner.ts",
     "m8-cron": "node 08-planner/cron.ts",
     "m9": "node 09-harness/agent.ts",
+    "m12-brief": "node 12-capstone/daily-brief/pipeline.ts",
     "check": "tsc --noEmit",
     "format": "prettier --write .",
     "format:check": "prettier --check ."

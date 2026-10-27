@@ -1,0 +1,33 @@
+{
+  "_comment": "订阅清单（模块 12 毕业项目）= 07 文件型记忆的应用版：用户可增删的偏好数据，产线按它 fanout。B 路线（2026-10-27 拍板）：纯直连源，无搜索引擎。字段：hnQuery 走 HN Algolia 全文检索（近 48h，points>2）；githubQuery 走 GitHub search（近 7 天新建仓库按星排——「什么在起飞」信号源）。arxiv 已验可用（200/6.6s）但慢，首版不进，二期开字段位。",
+  "topics": [
+    {
+      "id": "ai-agents",
+      "name": "AI Agent 工程",
+      "focus": "agent 框架、多 agent 编排、agent 工程实践与踩坑",
+      "hnQuery": "AI agent",
+      "githubQuery": "ai agent framework"
+    },
+    {
+      "id": "langgraph-ecosystem",
+      "name": "LangGraph 生态",
+      "focus": "LangGraph/LangChain 生态动态：版本发布、社区实践、周边工具",
+      "hnQuery": "langgraph",
+      "githubQuery": "langgraph"
+    },
+    {
+      "id": "mcp-ecosystem",
+      "name": "MCP 生态",
+      "focus": "Model Context Protocol：新 server、协议演进、工具生态",
+      "hnQuery": "model context protocol",
+      "githubQuery": "mcp server"
+    },
+    {
+      "id": "llm-devtools",
+      "name": "LLM 工具链",
+      "focus": "LLM 应用开发工具：推理/评测/可观测/上下文工程",
+      "hnQuery": "LLM tool",
+      "githubQuery": "llm tools"
+    }
+  ]
+}

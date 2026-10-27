@@ -32,3 +32,6 @@ node_modules/
 
 # 11-production trace 运行时产物（每次产线运行落盘，不入库）
 11-production/traces/
+
+# 12-capstone 毕业项目运行时产物（每日日报 + 状态台账，不入库；样例另存 sample 进 git）
+12-capstone/daily-brief/reports/
