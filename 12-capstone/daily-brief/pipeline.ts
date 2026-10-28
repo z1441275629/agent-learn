@@ -15,6 +15,7 @@ import path from 'node:path'
 import { z } from 'zod'
 import { client, MODEL } from '../../09-harness/llm.ts'
 import { fetchTopic, type RawItem } from './sources.ts'
+import { publicURL } from './lan.ts'
 
 const DIR = import.meta.dirname
 const REPORTS = path.join(DIR, 'reports')
@@ -371,9 +372,14 @@ try {
 	await emitProgress(REPORTS, 'done', `落盘完成 · ${tot.calls} 调用 · ${tot.promptTokens}/${tot.completionTokens} tokens · ${(elapsedMs / 1000).toFixed(0)}s · ${verdict.pass ? '过审' : '未过审'}`)
 
 	// Server酱推送：标题进微信卡片（免费版卡片只显示标题），desp 放今日总评 + 打开链接
-	// BRIEF_PUBLIC_URL 默认 localhost（微信里点不开——配成局域网 http://192.168.x.x:8787/ 才是给手机用的）
+	// 链接解析（lan.ts）：BRIEF_PUBLIC_URL 钉死优先；缺省发送时刻自动探测局域网 IP——换热点 IP 漂移
+	// 自动跟随（2026-10-28 实录：钉死 192.168.19.x 换个人热点秒变死链）。探测不到（没连网）= 不带链接
 	const summary = markdown.includes('## 今日总评') ? markdown.split('## 今日总评')[1].trim().slice(0, 500) : markdown.slice(0, 500)
-	const n = await notifyServerChan(`AI 情报日报 ${today()}${verdict.pass ? '已生成' : '已生成（质检未过审）'}`, `${summary}\n\n---\n\n[打开日报](${process.env.BRIEF_PUBLIC_URL || 'http://localhost:8787/'})`)
+	const url = publicURL()
+	const n = await notifyServerChan(
+		`AI 情报日报 ${today()}${verdict.pass ? '已生成' : '已生成（质检未过审）'}`,
+		url ? `${summary}\n\n---\n\n[打开日报](${url})` : `${summary}\n\n（未探测到局域网地址——电脑上开 http://localhost:${Number(process.env.BRIEF_PORT || 8787)}/）`,
+	)
 	console.log(`[通知] ${n.sent ? 'Server酱已推送' : `未推送：${n.reason}`}`)
 	await emitProgress(REPORTS, 'notify', n.sent ? 'Server酱已推送' : `未推送（${n.reason}）`)
 

@@ -21,9 +21,9 @@ import http from 'node:http'
 import fs from 'node:fs/promises'
 import fsSync from 'node:fs'
 import path from 'node:path'
-import os from 'node:os'
 import { spawn } from 'node:child_process'
 import { z } from 'zod'
+import { lanIPv4 } from './lan.ts'
 
 const DIR = import.meta.dirname
 const REPORTS = path.join(DIR, 'reports')
@@ -217,13 +217,14 @@ const server = http.createServer(async (req, res) => {
 })
 
 server.listen(PORT, async () => {
-	// 局域网地址打印：手机连同一 WiFi 访问这个地址（Server酱通知链接配的就是它）
-	const nets = os.networkInterfaces()
-	const lan = Object.values(nets)
-		.flat()
-		.filter((n): n is os.NetworkInterfaceInfo => !!n && n.family === 'IPv4' && !n.internal && n.address.startsWith('192.168.'))
-		.map((n) => n.address)[0]
+	// 局域网地址打印：手机连同一 WiFi 访问这个地址（Server酱通知链接发的就是它——发送时刻自动探测，IP 漂移跟随）
+	const lan = lanIPv4()
 	await refreshProgress(today())
 	console.log(`[daily-brief server] http://localhost:${PORT} · 局域网: ${lan ? `http://${lan}:${PORT}` : '（未找到 192.168 网段——检查 WiFi）'}`)
 	console.log(`[daily-brief server] 补跑=POST /api/run · 进度流=GET /api/events · cron 注册见 register-task.ps1`)
+	// 手机打不开局域网地址第一嫌疑：Windows 把 WiFi 判成「公用网络」默认拦入站（2026-10-28 实录）——
+	// 管理员 PowerShell：New-NetFirewallRule -DisplayName "daily-brief 8787 (LAN)" -Direction Inbound
+	//   -Action Allow -Protocol TCP -LocalPort 8787 -RemoteAddress 192.168.0.0/16
+	// 端口+私网段收敛放行：换热点 IP 变不用重配，也不给 node 全放行
+	if (lan) console.log(`[daily-brief server] 手机打不开？先查防火墙（见上一条规则，已配过则换热点也不受影响）`)
 })

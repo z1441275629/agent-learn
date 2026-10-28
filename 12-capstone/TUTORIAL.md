@@ -225,7 +225,12 @@ Windows 任务计划 09:00 → daily-brief 产线（Node，fanout 4 主题）→
 
 **坑三枚**（都是构建工具坑不是 agent 坑，PITFALLS 不收）：① vite-plugin-uni CJS `module.exports={default:fn,...}` 形状，esbuild 打包 vite.config 时 default import 拿到整个对象（「uni is not a function」）→ `(uniRaw as any).default ?? uniRaw` 剥层；② build.outDir 配了 'dist' 但产物落 **`dist/build/h5/`**——uni 插件强制约定路径，outDir 拗不过它 → server.ts 按约定路径适配（别跟插件较劲，读它的约定）；③ npm ERESOLVE 指着 types 版本——看 peer 字段要的是精确 "3.4.31"，^3.4.32 也不行。
 
-**验收**（HTTP 层 curl 全通，最终人眼验收留给用户）：`GET /` 返回真 index.html（非占位页）+ 主 JS 220KB + 两份 CSS 全 200；/api/latest（今日真日报）/history（5 runs 36 calls）/topics（4 主题）数据环闭合。浏览器开 `http://localhost:8787` 或手机同 WiFi 开 `http://192.168.19.154:8787`（Server酱卡片里的链接就是它）。
+**验收**（HTTP 层 curl 全通，最终人眼验收留给用户）：`GET /` 返回真 index.html（非占位页）+ 主 JS 220KB + 两份 CSS 全 200；/api/latest（今日真日报）/history（5 runs 36 calls）/topics（4 主题）数据环闭合。浏览器开 `http://localhost:8787` 或手机同 WiFi 开启动打印的局域网地址（Server酱卡片里的链接就是它）。
+
+**网络环境摩擦两笔**（2026-10-28 真实使用第一天，全在「交付边界」不在代码里）：
+
+1. **手机打不开局域网地址 → Windows 把 WiFi 判成「公用网络」**：公用配置文件默认拦所有入站（电脑自己 localhost 能开=服务无罪）。修复=管理员 PowerShell 加端口级收敛规则（`New-NetFirewallRule -Direction Inbound -Action Allow -Protocol TCP -LocalPort 8787 -RemoteAddress <私网段>`）——**放行端口+私网段，不放行程序**：node.exe 全放行等于给机器上所有 node 程序开公网门。规则已实录进 server.ts 启动打印（探测到局域网地址时提示一行）。
+2. **热点一换 IP 漂移 → .env 钉死 BRIEF_PUBLIC_URL 秒变死链**（192.168.19.x → 10.190.x；个人热点段远不止 192.168——iPhone=172.20.10.x）。修复=[lan.ts](daily-brief/lan.ts) 发送时刻自动探测：**非内部 IPv4 只有一个就直接用（段无关——「哪个段」是先验猜测，「单网卡单地址」是事实）**，多网卡按 RFC1918 挑；BRIEF_PUBLIC_URL 降级为钉死逃生门（内网穿透固定域名才配）。P6 探针顺手逮住自己一条：断言 regex 数错 IP 段数（10 前缀 1 段+公共后缀 2 段=三段 IP）——「探针挂先查断言再查实现」第三次兑现。
 
 ## 8. 验收：真实用户一周 + 博客
 

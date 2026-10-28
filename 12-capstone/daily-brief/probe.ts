@@ -5,11 +5,14 @@
 //   P2 同日重跑语义：日报与 status 覆盖当日份（一天一份最新），history.runs 追加不覆盖（按次记）
 //   P3 跨日汇总数学：totals = runs 逐条求和（calls/tokens/墙钟）
 //   P4 跨天不覆盖：伪造昨天日期的 status 文件在场时，今天再跑不动它（文件名分家）
+//   P5 progress 并发写安全：三路并发 emit 不丢事件（fanout 竞态回归）
+//   P6 通知链接解析：BRIEF_PUBLIC_URL 钉死优先 > 自动探测（换热点 IP 漂移跟随）
 // 跑法：node 12-capstone/daily-brief/probe.ts
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import os from 'node:os'
 import { writeOutputs, emitProgress, type TopicResult, type Ledger } from './pipeline.ts'
+import { publicURL } from './lan.ts'
 
 const TMP = await fs.mkdtemp(path.join(os.tmpdir(), 'brief-probe-'))
 const date = new Date()
@@ -72,6 +75,15 @@ await Promise.all([emitProgress(TMP, 'researcher', '并发 A'), emitProgress(TMP
 const pEvents = JSON.parse(await fs.readFile(path.join(TMP, `progress-${today}.json`), 'utf8'))
 check(`4 个事件全落盘不丢（实际 ${pEvents.length}）`, pEvents.length === 4)
 check('事件带 ts/stage/message 三件', pEvents.every((e: any) => e.ts && e.stage && e.message))
+
+console.log('P6 通知链接解析（lan.ts 三态——换热点 IP 漂移自动跟随）')
+process.env.BRIEF_PUBLIC_URL = 'http://pinned.example:9999'
+check('BRIEF_PUBLIC_URL 钉死时原样生效（逃生门优先）', publicURL() === 'http://pinned.example:9999')
+delete process.env.BRIEF_PUBLIC_URL
+const auto = publicURL()
+// RFC1918 三段（10.x / 172.16-31.x / 192.168.x）——个人热点段不止 192.168（实测 iPhone=172.20.10.x、换热点=10.190.x）
+// 前缀段数不齐（10=1段、172.x/192.168=2段），公共后缀统一三段：前缀|段.\d+\.\d+\.\d+
+check('缺省自动探测 RFC1918 形状（无网卡/无 RFC1918 = null 合法）', auto === null || /^http:\/\/(10|172\.(1[6-9]|2\d|3[01])|192\.168)\.\d+\.\d+\.\d+:\d+$/.test(auto))
 
 await fs.rm(TMP, { recursive: true, force: true }) // 清场：探针目录全删，可重复跑
 console.log(`\n探针结果: ${pass}/${pass + fail} ${fail === 0 ? '✓ 全过' : '✗ 有失败——看上面归因'}`)
