@@ -133,11 +133,16 @@ export function watchProgress(onEvent: (e: ProgressEvent) => void): () => void {
 		es.onerror = () => es.close()
 		return () => es.close()
 	}
-	// 轮询降级：按已见事件数 diff 增量（server 端 SSE 同款逻辑）
+	// 轮询降级：按已见事件数 diff 增量（server 端 SSE 同款逻辑）；事件数变少=流被重跑重置——
+	// 合成 reset 事件让调用方清时间线（与 SSE 通道同语义）
 	let seen = 0
 	const timer = setInterval(async () => {
 		try {
 			const j = await request<{ events: ProgressEvent[] }>('/api/progress')
+			if (j.events.length < seen) {
+				onEvent({ ts: '', stage: 'reset', message: '' })
+				seen = 0
+			}
 			j.events.slice(seen).forEach(onEvent)
 			seen = j.events.length
 		} catch (err: any) {

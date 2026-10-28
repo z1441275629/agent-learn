@@ -106,9 +106,13 @@ function rateLimited(key: string, limit: number): boolean {
 
 // ---------- 补跑（spawn 产线；全局单飞：预算记账虽串行，同时多 spawn 打外部 API 没必要） ----------
 let running = false
-function triggerRun(uid: string | null): { code: number; data: unknown } {
+async function triggerRun(uid: string | null): Promise<{ code: number; data: unknown }> {
 	if (running) return { code: 409, data: { running: true, message: '已有补跑在途，等它落盘' } }
-	running = true
+	running = true // 先占座再 await（占座与检查之间无 await = 事件循环内原子，两个并发 POST 不会双跑）
+	// 同日重跑=新流：spawn 前先清旧 progress——SSE 是「连接即回放」，而子进程要 ~2s 才起，
+	// 不先清的话客户端先把上一轮（可能失败）的整段事件收进来（用户实录：失败后重跑拿到旧事件流）
+	const targets = uid ? [uid] : (await users.listUsers()).map((u) => u.id)
+	await Promise.all(targets.map((id) => fs.rm(path.join(REPORTS, id, `progress-${today()}.json`), { force: true })))
 	const args = [path.join(DIR, 'pipeline.ts')]
 	if (uid) args.push('--user', uid)
 	const child = spawn(process.execPath, args, { cwd: REPO_ROOT, env: process.env }) // cwd 钉仓库根（dotenv 从 cwd 读 .env，v1 教训）
@@ -133,6 +137,13 @@ async function broadcastUserProgress(uid: string, date: string) {
 	const events = (await readJSON<unknown[]>(path.join(REPORTS, uid, `progress-${date}.json`), [])) ?? []
 	for (const c of sseClients) {
 		if (c.uid !== uid || c.date !== date) continue
+		// 流被重置（同日重跑 rm 后从 0 重新 append）：盘上事件数 < 已推数 = 新一轮开始了——
+		// 发 reset 信号让客户端清空时间线、游标归零重放。不处理的话 length 永远追不上旧游标，
+		// 新事件一次也推不出去，客户端冻死在上一轮的旧流上（用户实录的重跑 bug 第二层）
+		if (events.length < c.sent) {
+			c.res.write(`data: ${JSON.stringify({ ts: new Date().toISOString(), stage: 'reset', message: '新一轮开始' })}\n\n`)
+			c.sent = 0
+		}
 		if (events.length > c.sent) {
 			for (const ev of events.slice(c.sent)) c.res.write(`data: ${JSON.stringify(ev)}\n\n`)
 			c.sent = events.length
@@ -284,7 +295,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse) {
 		if (req.method === 'POST' && url.pathname === '/api/run') {
 			if (needAuth()) return
 			if (!user!.admin && url.searchParams.get('all') === 'true') return json(res, 403, { error: '只有管理员能全量补跑' })
-			const r = triggerRun(user!.admin && url.searchParams.get('all') === 'true' ? null : user!.id)
+			const r = await triggerRun(user!.admin && url.searchParams.get('all') === 'true' ? null : user!.id)
 			return json(res, r.code, r.data)
 		}
 

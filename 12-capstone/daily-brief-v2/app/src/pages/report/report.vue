@@ -96,6 +96,11 @@ function startWatch(initial: ProgressEvent[]) {
 	unwatch?.()
 	unwatch = watchProgress((e) => {
 		if (e.stage === 'connected') return // SSE 连接确认不进时间线
+		if (e.stage === 'reset') {
+			// 重跑=新流：清掉上一轮（可能失败/过时）的事件，别把两轮拼成一条时间线
+			timeline.value = []
+			return
+		}
 		timeline.value.push(e)
 		// 终态（v2 加 skip：无订阅/预算熔断也算收口——收流重拉刷新提示）
 		if (['done', 'notify', 'error', 'skip'].includes(e.stage)) {

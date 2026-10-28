@@ -260,13 +260,15 @@ export async function runUser(
 	const subs = await readJSON<Partial<Subscriptions>>(path.join(userDir(user.id), 'subscriptions.json'), {})
 	const audience = subs.audience || '关注科技动态的读者'
 	const topics = subs.topics ?? []
+	// 同日重跑=新流（挪到 skip 判定前：无订阅/熔断这些 skip 分支也该是新流——
+	// 留着旧文件的话「重跑」会把上一轮的旧事件原样回放给 SSE 客户端，用户实录的重跑 bug）
+	await fs.rm(path.join(REPORTS, `progress-${today()}.json`), { force: true })
 	if (topics.length === 0) {
 		await writeOutputs(REPORTS, { markdown: '', results: [], verdict: { pass: false, issues: [], score: -1 }, ledger: {}, startedAt: t0, skipped: '无订阅主题' })
 		await emitProgress(REPORTS, 'skip', `${user.username}：无订阅主题，跳过（不烧钱）`)
 		return { ok: true, skipped: '无订阅主题' }
 	}
 
-	await fs.rm(path.join(REPORTS, `progress-${today()}.json`), { force: true }) // 同日重跑=新流
 	await emitProgress(REPORTS, 'start', `${user.username} 的产线启动：${topics.length} 个主题 · ${MODEL}`)
 
 	// 记账统一入口：所有角色调用走 doChat——per-user ledger + 全局 budget 两处同时记，不可能漏
@@ -409,6 +411,7 @@ export async function runPipeline(
 	for (const user of users) {
 		if (await budgetExceeded()) {
 			const reason = '全局日预算已熔断'
+			await fs.rm(path.join(reportsOf(user.id), `progress-${today()}.json`), { force: true }) // 同日重跑=新流（skip 分支同款）
 			await writeOutputs(reportsOf(user.id), { markdown: '', results: [], verdict: { pass: false, issues: [], score: -1 }, ledger: {}, startedAt: Date.now(), skipped: reason })
 			await emitProgress(reportsOf(user.id), 'skip', `${user.username}：${reason}，今日不发（明日自动恢复）`)
 			console.log(`[${user.username}] skip：${reason}`)
