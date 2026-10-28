@@ -174,6 +174,19 @@ export async function updateProfile(uid: string, patch: { sendkey?: string }): P
 	})
 }
 
+// 改密码：旧密码验明正身再换（防 session 被偷后直接改密锁真主）
+export async function changePassword(uid: string, oldPass: string, newPass: string): Promise<{ ok?: boolean; error?: string }> {
+	if (newPass.length < 8) return { error: '新密码至少 8 位' }
+	return serialized(async () => {
+		const user = await getUser(uid)
+		if (!user) return { error: '用户不存在' }
+		if (!verifyPass(oldPass, user.pass)) return { error: '旧密码不对' }
+		user.pass = hashPass(newPass)
+		await writeJSON(path.join(USERS_DIR, uid, 'profile.json'), user)
+		return { ok: true }
+	})
+}
+
 // ---------- bootstrap：产线/server 启动前调用——首码只打印一次 ----------
 export async function bootstrap(): Promise<void> {
 	const users = await listUsers()

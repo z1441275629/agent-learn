@@ -177,5 +177,3 @@ check('carol 日报正常落盘（跑满的钱不白花）', !!carolMd)
 await fs.rm(TMP, { recursive: true, force: true }) // 清场：探针目录全删，可重复跑
 console.log(`\n探针结果: ${pass}/${pass + fail} ${fail === 0 ? '✓ 全过' : '✗ 有失败——看上面归因'}`)
 if (fail > 0) process.exitCode = 1
-
-await fs.rm(TMP, { recursive: true, force: true }) // 清场：探针目录全删，可重复跑
