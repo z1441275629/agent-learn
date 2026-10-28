@@ -49,7 +49,8 @@ powershell -ExecutionPolicy Bypass -File .\12-capstone\daily-brief\register-task
 | `LLM_BASE_URL` | ✅ | OpenAI 兼容端点（如智谱 `https://open.bigmodel.cn/api/paas/v4`） | 无——产线起不来 |
 | `LLM_MODEL` | ✅ | 模型名（如 `glm-4.5` / `deepseek-chat`） | 无 |
 | `LLM_API_KEY` | ✅ | key | 无 |
-| `SCT_SENDKEY` | 可选 | [Server酱](https://sct.ftqq.com) 推送到你微信（免费 5 条/天，每天只用 1 条） | 不配=不推送，产线照常跑 |
+| `SCT_SENDKEYS` | 可选 | [Server酱](https://sct.ftqq.com) 微信推送。**多人**：每人各自注册扫码拿自己的 key，逗号分隔（免费 5 条/天/人，每天只用 1 条） | 不配=不推送，产线照常跑 |
+| `SCT_SENDKEY` | 可选 | 旧单数写法（等价数组的 1 个成员，可与复数并存） | 同上 |
 | `GITHUB_TOKEN` | 可选 | GitHub 搜索 API 限额 60→5000 req/h（[建 token](https://github.com/settings/tokens)，勾 public_repo 即可） | 匿名 60/h，每天 4 次抓取够用 |
 | `BRIEF_PORT` | 可选 | 读报服务端口 | 8787 |
 | `BRIEF_PUBLIC_URL` | 可选 | 通知里「打开日报」链接 | 自动探测当前局域网 IP（换热点/路由自动跟随）；走内网穿透固定域名时才钉死 |

@@ -7,11 +7,12 @@
 //   P4 跨天不覆盖：伪造昨天日期的 status 文件在场时，今天再跑不动它（文件名分家）
 //   P5 progress 并发写安全：三路并发 emit 不丢事件（fanout 竞态回归）
 //   P6 通知链接解析：BRIEF_PUBLIC_URL 钉死优先 > 自动探测（换热点 IP 漂移跟随）
+//   P7 通知 key 解析：单数+复数合并、分隔容忍、去重、空（真发是外部副作用不进探针）
 // 跑法：node 12-capstone/daily-brief/probe.ts
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import os from 'node:os'
-import { writeOutputs, emitProgress, type TopicResult, type Ledger } from './pipeline.ts'
+import { writeOutputs, emitProgress, parseSendkeys, type TopicResult, type Ledger } from './pipeline.ts'
 import { publicURL } from './lan.ts'
 
 const TMP = await fs.mkdtemp(path.join(os.tmpdir(), 'brief-probe-'))
@@ -84,6 +85,12 @@ const auto = publicURL()
 // RFC1918 三段（10.x / 172.16-31.x / 192.168.x）——个人热点段不止 192.168（实测 iPhone=172.20.10.x、换热点=10.190.x）
 // 前缀段数不齐（10=1段、172.x/192.168=2段），公共后缀统一三段：前缀|段.\d+\.\d+\.\d+
 check('缺省自动探测 RFC1918 形状（无网卡/无 RFC1918 = null 合法）', auto === null || /^http:\/\/(10|172\.(1[6-9]|2\d|3[01])|192\.168)\.\d+\.\d+\.\d+:\d+$/.test(auto))
+
+console.log('P7 通知 key 解析（多人推送：SCT_SENDKEYS 数组化——Server酱 无一 key 多推机制，每家人各自注册）')
+const pk = parseSendkeys({ SCT_SENDKEY: 'k1 , k2', SCT_SENDKEYS: 'k2 k3,,k4' } as any)
+check('单数+复数合并解析出 k1~k4（逗号/空格分隔都吃）', JSON.stringify(pk) === JSON.stringify(['k1', 'k2', 'k3', 'k4']))
+check('重复 key 去重（k2 两处只发一次）', pk.filter((k) => k === 'k2').length === 1)
+check('全空 = 空数组（no-op 通知层不炸产线）', parseSendkeys({}).length === 0)
 
 await fs.rm(TMP, { recursive: true, force: true }) // 清场：探针目录全删，可重复跑
 console.log(`\n探针结果: ${pass}/${pass + fail} ${fail === 0 ? '✓ 全过' : '✗ 有失败——看上面归因'}`)

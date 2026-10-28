@@ -198,7 +198,7 @@ Windows 任务计划 09:00 → daily-brief 产线（Node，fanout 4 主题）→
 
 1. **progress 事件总线**（[pipeline.ts](daily-brief/pipeline.ts)）：产线各阶段 append `progress-日期.json`（start/researcher×N/writer/critic/done/notify）——**文件即总线**：cron 起的产线与 server 是两个进程，谁触发的产线 server 都能 fs.watch 到，不绑定 spawn 关系。emitProgress 串行队列防 fanout 并发写竞态（08 金笔记②的复发防御，P5 探针回归）
 2. **[server.ts](daily-brief/server.ts)** 零依赖原生 http（09「能不用框架就不用」路线）：`GET /api/latest`（日报全家桶 md+status+progress+running）/ `/api/report?date=` / `/api/history`（台账）/ `/api/topics`（GET 读 + POST zod 校验整体替换——07 订阅清单的增删改入口）/ `/api/progress`（**App 端 SSE 不通时的轮询降级通道**）/ `/api/events`（SSE：连接即回放全量 + fs.watch 增量 diff 广播 + 18s 心跳注释行）/ `POST /api/run`（补跑：spawn 产线子进程，**已在跑 409 防重**）/ `/`（uniapp 构建产物优先，没有给内置占位页——浏览器直开 8787 就能读报）
-3. **Server酱通知**（pipeline main 尾部）：标题进微信卡片 + desp 放今日总评 + 打开链接（BRIEF_PUBLIC_URL 配局域网地址手机才点得开）；SCT_SENDKEY 缺省 no-op（11 langfuse 同款纪律：通知层绝不炸产线）。真发验证见下方实录
+3. **Server酱通知**（pipeline main 尾部）：标题进微信卡片 + desp 放今日总评 + 打开链接（缺省自动探测当前局域网 IP，换热点跟随）；SCT_SENDKEY(S) 缺省 no-op（11 langfuse 同款纪律：通知层绝不炸产线）。**多人推送（2026-10-28 家用需求）**：Server酱 无一 key 多推机制，每家人各自注册扫码——`SCT_SENDKEYS=key1,key2` 逗号分隔（旧单数等价数组 1 成员），逐 key 并行独立发送**失败不连坐**（免费版 5 条/天本就按人独立计），日志/进度里 key 掩码前 6 位；真发验证 sent 1/2（真 key 落微信 + 假 key 400 如实入账）
 4. **[register-task.ps1](daily-brief/register-task.ps1)**：每天 09:00 任务计划（StartWhenAvailable 开机补跑——「关机兜底」的另一半是补跑按钮）。已注册 + schtasks /Run 全链实跑 exit 0（两坑修复实录见 git log：无 BOM UTF-8 被 PowerShell 5.x 按 GBK 解析炸解析阶段；Split-Path 层数错一层跑到 E:\workspace，node 找不到脚本秒退——任务计划黑盒里只剩「闪一下」）
 
 **验收实录**（零 token 端点 7/7 + 真跑两发，第二发暴露可靠性缺口又白捡修复实录）：latest/history(3 runs)/topics(4)/progress/404 路由提示/占位页/坏载荷 400 全过；`POST /api/run` spawn 补跑 + 二连发 409 防重；**SSE 三验**——连接即回放（中途连上也能看全程）、18s 心跳防中间层掐线、实时增量流实测（SSE 先连 26s 后产线才启动，start + researcher×3 事件实时到达）。

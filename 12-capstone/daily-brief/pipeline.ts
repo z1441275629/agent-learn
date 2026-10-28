@@ -308,11 +308,19 @@ export function emitProgress(dir: string, stage: string, message: string): Promi
 	return progressQueue
 }
 
-// ---------- Server酱通知（cron 跑完的「日报已生成」微信推送） ----------
-// no-key no-op 纪律（11 langfuse 同款）：通知层绝不炸产线——SCT_SENDKEY 在 .env，免费版每天 5 条
-async function notifyServerChan(title: string, desp: string): Promise<{ sent: boolean; reason?: string }> {
-	const key = process.env.SCT_SENDKEY
-	if (!key) return { sent: false, reason: '未配置 SCT_SENDKEY（no-op）' }
+// ---------- Server酱通知（cron 跑完的「日报已生成」微信推送，支持家人多人） ----------
+// Server酱 没有「一个 key 推多人」的机制：每人各自注册 sct.ftqq.com 微信扫码拿自己的 SENDKEY。
+// 多人配 SCT_SENDKEYS=key1,key2（逗号/空格分隔）；旧单数 SCT_SENDKEY 继续有效（并入数组）。
+// 逐 key 并行独立发送——一个 key 失败不连坐（免费版每人每天 5 条独立计，家人各收各的互不影响）。
+// no-key no-op 纪律（11 langfuse 同款）：通知层绝不炸产线
+export function parseSendkeys(env: NodeJS.ProcessEnv): string[] {
+	const keys = [...`${env.SCT_SENDKEY ?? ''},${env.SCT_SENDKEYS ?? ''}`.split(/[\s,]+/)]
+		.map((k) => k.trim())
+		.filter(Boolean)
+	return [...new Set(keys)] // 同一 key 配两处只发一次
+}
+const maskKey = (k: string) => (k.length > 6 ? `${k.slice(0, 6)}…` : k) // key 半敏感：日志/进度里只露前 6 位
+async function sendToOne(key: string, title: string, desp: string): Promise<{ sent: boolean; reason?: string }> {
 	try {
 		const res = await fetch(`https://sctapi.ftqq.com/${key}.send`, {
 			method: 'POST',
@@ -324,6 +332,17 @@ async function notifyServerChan(title: string, desp: string): Promise<{ sent: bo
 		return j?.code === 0 ? { sent: true } : { sent: false, reason: `HTTP ${res.status}：${j?.message ?? '未知响应'}` }
 	} catch (err: any) {
 		return { sent: false, reason: err?.message } // 通知失败不碰 exitCode
+	}
+}
+// 导出仅为真发验证（isMain 守卫下 import 无副作用——probe 事故的纪律）：探针不测真发（外部副作用）
+export async function notifyServerChan(title: string, desp: string): Promise<{ sent: number; total: number; failures: { key: string; reason: string }[] }> {
+	const keys = parseSendkeys(process.env)
+	if (keys.length === 0) return { sent: 0, total: 0, failures: [] }
+	const results = await Promise.all(keys.map(async (key) => ({ key, ...(await sendToOne(key, title, desp)) })))
+	return {
+		sent: results.filter((r) => r.sent).length,
+		total: keys.length,
+		failures: results.filter((r) => !r.sent).map((r) => ({ key: maskKey(r.key), reason: r.reason ?? '未知' })),
 	}
 }
 
@@ -380,8 +399,10 @@ try {
 		`AI 情报日报 ${today()}${verdict.pass ? '已生成' : '已生成（质检未过审）'}`,
 		url ? `${summary}\n\n---\n\n[打开日报](${url})` : `${summary}\n\n（未探测到局域网地址——电脑上开 http://localhost:${Number(process.env.BRIEF_PORT || 8787)}/）`,
 	)
-	console.log(`[通知] ${n.sent ? 'Server酱已推送' : `未推送：${n.reason}`}`)
-	await emitProgress(REPORTS, 'notify', n.sent ? 'Server酱已推送' : `未推送（${n.reason}）`)
+	// 汇总进一行：sent/total + 失败明细（key 掩码）——部分失败如实记，不连坐不静默
+	const note = n.total === 0 ? '未配置 SENDKEY（no-op）' : `${n.sent}/${n.total} 已推送${n.failures.length ? `，失败：${n.failures.map((f) => `${f.key}（${f.reason}）`).join('；')}` : ''}`
+	console.log(`[通知] ${note}`)
+	await emitProgress(REPORTS, 'notify', note)
 
 	// 总账（×N 账本；累计总账在 history.json.totals）
 	console.log(`\n[落盘] ${reportPath}`)
