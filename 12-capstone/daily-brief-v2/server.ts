@@ -9,6 +9,7 @@
 // 跑法：node 12-capstone/daily-brief-v2/server.ts（V2_PORT 默认 8788；首码见启动日志 bootstrap）
 import 'dotenv/config'
 import http from 'node:http'
+import https from 'node:https'
 import fs from 'node:fs/promises'
 import fsSync from 'node:fs'
 import path from 'node:path'
@@ -23,6 +24,18 @@ const DATA = process.env.V2_DATA_DIR ? path.resolve(process.env.V2_DATA_DIR) : p
 const REPORTS = path.join(DATA, 'reports')
 const REPO_ROOT = path.resolve(DIR, '../../..')
 const PORT = Number(process.env.V2_PORT || 8788)
+
+// ---------- TLS：密码与会话 cookie 绝不能在明文通道上走 ----------
+// 登录密码、sid cookie 一旦裸奔在 HTTP 上，同一 WiFi/链路上的任何人抓包就拿到了账号。
+// 应用层怎么折腾都救不了（客户端哈希=等价口令、可重放；WebCrypto 在 http://内网IP 下压根不可用），
+// 正确且唯一的答案是让通道加密：
+//   ① 本进程直接 HTTPS：配 V2_TLS_CERT / V2_TLS_KEY（局域网自签证书见 make-cert.sh）
+//   ② 反向代理终结 TLS（Cloudflare Tunnel / Caddy / nginx）：本进程仍是 HTTP，用 V2_HTTPS=1 声明
+//      「对外是 https」——这决定 cookie 是否加 Secure、是否发 HSTS
+const TLS_CERT = process.env.V2_TLS_CERT ? path.resolve(process.env.V2_TLS_CERT) : ''
+const TLS_KEY = process.env.V2_TLS_KEY ? path.resolve(process.env.V2_TLS_KEY) : ''
+const TLS_ON = !!(TLS_CERT && TLS_KEY)
+const SECURE = TLS_ON || process.env.V2_HTTPS === '1'
 
 // ---------- 工具 ----------
 const json = (res: http.ServerResponse, code: number, data: unknown) => {
@@ -70,10 +83,11 @@ const getCookie = (req: http.IncomingMessage, name: string): string | undefined 
 	return m?.[1]
 }
 // session cookie：HttpOnly（JS 读不到 token）+ SameSite=Lax（跨站 POST 不带 cookie）。
-// Secure 阶段 B 上 TLS 再加——局域网 HTTP 下加了浏览器直接拒收
+// Secure 只在通道真加密时加——HTTP 下加了浏览器直接拒收（登不上），所以由 TLS_ON/V2_HTTPS 决定
+const cookieFlags = `HttpOnly; Path=/; SameSite=Lax${SECURE ? '; Secure' : ''}`
 const setSessionCookie = (res: http.ServerResponse, token: string) =>
-	res.setHeader('Set-Cookie', `sid=${token}; HttpOnly; Path=/; Max-Age=${30 * 86400}; SameSite=Lax`)
-const clearSessionCookie = (res: http.ServerResponse) => res.setHeader('Set-Cookie', 'sid=; HttpOnly; Path=/; Max-Age=0; SameSite=Lax')
+	res.setHeader('Set-Cookie', `sid=${token}; Max-Age=${30 * 86400}; ${cookieFlags}`)
+const clearSessionCookie = (res: http.ServerResponse) => res.setHeader('Set-Cookie', `sid=; Max-Age=0; ${cookieFlags}`)
 
 // ---------- rate limit：per-IP 固定窗口（60s 窗口，惰性过期重置；重启清零可接受） ----------
 // 桶按 (ip, 端点档) 分家——验收实录：只按 ip 分键时，/api/admin 等普通调用也往 auth 的
@@ -134,11 +148,13 @@ const TopicSchema = z.object({ id: z.string().min(1), name: z.string().min(1), f
 const SubscriptionsSchema = z.object({ audience: z.string().min(1), topics: z.array(TopicSchema) })
 
 // ---------- server ----------
-const server = http.createServer(async (req, res) => {
+async function handle(req: http.IncomingMessage, res: http.ServerResponse) {
 	const url = new URL(req.url ?? '/', `http://${req.headers.host}`)
 	const route = `${req.method} ${url.pathname}`
 	const ip = req.socket.remoteAddress ?? '?'
 	try {
+		// 通道加密了才发 HSTS（HTTP 下发了没意义，还会把浏览器锁死在用户的例外里）
+		if (SECURE) res.setHeader('Strict-Transport-Security', 'max-age=31536000')
 		// 限流分两档：auth 端点 5/min（爆破面），其余 API 60/min；静态不限
 		const isAuth = url.pathname.startsWith('/api/auth/')
 		if (url.pathname.startsWith('/api/') && rateLimited(`${ip}:${isAuth ? 'auth' : 'api'}`, isAuth ? 5 : 60))
@@ -320,7 +336,11 @@ const server = http.createServer(async (req, res) => {
 		console.error(`[server] ${route} 炸了：`, err?.message)
 		json(res, 500, { error: err?.message })
 	}
-})
+}
+
+const server = TLS_ON
+	? https.createServer({ cert: fsSync.readFileSync(TLS_CERT), key: fsSync.readFileSync(TLS_KEY) }, handle)
+	: http.createServer(handle)
 
 // ---------- 启动 ----------
 ;(async () => {
@@ -332,7 +352,11 @@ const server = http.createServer(async (req, res) => {
 	await users.bootstrap() // 零用户时打印首码（只此一次）
 	server.listen(PORT, () => {
 		const lan = lanIPv4()
-		console.log(`[daily-brief-v2 server] http://localhost:${PORT} · 局域网: ${lan ? `http://${lan}:${PORT}` : '（未找到局域网地址）'}`)
+		const scheme = TLS_ON ? 'https' : 'http'
+		console.log(`[daily-brief-v2 server] ${scheme}://localhost:${PORT} · 局域网: ${lan ? `${scheme}://${lan}:${PORT}` : '（未找到局域网地址）'}`)
 		console.log(`[daily-brief-v2 server] 注册=POST /api/auth/register · 登录=POST /api/auth/login · 补跑=POST /api/run · SSE=GET /api/events`)
+		if (!SECURE)
+			// 明文警告每次启动都打：这不是「警告过就算了」的合规条款，是「现在真有人在裸奔」的事实
+			console.warn(`[daily-brief-v2 server] ⚠ 未加密（HTTP）：登录密码与会话 cookie 全程明文，同网段可被嗅探。局域网家用可接受；公网部署必须配 TLS（V2_TLS_CERT/V2_TLS_KEY 或代理终结 + V2_HTTPS=1，见 make-cert.sh）`)
 	})
 })()

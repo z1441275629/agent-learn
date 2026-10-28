@@ -44,3 +44,6 @@ node_modules/
 12-capstone/daily-brief/app/dist/
 12-capstone/daily-brief-v2/app/node_modules/
 12-capstone/daily-brief-v2/app/dist/
+
+# v2 TLS 自签证书私钥（make-cert.sh 产物，绝不入库）
+12-capstone/daily-brief-v2/certs/
