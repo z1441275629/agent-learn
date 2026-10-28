@@ -122,7 +122,7 @@ export async function register(username: string, password: string, inviteCode: s
 		}
 		await fs.mkdir(path.join(USERS_DIR, user.id), { recursive: true })
 		await writeJSON(path.join(USERS_DIR, user.id, 'profile.json'), user)
-		await writeJSON(path.join(USERS_DIR, user.id, 'subscriptions.json'), { topics: [] })
+		await writeJSON(path.join(USERS_DIR, user.id, 'subscriptions.json'), { audience: '关注科技动态的读者', topics: [] })
 		invite.usedBy = user.id
 		invite.usedAt = new Date().toISOString()
 		await writeJSON(INVITES, pool)
