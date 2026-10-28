@@ -190,9 +190,9 @@ const server = http.createServer(async (req, res) => {
 			return json(res, r.code, r.data)
 		}
 
-		// ---- 静态：uniapp 构建产物优先，没有给内置占位页（浏览器直开 8787 就能读报） ----
-		if (req.method === 'GET' && (url.pathname === '/' || url.pathname.startsWith('/assets/'))) {
-			const dist = path.join(DIR, 'app', 'dist')
+		// ---- 静态：uniapp 构建产物优先（uni 插件强制约定路径 dist/build/h5），没有给内置占位页 ----
+		if (req.method === 'GET' && (url.pathname === '/' || url.pathname.startsWith('/assets/') || url.pathname.startsWith('/static/'))) {
+			const dist = path.join(DIR, 'app', 'dist', 'build', 'h5')
 			const file = url.pathname === '/' ? 'index.html' : url.pathname.slice(1)
 			const content = await fs.readFile(path.join(dist, file)).catch(() => null)
 			if (content !== null && file !== 'index.html') {

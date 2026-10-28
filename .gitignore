@@ -35,3 +35,7 @@ node_modules/
 
 # 12-capstone 毕业项目运行时产物（每日日报 + 状态台账，不入库；样例另存 sample 进 git）
 12-capstone/daily-brief/reports/
+
+# 12-capstone uniapp 端（独立子项目：依赖与构建产物不进根仓）
+12-capstone/daily-brief/app/node_modules/
+12-capstone/daily-brief/app/dist/

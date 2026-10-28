@@ -6,3 +6,5 @@
 06-context/
 07-memory/
 08-planner/
+# 12-capstone uniapp 子项目（自己的 tsconfig/依赖体系，根工具链不碰）
+12-capstone/daily-brief/app/

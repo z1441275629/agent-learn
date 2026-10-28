@@ -1,0 +1,173 @@
+<template>
+	<view class="page">
+		<!-- 顶栏：日期切换 + 补跑 -->
+		<view class="row head">
+			<picker mode="selector" :range="available" @change="onPickDate">
+				<view class="btn ghost date-btn">{{ date || '加载中…' }} ▾</view>
+			</picker>
+			<view class="grow"></view>
+			<button class="btn" :disabled="busy" @click="onRun">{{ busy ? '生成中…' : '补跑今日' }}</button>
+		</view>
+
+		<!-- 质检未过审提醒（pass=false 也照常显示日报，如实标黄） -->
+		<view v-if="verdictFail" class="card warn-card">⚠️ 本期质检未过审——critic 挑刺见 status，日报内容按现状交付（star/信源请自行甄别）</view>
+
+		<!-- 生成进度时间线：跑批时显示（SSE 实时推 / App 端轮询降级） -->
+		<view v-if="timeline.length" class="card">
+			<view class="row"><text class="card-title">生成进度</text><view class="grow"></view><text class="muted">{{ busy ? '跑批中…' : '已完成' }}</text></view>
+			<view v-for="(e, i) in timeline" :key="i" class="tl-row">
+				<text class="tl-icon">{{ icon(e.stage) }}</text>
+				<view class="grow">
+					<text>{{ e.message }}</text>
+					<text class="muted tl-time">{{ e.ts.slice(11, 19) }}</text>
+				</view>
+			</view>
+		</view>
+
+		<!-- 日报正文（marked 渲染；内容源=自产线，critic 程序断言 URL⊆原始池，XSS 面收敛在源头） -->
+		<view class="card md-card">
+			<view class="md-body" v-html="html"></view>
+		</view>
+	</view>
+</template>
+
+<script setup lang="ts">
+import { onShow, onUnload } from '@dcloudio/uni-app'
+import { ref, computed } from 'vue'
+import { marked } from 'marked'
+import { fetchReport, triggerRun, watchProgress, isTerminal, type ProgressEvent } from '../../api'
+
+const date = ref('')
+const html = ref('')
+const available = ref<string[]>([])
+const timeline = ref<ProgressEvent[]>([])
+const busy = ref(false)
+const verdictFail = ref(false)
+let unwatch: (() => void) | null = null
+
+const onShowHook = onShow(async () => {
+	await load('') // 进页面拿最新
+	// 「生成中」检测：progress 非终态（server 的 running 只覆盖它自己 spawn 的——cron 起的用事件流判定）
+	const cur = await fetchReport().catch(() => null)
+	if (cur && cur.progress.length > 0 && !isTerminal(cur.progress)) startWatch(cur.progress)
+})
+
+onUnload(() => unwatch?.())
+
+async function load(d: string) {
+	try {
+		const j = await fetchReport(d || undefined)
+		date.value = j.date
+		available.value = j.available
+		html.value = marked.parse(j.markdown) as string
+		verdictFail.value = j.status?.verdict?.pass === false
+	} catch (err: any) {
+		uni.showToast({ title: String(err?.message).slice(0, 40), icon: 'none' })
+	}
+}
+
+function onPickDate(e: any) {
+	const d = available.value[Number(e.detail.value)]
+	if (d && d !== date.value) load(d)
+}
+
+async function onRun() {
+	const r = await triggerRun()
+	if (r.running) {
+		uni.showToast({ title: '产线已在跑，等它落盘', icon: 'none' })
+	}
+	startWatch([])
+}
+
+function startWatch(initial: ProgressEvent[]) {
+	timeline.value = [...initial]
+	busy.value = true
+	unwatch?.()
+	unwatch = watchProgress((e) => {
+		if (e.stage === 'connected') return // SSE 连接确认不进时间线
+		timeline.value.push(e)
+		if (['done', 'notify', 'error'].includes(e.stage)) {
+			// 终态：收流重拉新日报（延迟 2s 等 notify 事件也到齐）
+			setTimeout(async () => {
+				unwatch?.()
+				unwatch = null
+				busy.value = false
+				await load('')
+			}, 2000)
+		}
+	})
+}
+
+const icon = (stage: string) => ({ start: '🚀', researcher: '🔍', writer: '✍️', critic: '🧪', done: '📦', notify: '📣', error: '❌' }[stage] ?? '·')
+</script>
+
+<style>
+.head {
+	padding: 12px 16px 0;
+}
+.date-btn {
+	min-width: 140px;
+}
+.warn-card {
+	border-left: 4px solid #d29922;
+}
+.card-title {
+	font-weight: 600;
+}
+.tl-row {
+	display: flex;
+	gap: 8px;
+	padding: 6px 0;
+	border-bottom: 1px dashed #eaeef2;
+	font-size: 14px;
+}
+.tl-row:last-child {
+	border-bottom: none;
+}
+.tl-icon {
+	font-size: 16px;
+}
+.tl-time {
+	display: block;
+}
+/* 日报 markdown 样式：手机可读性优先 */
+.md-body {
+	line-height: 1.75;
+	word-break: break-word;
+}
+.md-body h1 {
+	font-size: 20px;
+	margin: 4px 0 12px;
+}
+.md-body h2 {
+	font-size: 17px;
+	margin: 18px 0 8px;
+	padding-bottom: 6px;
+	border-bottom: 1px solid #eaeef2;
+}
+.md-body a {
+	color: #1f6feb;
+	text-decoration: none;
+}
+.md-body ul {
+	padding-left: 20px;
+}
+.md-body li {
+	margin: 8px 0;
+}
+.md-body strong {
+	color: #111;
+}
+.md-body blockquote {
+	border-left: 3px solid #d0d7de;
+	padding-left: 10px;
+	color: #57606a;
+	margin: 10px 0;
+}
+.md-body code {
+	background: #f6f8fa;
+	padding: 2px 5px;
+	border-radius: 4px;
+	font-size: 13px;
+}
+</style>

@@ -1,0 +1,13 @@
+{
+	"name": "AI 情报日报",
+	"appid": "",
+	"description": "个人研究助理 · AI 领域情报日报（模块 12 毕业项目 uniapp 端）",
+	"versionName": "1.0.0",
+	"versionCode": "100",
+	"h5": {
+		"title": "AI 情报日报",
+		"router": {
+			"mode": "hash"
+		}
+	}
+}

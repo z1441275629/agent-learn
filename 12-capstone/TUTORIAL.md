@@ -198,8 +198,8 @@ Windows 任务计划 09:00 → daily-brief 产线（Node，fanout 4 主题）→
 
 1. **progress 事件总线**（[pipeline.ts](daily-brief/pipeline.ts)）：产线各阶段 append `progress-日期.json`（start/researcher×N/writer/critic/done/notify）——**文件即总线**：cron 起的产线与 server 是两个进程，谁触发的产线 server 都能 fs.watch 到，不绑定 spawn 关系。emitProgress 串行队列防 fanout 并发写竞态（08 金笔记②的复发防御，P5 探针回归）
 2. **[server.ts](daily-brief/server.ts)** 零依赖原生 http（09「能不用框架就不用」路线）：`GET /api/latest`（日报全家桶 md+status+progress+running）/ `/api/report?date=` / `/api/history`（台账）/ `/api/topics`（GET 读 + POST zod 校验整体替换——07 订阅清单的增删改入口）/ `/api/progress`（**App 端 SSE 不通时的轮询降级通道**）/ `/api/events`（SSE：连接即回放全量 + fs.watch 增量 diff 广播 + 18s 心跳注释行）/ `POST /api/run`（补跑：spawn 产线子进程，**已在跑 409 防重**）/ `/`（uniapp 构建产物优先，没有给内置占位页——浏览器直开 8787 就能读报）
-3. **Server酱通知**（pipeline main 尾部）：标题进微信卡片 + desp 放今日总评 + 打开链接（BRIEF_PUBLIC_URL 配局域网地址手机才点得开）；SCT_SENDKEY 缺省 no-op（11 langfuse 同款纪律：通知层绝不炸产线）。**真发待用户注册 sct.ftqq.com 拿 SENDKEY 后验**
-4. **[register-task.ps1](daily-brief/register-task.ps1)**：每天 09:00 任务计划（StartWhenAvailable 开机补跑——「关机兜底」的另一半是补跑按钮）。**注册待用户执行**（系统计划任务是用户机器的持久变更）：`powershell -ExecutionPolicy Bypass -File .\register-task.ps1`
+3. **Server酱通知**（pipeline main 尾部）：标题进微信卡片 + desp 放今日总评 + 打开链接（BRIEF_PUBLIC_URL 配局域网地址手机才点得开）；SCT_SENDKEY 缺省 no-op（11 langfuse 同款纪律：通知层绝不炸产线）。真发验证见下方实录
+4. **[register-task.ps1](daily-brief/register-task.ps1)**：每天 09:00 任务计划（StartWhenAvailable 开机补跑——「关机兜底」的另一半是补跑按钮）。已注册 + schtasks /Run 全链实跑 exit 0（两坑修复实录见 git log：无 BOM UTF-8 被 PowerShell 5.x 按 GBK 解析炸解析阶段；Split-Path 层数错一层跑到 E:\workspace，node 找不到脚本秒退——任务计划黑盒里只剩「闪一下」）
 
 **验收实录**（零 token 端点 7/7 + 真跑两发，第二发暴露可靠性缺口又白捡修复实录）：latest/history(3 runs)/topics(4)/progress/404 路由提示/占位页/坏载荷 400 全过；`POST /api/run` spawn 补跑 + 二连发 409 防重；**SSE 三验**——连接即回放（中途连上也能看全程）、18s 心跳防中间层掐线、实时增量流实测（SSE 先连 26s 后产线才启动，start + researcher×3 事件实时到达）。
 
@@ -208,6 +208,24 @@ Windows 任务计划 09:00 → daily-brief 产线（Node，fanout 4 主题）→
 **数据槽**：SSE connected 即时；watch→广播毫秒级（fs.watch 触发即推，实测无感知延迟）；进度粒度=**阶段级不是 token 级**——设计取舍：§1 streamText 的 token 流是「盯生成」场景，cron 日报是「生成完来看」场景，阶段级时间线够用省实现；打字机留给未来「盯跑」模式。
 
 **坑两枚**（实录进代码注释）：① spawn 产线子进程 cwd 必须钉死仓库根——dotenv 从 cwd 读 .env，任务计划默认 cwd=system32（server 的 spawn 和 register-task.ps1 的 -WorkingDirectory 都显式钉了）；② pipeline 底部 main() 无 isMain 守卫时，任何 import 它的文件（probe/server）都会把产线真跑一遍——「入口即库」的文件必须显式分家（spawn.ts 先例，昨日实录烧 29k token 学费）。
+
+### 实做记录（2026-10-28）：uniapp H5 端——三页面 + SSE 进度 + 静态托管
+
+**交付**（[daily-brief/app/](daily-brief/app/)，独立子项目——依赖与构建产物不进根仓 node_modules）：
+
+- **三页面**（[pages.json](daily-brief/app/src/pages.json) text-only tabBar：日报/订阅/台账）：report（日期 picker 翻历史 + 补跑按钮 409 提示 + 进度时间线 emoji 图标 + marked→v-html + critic verdict fail 黄条 + onShow 检测非终态自动开进度流）/ topics（增删改 + 前端必填校验 + 后端 zod issues 展示双层）/ history（totals 四卡 + runs 反序列表 pass/fail 标签）
+- **[api.ts](daily-brief/app/src/api.ts)**：watchProgress 双通道——`typeof EventSource !== 'undefined'` 走 SSE（坏包 catch 不炸流），否则 3s 轮询 diff 增量（§6 调研结论 App 端降级通道落地）；isTerminal 用事件流判定生成中（server 的 running 字段只覆盖它自己 spawn 的，cron 起的它不知道）
+- **构建链路**：@dcloudio 全家（uni-app/uni-components/uni-h5/vite-plugin-uni/uni-cli-shared）版本串统一 `3.0.0-5030320261023001`（vue3 dist-tag——**全家必须同串**，差一位就 ERESOLVE）+ @dcloudio/types 精确 3.4.31（peer 要求精确版，^ 都不行）
+
+**三个决策**（都进了 [vite.config.ts](daily-brief/app/vite.config.ts) 注释）：
+
+1. **dev proxy `/api`→8787**：页面全部相对路径 `fetch('/api/...')`——dev 时 vite 转发、prod server 托管同源直连，**代码零环境分支**，CORS 都不用想（server 侧的 CORS \* 是给 H5 dev 5173 跨域兜底的）
+2. **hash 路由**（manifest.json `h5.router.mode`）：纯静态托管免「刷新 /#/topics 回退到 /」的服务器回退规则
+3. **marked 渲染 + XSS 信任边界声明**：日报是自产线产出（critic + URL⊆原始池程序断言），非用户输入——v-html 的信任边界写在注释里，不是无意识裸奔
+
+**坑三枚**（都是构建工具坑不是 agent 坑，PITFALLS 不收）：① vite-plugin-uni CJS `module.exports={default:fn,...}` 形状，esbuild 打包 vite.config 时 default import 拿到整个对象（「uni is not a function」）→ `(uniRaw as any).default ?? uniRaw` 剥层；② build.outDir 配了 'dist' 但产物落 **`dist/build/h5/`**——uni 插件强制约定路径，outDir 拗不过它 → server.ts 按约定路径适配（别跟插件较劲，读它的约定）；③ npm ERESOLVE 指着 types 版本——看 peer 字段要的是精确 "3.4.31"，^3.4.32 也不行。
+
+**验收**（HTTP 层 curl 全通，最终人眼验收留给用户）：`GET /` 返回真 index.html（非占位页）+ 主 JS 220KB + 两份 CSS 全 200；/api/latest（今日真日报）/history（5 runs 36 calls）/topics（4 主题）数据环闭合。浏览器开 `http://localhost:8787` 或手机同 WiFi 开 `http://192.168.19.154:8787`（Server酱卡片里的链接就是它）。
 
 ## 8. 验收：真实用户一周 + 博客
 
@@ -223,5 +241,5 @@ Windows 任务计划 09:00 → daily-brief 产线（Node，fanout 4 主题）→
 - [x] ④ Python 三框架概念对照（2026-10-27，阅读级零烧，概念全数映射回手写件，无生词）
 - [x] ⑤ 全仓对照表落档（2026-10-27，MAPPING.md 10 维度 40+ 行，坑判决三档编码三问）
 - [x] ⑥ 毕业项目选型 + 搭建（2026-10-27，选型 A 融合形态 + 调研三件全落定 + daily-brief 产线 v1 真跑验收 8 调用 33k tokens）
-- [ ] ⑦ 前端交付（SSE / 可视化 / 会话 API）
+- [x] ⑦ 前端交付（SSE / 可视化 / 会话 API）（2026-10-28，uniapp H5 三页面 + SSE 双通道 + 静态托管 curl 验收全通）
 - [ ] ⑧ 一周真实使用 + 博客 + 收官
