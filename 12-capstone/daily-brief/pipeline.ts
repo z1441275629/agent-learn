@@ -64,7 +64,7 @@ export function sliceJSON(text: string): string | null {
 }
 
 // ---------- 账本（×N 账本格式：每阶段明细 + 总账——11 trace 的本地 JSON 同款纪律） ----------
-interface Ledger { calls: number; promptTokens: number; completionTokens: number; elapsedMs: number }
+export interface Ledger { calls: number; promptTokens: number; completionTokens: number; elapsedMs: number }
 const ledger: Record<string, Ledger> = {}
 function charge(stage: string, r: ChatResult) {
 	const l = (ledger[stage] ??= { calls: 0, promptTokens: 0, completionTokens: 0, elapsedMs: 0 })
@@ -91,7 +91,7 @@ const ResearcherOut = z.object({
 type ResearcherItem = z.infer<typeof ResearcherOut>['items'][number]
 
 // 显式返回类型：联合字面量推断不穿 Promise.all——三个分支（空源/JSON 失败/成功）收进一个契约
-interface TopicResult {
+export interface TopicResult {
 	topic: { id: string; name: string; focus: string; hnQuery: string; githubQuery: string }
 	items: ResearcherItem[]
 	digest: string
@@ -199,6 +199,82 @@ async function critique(
 	return { pass: issues.length === 0, issues, score: -1 }
 }
 
+// ---------- 落盘层：日报 + 当日状态 + 跨日汇总台账 ----------
+// 三件套按日期/角色分家：日报 md 与 status 都带日期（同日重跑覆盖当日份，跨天不覆盖）；
+// history.json 每次运行 append 一条 run + totals 重算——跨日成本聚合（MAPPING ❌ 列「成本聚合」的手写上岗，
+// 补跑也是真金白银，按运行次记不按天记）。抽成导出函数：probe.ts 喂假数据零 token 验证落盘语义。
+export interface RunHistory {
+	totals: { runs: number; calls: number; promptTokens: number; completionTokens: number; elapsedMs: number }
+	runs: Array<{ date: string; startedAt: string; elapsedMs: number; pass: boolean; topics: number; selected: number; calls: number; promptTokens: number; completionTokens: number }>
+}
+export async function writeOutputs(
+	dir: string,
+	data: {
+		markdown: string
+		results: TopicResult[]
+		verdict: { pass: boolean; issues: string[]; score: number }
+		ledger: Record<string, Ledger>
+		startedAt: number
+	}
+): Promise<{ reportPath: string; totals: { calls: number; promptTokens: number; completionTokens: number }; elapsedMs: number }> {
+	await fs.mkdir(dir, { recursive: true })
+	const date = today()
+	const elapsedMs = Date.now() - data.startedAt
+	const reportPath = path.join(dir, `${date}.md`)
+	await fs.writeFile(reportPath, data.markdown, 'utf8')
+
+	const tot = Object.values(data.ledger).reduce(
+		(a, l) => ({ calls: a.calls + l.calls, promptTokens: a.promptTokens + l.promptTokens, completionTokens: a.completionTokens + l.completionTokens }),
+		{ calls: 0, promptTokens: 0, completionTokens: 0 }
+	)
+	const startedAt = new Date(data.startedAt).toISOString()
+	// 当日快照：日报/状态同语义——一天一份最新（重跑覆盖当日，看当天最后一次）
+	const status = {
+		date,
+		model: MODEL,
+		startedAt,
+		elapsedMs,
+		verdict: data.verdict,
+		topics: data.results.map((r) => ({
+			id: r.topic.id,
+			name: r.topic.name,
+			raw: r.raw,
+			selected: r.items.length,
+			digest: r.digest,
+			sourceErrors: r.errors,
+		})),
+		ledger: data.ledger,
+		reportPath,
+	}
+	await fs.writeFile(path.join(dir, `status-${date}.json`), JSON.stringify(status, null, 2), 'utf8')
+
+	// 跨日汇总：首跑无 history 用空台账起（只 catch ENOENT——文件存在但坏了就让它炸，别静默吞账本）
+	const historyPath = path.join(dir, 'history.json')
+	let history: RunHistory = { totals: { runs: 0, calls: 0, promptTokens: 0, completionTokens: 0, elapsedMs: 0 }, runs: [] }
+	try {
+		history = JSON.parse(await fs.readFile(historyPath, 'utf8'))
+	} catch (err: any) {
+		if (err?.code !== 'ENOENT') throw err
+	}
+	history.runs.push({
+		date,
+		startedAt,
+		elapsedMs,
+		pass: data.verdict.pass,
+		topics: data.results.length,
+		selected: data.results.reduce((n, r) => n + r.items.length, 0),
+		calls: tot.calls,
+		promptTokens: tot.promptTokens,
+		completionTokens: tot.completionTokens,
+	})
+	history.totals = history.runs.reduce(
+		(a, r) => ({ runs: a.runs + 1, calls: a.calls + r.calls, promptTokens: a.promptTokens + r.promptTokens, completionTokens: a.completionTokens + r.completionTokens, elapsedMs: a.elapsedMs + r.elapsedMs }),
+		{ runs: 0, calls: 0, promptTokens: 0, completionTokens: 0, elapsedMs: 0 }
+	)
+	await fs.writeFile(historyPath, JSON.stringify(history, null, 2), 'utf8')
+	return { reportPath, totals: tot, elapsedMs }
+}
+
 // ---------- main ----------
 async function main() {
 	const t0 = Date.now()
@@ -223,33 +299,17 @@ async function main() {
 		console.log(`[critic·重审] pass=${verdict.pass}`)
 	}
 
-	// 落盘：日报 + 状态台账（server/前端吃这个——§7 的数据接口）
-	await fs.mkdir(REPORTS, { recursive: true })
-	const reportPath = path.join(REPORTS, `${today()}.md`)
-	await fs.writeFile(reportPath, markdown, 'utf8')
-	const status = {
-		date: today(),
-		model: MODEL,
-		startedAt: new Date(t0).toISOString(),
-		elapsedMs: Date.now() - t0,
-		verdict,
-		topics: results.map((r) => ({
-			id: r.topic.id,
-			name: r.topic.name,
-			raw: r.raw,
-			selected: r.items.length,
-			digest: r.digest,
-			sourceErrors: r.errors,
-		})),
-		ledger,
-		reportPath,
-	}
-	await fs.writeFile(path.join(REPORTS, 'status.json'), JSON.stringify(status, null, 2), 'utf8')
+	// 落盘三件套：日报 md + status-日期.json + history.json 跨日汇总（writeOutputs）
+	const { reportPath, totals: tot, elapsedMs } = await writeOutputs(REPORTS, { markdown, results, verdict, ledger, startedAt: t0 })
 
-	// 总账（×N 账本）
-	const tot = Object.values(ledger).reduce((a, l) => ({ calls: a.calls + l.calls, p: a.p + l.promptTokens, c: a.c + l.completionTokens }), { calls: 0, p: 0, c: 0 })
+	// 总账（×N 账本；累计总账在 history.json.totals）
 	console.log(`\n[落盘] ${reportPath}`)
-	console.log(`[总账] ${tot.calls} 次调用 · ${tot.p}/${tot.c} tokens · 墙钟 ${((Date.now() - t0) / 1000).toFixed(1)}s`)
+	console.log(`[总账] 本次 ${tot.calls} 次调用 · ${tot.promptTokens}/${tot.completionTokens} tokens · 墙钟 ${(elapsedMs / 1000).toFixed(1)}s`)
 	if (!verdict.pass) process.exitCode = 1
 }
-main()
+
+// isMain 守卫（spawn.ts 同款纪律）：pipeline 既是 cron 入口又是 probe 的 import 库——
+// 没有这行，probe.ts 一 import 就把真产线跑一遍（2026-10-28 实录：探针「零 token」被
+// import 副作用烧了一发 29k token + 覆盖当日真日报——「入口即库」的文件必须显式分家）
+const isMain = process.argv[1] !== undefined && import.meta.url === new URL(`file:///${process.argv[1].replace(/\\/g, '/')}`).href
+if (isMain) main()
