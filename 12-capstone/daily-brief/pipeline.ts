@@ -99,6 +99,17 @@ export interface TopicResult {
 	errors: string[]
 }
 async function researchTopic(topic: TopicResult['topic']): Promise<TopicResult> {
+	try {
+		return await researchTopicInner(topic)
+	} catch (err: any) {
+		// 失败传播①真异常（spawn.ts 三入口教训）：单主题崩 ≠ 全链崩——降级空板块、digest 带失败原因。
+		// 2026-10-28 补跑实录：ai-agents 主题 chat 层抛错把整条产线带走，progress 停在第 4 条事件、
+		// history 没入账——fetch 层做了单源降级、researcher 层漏了，这层补上
+		return { topic, items: [] as ResearcherItem[], digest: `（researcher 异常降级：${String(err?.message).slice(0, 120)}）`, raw: 0, errors: [String(err?.message)] }
+	}
+}
+
+async function researchTopicInner(topic: TopicResult['topic']): Promise<TopicResult> {
 	const { items, errors } = await fetchTopic(topic.hnQuery, topic.githubQuery)
 	if (items.length === 0) return { topic, items: [] as ResearcherItem[], digest: '', raw: 0, errors }
 
@@ -275,37 +286,108 @@ export async function writeOutputs(
 	return { reportPath, totals: tot, elapsedMs }
 }
 
+// ---------- 进度事件（§7 SSE 的数据源：产线各阶段 append，progress-日期.json 即事件总线） ----------
+// 串行队列防 fanout 并发写竞态（08 金笔记②：Promise.all 并发读改写同名文件互相覆盖）——
+// 所有 emit 排队执行，progress 文件写入永远单飞。server 端 fs.watch 这份文件推 SSE
+export interface ProgressEvent { ts: string; stage: string; message: string }
+let progressQueue: Promise<void> = Promise.resolve()
+export function emitProgress(dir: string, stage: string, message: string): Promise<void> {
+	const run = async () => {
+		const file = path.join(dir, `progress-${today()}.json`)
+		let events: ProgressEvent[] = []
+		try {
+			events = JSON.parse(await fs.readFile(file, 'utf8'))
+		} catch (err: any) {
+			if (err?.code !== 'ENOENT') throw err
+		}
+		events.push({ ts: new Date().toISOString(), stage, message })
+		await fs.writeFile(file, JSON.stringify(events, null, 2), 'utf8')
+	}
+	progressQueue = progressQueue.then(run, run) // 前面失败也继续——丢一条事件好过卡死产线
+	return progressQueue
+}
+
+// ---------- Server酱通知（cron 跑完的「日报已生成」微信推送） ----------
+// no-key no-op 纪律（11 langfuse 同款）：通知层绝不炸产线——SCT_SENDKEY 在 .env，免费版每天 5 条
+async function notifyServerChan(title: string, desp: string): Promise<{ sent: boolean; reason?: string }> {
+	const key = process.env.SCT_SENDKEY
+	if (!key) return { sent: false, reason: '未配置 SCT_SENDKEY（no-op）' }
+	try {
+		const res = await fetch(`https://sctapi.ftqq.com/${key}.send`, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+			body: new URLSearchParams({ title, desp }),
+			signal: AbortSignal.timeout(10_000),
+		})
+		const j: any = await res.json().catch(() => ({}))
+		return j?.code === 0 ? { sent: true } : { sent: false, reason: `HTTP ${res.status}：${j?.message ?? '未知响应'}` }
+	} catch (err: any) {
+		return { sent: false, reason: err?.message } // 通知失败不碰 exitCode
+	}
+}
+
 // ---------- main ----------
 async function main() {
+try {
 	const t0 = Date.now()
 	const subs = JSON.parse(await fs.readFile(path.join(DIR, 'subscriptions.json'), 'utf8'))
 	console.log(`[daily-brief] ${today()} · ${subs.topics.length} 个主题 · model=${MODEL}`)
 
-	// fanout（10 的模式）：每主题一个 researcher 并行——抓源不串行等待
-	const results = await Promise.all(subs.topics.map(researchTopic))
+	// progress 是「本次运行」的事件流——启动重置（同日重跑=新流，SSE 只看最新一次）
+	await fs.rm(path.join(REPORTS, `progress-${today()}.json`), { force: true })
+	await emitProgress(REPORTS, 'start', `产线启动：${subs.topics.length} 个主题 · ${MODEL}`)
+
+	// fanout（10 的模式）：每主题一个 researcher 并行——抓源不串行等待；
+	// 每主题完成即推进度（then 里 emit，串行队列保证 progress 文件安全）
+	const results = await Promise.all(
+		subs.topics.map(async (t: any) => {
+			const r = await researchTopic(t)
+			await emitProgress(REPORTS, 'researcher', `${r.topic.name}：原始 ${r.raw} 条 → 精选 ${r.items.length} 条${r.errors.length ? `（源错误 ${r.errors.length} 个）` : ''}`)
+			return r
+		})
+	)
 	const poolURLs = new Set(results.flatMap((r) => r.items.map((i: ResearcherItem) => i.url)))
 	for (const r of results) {
 		console.log(`[researcher:${r.topic.id}] 原始 ${r.raw} 条 → 精选 ${r.items.length} 条${r.errors.length ? ` · 源错误: ${r.errors.length}` : ''}`)
 	}
 
 	// writer → critic →（不过）重写一轮（08 自修一轮同款，烧钱上限明确）
+	await emitProgress(REPORTS, 'writer', `写手成稿中（${results.reduce((n, r) => n + r.items.length, 0)} 条素材）`)
 	let markdown = await writeReport(results)
 	let verdict = await critique(markdown, results, poolURLs)
 	console.log(`[critic] pass=${verdict.pass}${verdict.issues.length ? ` issues: ${verdict.issues.join('；')}` : ''}`)
+	await emitProgress(REPORTS, 'critic', `一审 ${verdict.pass ? '过审' : '打回'}${verdict.issues.length ? `：${verdict.issues[0].slice(0, 80)}` : ''}`)
 	if (!verdict.pass) {
 		console.log('[writer] 按质检意见重写一轮')
+		await emitProgress(REPORTS, 'writer', '按质检意见重写一轮')
 		markdown = await writeReport(results, { issues: verdict.issues })
 		verdict = await critique(markdown, results, poolURLs)
 		console.log(`[critic·重审] pass=${verdict.pass}`)
+		await emitProgress(REPORTS, 'critic', `重审 ${verdict.pass ? '过审' : '仍未过（按现状落盘，如实记台账）'}`)
 	}
 
 	// 落盘三件套：日报 md + status-日期.json + history.json 跨日汇总（writeOutputs）
 	const { reportPath, totals: tot, elapsedMs } = await writeOutputs(REPORTS, { markdown, results, verdict, ledger, startedAt: t0 })
+	await emitProgress(REPORTS, 'done', `落盘完成 · ${tot.calls} 调用 · ${tot.promptTokens}/${tot.completionTokens} tokens · ${(elapsedMs / 1000).toFixed(0)}s · ${verdict.pass ? '过审' : '未过审'}`)
+
+	// Server酱推送：标题进微信卡片（免费版卡片只显示标题），desp 放今日总评 + 打开链接
+	// BRIEF_PUBLIC_URL 默认 localhost（微信里点不开——配成局域网 http://192.168.x.x:8787/ 才是给手机用的）
+	const summary = markdown.includes('## 今日总评') ? markdown.split('## 今日总评')[1].trim().slice(0, 500) : markdown.slice(0, 500)
+	const n = await notifyServerChan(`AI 情报日报 ${today()}${verdict.pass ? '已生成' : '已生成（质检未过审）'}`, `${summary}\n\n---\n\n[打开日报](${process.env.BRIEF_PUBLIC_URL || 'http://localhost:8787/'})`)
+	console.log(`[通知] ${n.sent ? 'Server酱已推送' : `未推送：${n.reason}`}`)
+	await emitProgress(REPORTS, 'notify', n.sent ? 'Server酱已推送' : `未推送（${n.reason}）`)
 
 	// 总账（×N 账本；累计总账在 history.json.totals）
 	console.log(`\n[落盘] ${reportPath}`)
 	console.log(`[总账] 本次 ${tot.calls} 次调用 · ${tot.promptTokens}/${tot.completionTokens} tokens · 墙钟 ${(elapsedMs / 1000).toFixed(1)}s`)
 	if (!verdict.pass) process.exitCode = 1
+} catch (err: any) {
+	// writer/critic 层崩溃没有降级语义（没有日报就是废了）——错误落 progress（server SSE 能看到）+ exit 1，
+	// 明天 cron 再来。emitProgress 自己也 catch：progress 再炸不能挡 exit
+	console.error('[产线崩溃]', err)
+	await emitProgress(REPORTS, 'error', `产线未捕获异常：${String(err?.message).slice(0, 150)}`).catch(() => {})
+	process.exitCode = 1
+}
 }
 
 // isMain 守卫（spawn.ts 同款纪律）：pipeline 既是 cron 入口又是 probe 的 import 库——

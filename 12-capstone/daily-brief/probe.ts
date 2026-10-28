@@ -9,7 +9,7 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import os from 'node:os'
-import { writeOutputs, type TopicResult, type Ledger } from './pipeline.ts'
+import { writeOutputs, emitProgress, type TopicResult, type Ledger } from './pipeline.ts'
 
 const TMP = await fs.mkdtemp(path.join(os.tmpdir(), 'brief-probe-'))
 const date = new Date()
@@ -64,6 +64,14 @@ await fs.writeFile(path.join(TMP, `status-${yesterday}.json`), '{"date":"yesterd
 await writeOutputs(TMP, { markdown: '# 第三版', results: [fakeTopic('t1', 1)], verdict, ledger: fakeLedger(1), startedAt: Date.now() })
 check(`status-${yesterday}.json 原样（文件名分家）`, (await fs.readFile(path.join(TMP, `status-${yesterday}.json`), 'utf8')) === '{"date":"yesterday"}')
 check('history.runs 追加为 3', JSON.parse(await fs.readFile(path.join(TMP, 'history.json'), 'utf8')).runs.length === 3)
+
+console.log('P5 progress 并发写安全（fanout 竞态回归——08 金笔记②）')
+await emitProgress(TMP, 'start', '首事件')
+// 三路并发 emit：无串行队列时读-改-写竞态互相覆盖（08 金笔记②原坑），串行队列下必须 4 条全落
+await Promise.all([emitProgress(TMP, 'researcher', '并发 A'), emitProgress(TMP, 'researcher', '并发 B'), emitProgress(TMP, 'researcher', '并发 C')])
+const pEvents = JSON.parse(await fs.readFile(path.join(TMP, `progress-${today}.json`), 'utf8'))
+check(`4 个事件全落盘不丢（实际 ${pEvents.length}）`, pEvents.length === 4)
+check('事件带 ts/stage/message 三件', pEvents.every((e: any) => e.ts && e.stage && e.message))
 
 await fs.rm(TMP, { recursive: true, force: true }) // 清场：探针目录全删，可重复跑
 console.log(`\n探针结果: ${pass}/${pass + fail} ${fail === 0 ? '✓ 全过' : '✗ 有失败——看上面归因'}`)

@@ -192,6 +192,23 @@ Windows 任务计划 09:00 → daily-brief 产线（Node，fanout 4 主题）→
 - 引导问题：SSE vs WebSocket 选型？流中断在 token 中间怎么办？
 - 数据槽：首字延迟 ____ms；断线重连恢复位置 ____（精确到 token/步）
 
+### 实做记录（2026-10-28）：server 侧全链落地
+
+**四件交付**（uniapp 端另轮）：
+
+1. **progress 事件总线**（[pipeline.ts](daily-brief/pipeline.ts)）：产线各阶段 append `progress-日期.json`（start/researcher×N/writer/critic/done/notify）——**文件即总线**：cron 起的产线与 server 是两个进程，谁触发的产线 server 都能 fs.watch 到，不绑定 spawn 关系。emitProgress 串行队列防 fanout 并发写竞态（08 金笔记②的复发防御，P5 探针回归）
+2. **[server.ts](daily-brief/server.ts)** 零依赖原生 http（09「能不用框架就不用」路线）：`GET /api/latest`（日报全家桶 md+status+progress+running）/ `/api/report?date=` / `/api/history`（台账）/ `/api/topics`（GET 读 + POST zod 校验整体替换——07 订阅清单的增删改入口）/ `/api/progress`（**App 端 SSE 不通时的轮询降级通道**）/ `/api/events`（SSE：连接即回放全量 + fs.watch 增量 diff 广播 + 18s 心跳注释行）/ `POST /api/run`（补跑：spawn 产线子进程，**已在跑 409 防重**）/ `/`（uniapp 构建产物优先，没有给内置占位页——浏览器直开 8787 就能读报）
+3. **Server酱通知**（pipeline main 尾部）：标题进微信卡片 + desp 放今日总评 + 打开链接（BRIEF_PUBLIC_URL 配局域网地址手机才点得开）；SCT_SENDKEY 缺省 no-op（11 langfuse 同款纪律：通知层绝不炸产线）。**真发待用户注册 sct.ftqq.com 拿 SENDKEY 后验**
+4. **[register-task.ps1](daily-brief/register-task.ps1)**：每天 09:00 任务计划（StartWhenAvailable 开机补跑——「关机兜底」的另一半是补跑按钮）。**注册待用户执行**（系统计划任务是用户机器的持久变更）：`powershell -ExecutionPolicy Bypass -File .\register-task.ps1`
+
+**验收实录**（零 token 端点 7/7 + 真跑两发，第二发暴露可靠性缺口又白捡修复实录）：latest/history(3 runs)/topics(4)/progress/404 路由提示/占位页/坏载荷 400 全过；`POST /api/run` spawn 补跑 + 二连发 409 防重；**SSE 三验**——连接即回放（中途连上也能看全程）、18s 心跳防中间层掐线、实时增量流实测（SSE 先连 26s 后产线才启动，start + researcher×3 事件实时到达）。
+
+**补跑第一发 exit 1（坏事变教材）**：ai-agents 主题 chat 层抛错把整条产线带走——progress 停在第 4 条事件、history 没入账、`stdio:'ignore'` 还吞了崩溃现场。两个缺口都是 fetch 层修了 researcher 层漏了：① researchTopic 无失败降级（spawn.ts 失败传播三入口的教训没搬全）→ 修为 try/catch 降级空板块（单主题崩≠全链崩）② main 无兜底 → catch 落 error 事件（SSE 可见）+ exit 1 ③ server spawn 改日志管道转发（崩溃现场必须可观测——`stdio:'ignore'` 是自己给自己挖的黑盒）。**修复后第二发 exit 0 全链 9 事件**（start/researcher×4/writer/critic 一审过审/done/notify），history 第 4 条入账 6 调用 9586/9358/103s。**Server酱真发验证通过**（用户已配 SCT_SENDKEY/BRIEF_PUBLIC_URL，补跑成功推送落微信）。
+
+**数据槽**：SSE connected 即时；watch→广播毫秒级（fs.watch 触发即推，实测无感知延迟）；进度粒度=**阶段级不是 token 级**——设计取舍：§1 streamText 的 token 流是「盯生成」场景，cron 日报是「生成完来看」场景，阶段级时间线够用省实现；打字机留给未来「盯跑」模式。
+
+**坑两枚**（实录进代码注释）：① spawn 产线子进程 cwd 必须钉死仓库根——dotenv 从 cwd 读 .env，任务计划默认 cwd=system32（server 的 spawn 和 register-task.ps1 的 -WorkingDirectory 都显式钉了）；② pipeline 底部 main() 无 isMain 守卫时，任何 import 它的文件（probe/server）都会把产线真跑一遍——「入口即库」的文件必须显式分家（spawn.ts 先例，昨日实录烧 29k token 学费）。
+
 ## 8. 验收：真实用户一周 + 博客
 
 - 真实用户持续用一周（自己也算，但要真的用）
