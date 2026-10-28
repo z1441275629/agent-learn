@@ -1,6 +1,6 @@
 <template>
 	<view class="page">
-		<view class="muted hint">订阅 = 产线的 fanout 依据。audience 一句话告诉研究员「你是谁」——筛选标准和日报口吻都跟着它变；改完「保存全部」整体提交，明天的日报按新清单跑</view>
+		<view class="muted hint">订阅 = 产线的 fanout 依据。「我是谁」一句话决定研究员怎么筛、日报用什么口吻；改完「保存全部」整体提交，明天的日报按新清单跑</view>
 
 		<!-- audience：v2 新字段（v1「读者是学 agent 的工程师」硬编码在 prompt 里，多用户下不成立） -->
 		<view class="card">
@@ -14,7 +14,7 @@
 			<view class="row">
 				<text class="card-title">{{ t.name || '（新主题）' }}</text>
 				<view class="grow"></view>
-				<button class="btn warn del" @click="del(i)">删除</button>
+				<button class="btn warn sm" @click="del(i)">删除</button>
 			</view>
 			<view class="field">
 				<text class="label">主题名（中文）</text>
@@ -29,12 +29,12 @@
 			<text class="label src-label">数据源（至少 1 个，可混搭）</text>
 			<view v-for="(s, j) in t.sources" :key="j" class="row src-row">
 				<picker mode="selector" :range="SOURCE_TYPES" range-key="label" @change="onPickType(i, j, $event)">
-					<view class="btn ghost type-btn">{{ labelOf(s.type) }} ▾</view>
+					<view class="btn ghost sm type-btn">{{ labelOf(s.type) }} ▾</view>
 				</picker>
-				<input class="grow" v-model="s.query" :placeholder="placeholderOf(s.type)" />
-				<button v-if="t.sources.length > 1" class="btn warn del" @click="t.sources.splice(j, 1)">✕</button>
+				<input class="grow src-input" v-model="s.query" :placeholder="placeholderOf(s.type)" />
+				<button v-if="t.sources.length > 1" class="btn warn sm" @click="t.sources.splice(j, 1)">✕</button>
 			</view>
-			<button class="btn ghost add-src" @click="t.sources.push({ type: 'rss', query: '' })">＋ 加数据源</button>
+			<button class="btn ghost sm add-src" @click="t.sources.push({ type: 'rss', query: '' })">＋ 加数据源</button>
 		</view>
 
 		<view class="row actions">
@@ -107,47 +107,36 @@ async function save() {
 
 <style>
 .hint {
+	display: block;
 	padding: 12px 16px 0;
+	line-height: 1.6;
 }
 .card-title {
 	font-weight: 600;
 }
-.del {
-	padding: 2px 10px;
-	font-size: 12px;
-}
-.field {
-	margin-top: 10px;
-}
-.label {
-	display: block;
-	font-size: 12px;
-	color: #57606a;
-	margin-bottom: 4px;
-}
-.field input,
-.src-row input {
-	border: 1px solid #d0d7de;
-	border-radius: 6px;
-	padding: 7px 10px;
-	font-size: 14px;
-	background: #fafbfc;
-}
 .src-label {
-	margin-top: 14px;
+	display: block;
+	margin-top: 16px;
 }
 .src-row {
 	margin-top: 8px;
 }
 .type-btn {
-	padding: 7px 10px;
-	font-size: 13px;
+	padding: 6px 10px;
 	white-space: nowrap;
 }
+.src-input {
+	height: auto; /* 同 App.vue：uni-input 默认固定高，不写 auto 会被 padding 压塌 */
+	border: 1px solid #d0d7de;
+	border-radius: 8px;
+	padding: 8px 10px;
+	font-size: 14px;
+	line-height: 1.4;
+	background: #fafbfc;
+	box-sizing: border-box;
+}
 .add-src {
-	margin-top: 8px;
-	padding: 6px 12px;
-	font-size: 13px;
+	margin-top: 10px;
 }
 .actions {
 	padding: 12px 16px 24px;

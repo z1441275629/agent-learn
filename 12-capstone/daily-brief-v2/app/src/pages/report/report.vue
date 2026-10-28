@@ -3,10 +3,10 @@
 		<!-- 顶栏：日期切换 + 补跑（只跑自己的） -->
 		<view class="row head">
 			<picker mode="selector" :range="available" @change="onPickDate">
-				<view class="btn ghost date-btn">{{ date || '加载中…' }} ▾</view>
+				<view class="btn ghost sm date-btn">{{ date || (emptyText ? '暂无日报' : '加载中…') }} ▾</view>
 			</picker>
 			<view class="grow"></view>
-			<button class="btn" :disabled="busy" @click="onRun">{{ busy ? '生成中…' : '补跑今日' }}</button>
+			<button class="btn sm" :disabled="busy" @click="onRun">{{ busy ? '生成中…' : '补跑今日' }}</button>
 		</view>
 
 		<!-- 质检未过审提醒（pass=false 也照常显示日报，如实标黄） -->
@@ -27,7 +27,11 @@
 		<!-- 日报正文：marked 渲染 + DOMPurify 出口过滤（v2 威胁模型：RSS 标题是外部输入会进日报，
 		     marked 不转义内嵌 HTML——v1 单机「源头收敛」够用，多租户公网下出口必须再过一道） -->
 		<view class="card md-card">
-			<view class="md-body" v-html="html"></view>
+			<view v-if="emptyText" class="empty">
+				<text class="empty-title">📭 还没有日报</text>
+				<text class="muted">{{ emptyText.replace(/^还没有日报（|）$/g, '') }}</text>
+			</view>
+			<view v-else class="md-body" v-html="html"></view>
 		</view>
 	</view>
 </template>
@@ -45,6 +49,7 @@ const available = ref<string[]>([])
 const timeline = ref<ProgressEvent[]>([])
 const busy = ref(false)
 const verdictFail = ref(false)
+const emptyText = ref('')
 let unwatch: (() => void) | null = null
 
 const onShowHook = onShow(async () => {
@@ -63,8 +68,12 @@ async function load(d: string) {
 		available.value = j.available
 		html.value = DOMPurify.sanitize(marked.parse(j.markdown) as string)
 		verdictFail.value = j.status?.verdict?.pass === false
+		emptyText.value = ''
 	} catch (err: any) {
-		uni.showToast({ title: String(err?.message).slice(0, 40), icon: 'none' })
+		if (err?.auth) return // 未登录：api 层已静默跳登录页，不再弹 toast
+		// 404（还没有任何日报）走空态引导，不弹 toast、也不留一张空白卡
+		emptyText.value = String(err?.message ?? err)
+		html.value = ''
 	}
 }
 
@@ -113,6 +122,18 @@ const icon = (stage: string) => ({ start: '🚀', researcher: '🔍', writer: '�
 }
 .warn-card {
 	border-left: 4px solid #d29922;
+}
+/* 空态：没日报时给一句「下一步做什么」，不留一张空白卡 */
+.empty {
+	display: flex;
+	flex-direction: column;
+	gap: 10px;
+	padding: 28px 8px;
+	align-items: center;
+}
+.empty-title {
+	font-weight: 600;
+	color: #57606a;
 }
 .card-title {
 	font-weight: 600;

@@ -54,8 +54,11 @@ async function request<T = any>(path: string, method = 'GET', body?: unknown): P
 		body: body !== undefined ? JSON.stringify(body) : undefined,
 	})
 	if (res.status === 401) {
+		// 未登录 → 静默跳登录页（打 auth 标记：调用方不必再弹「请先登录」toast，首屏进来不该有噪音）
 		toLogin()
-		throw new Error('请先登录')
+		const err: any = new Error('请先登录')
+		err.auth = true
+		throw err
 	}
 	const data: any = await res.json().catch(() => null)
 	if (!res.ok) {
@@ -139,7 +142,7 @@ export function watchProgress(onEvent: (e: ProgressEvent) => void): () => void {
 			seen = j.events.length
 		} catch (err: any) {
 			/* 单次拉失败不断流；401 已被 request 拦截跳登录——这里停表即可 */
-			if (String(err?.message).includes('请先登录')) clearInterval(timer)
+			if (err?.auth) clearInterval(timer)
 		}
 	}, 3000)
 	return () => clearInterval(timer)

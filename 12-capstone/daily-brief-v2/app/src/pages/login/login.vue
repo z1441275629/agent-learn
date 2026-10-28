@@ -1,8 +1,8 @@
 <template>
-	<view class="page login-page">
-		<view class="card">
+	<view class="login-page">
+		<view class="card login-card">
 			<text class="title">AI 情报日报</text>
-			<text class="muted sub">各订各的源，各收各的报（邀请码注册）</text>
+			<text class="muted sub">各订各的源，各收各的报</text>
 
 			<view class="row mode-tabs">
 				<button :class="['btn', 'grow', mode === 'login' ? '' : 'ghost']" @click="switchMode('login')">登录</button>
@@ -22,7 +22,7 @@
 				<input v-model="inviteCode" placeholder="找管理员要" />
 			</view>
 
-			<button class="btn submit" :disabled="busy" @click="submit">{{ busy ? '提交中…' : mode === 'login' ? '登录' : '注册并进入' }}</button>
+			<button class="btn block submit" :disabled="busy" @click="submit">{{ busy ? '提交中…' : mode === 'login' ? '登录' : '注册并进入' }}</button>
 			<text v-if="errText" class="err">{{ errText }}</text>
 		</view>
 	</view>
@@ -60,49 +60,47 @@ async function submit() {
 </script>
 
 <style>
+/* 居中：页面撑满视口 + 纵向居中 + 卡片自己不叠 .card 的横向 margin（叠了就越出边距、看着偏） */
 .login-page {
-	min-height: 100vh;
 	display: flex;
+	flex-direction: column;
+	justify-content: center;
 	align-items: center;
+	min-height: 100vh;
+	box-sizing: border-box;
+	padding: 24px 20px;
+}
+.login-card {
+	width: 100%;
+	max-width: 420px;
+	margin: 0;
+	padding: 26px 22px;
+	box-sizing: border-box;
 }
 .title {
 	display: block;
-	font-size: 24px;
+	font-size: 23px;
 	font-weight: 700;
 	text-align: center;
+	letter-spacing: 0.5px;
 }
 .sub {
 	display: block;
 	text-align: center;
-	margin: 6px 0 16px;
+	margin: 8px 0 20px;
 }
 .mode-tabs {
-	margin-bottom: 8px;
+	gap: 10px;
+	margin-bottom: 4px;
 }
 .submit {
-	margin-top: 18px;
+	margin-top: 22px;
 }
 .err {
 	display: block;
-	margin-top: 10px;
+	margin-top: 12px;
 	color: #d1242f;
 	font-size: 13px;
 	text-align: center;
-}
-.field {
-	margin-top: 12px;
-}
-.label {
-	display: block;
-	font-size: 12px;
-	color: #57606a;
-	margin-bottom: 4px;
-}
-.field input {
-	border: 1px solid #d0d7de;
-	border-radius: 6px;
-	padding: 7px 10px;
-	font-size: 14px;
-	background: #fafbfc;
 }
 </style>
