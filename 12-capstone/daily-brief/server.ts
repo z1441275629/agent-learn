@@ -222,9 +222,12 @@ server.listen(PORT, async () => {
 	await refreshProgress(today())
 	console.log(`[daily-brief server] http://localhost:${PORT} · 局域网: ${lan ? `http://${lan}:${PORT}` : '（未找到 192.168 网段——检查 WiFi）'}`)
 	console.log(`[daily-brief server] 补跑=POST /api/run · 进度流=GET /api/events · cron 注册见 register-task.ps1`)
-	// 手机打不开局域网地址第一嫌疑：Windows 把 WiFi 判成「公用网络」默认拦入站（2026-10-28 实录）——
-	// 管理员 PowerShell：New-NetFirewallRule -DisplayName "daily-brief 8787 (LAN)" -Direction Inbound
-	//   -Action Allow -Protocol TCP -LocalPort 8787 -RemoteAddress 192.168.0.0/16
-	// 端口+私网段收敛放行：换热点 IP 变不用重配，也不给 node 全放行
-	if (lan) console.log(`[daily-brief server] 手机打不开？先查防火墙（见上一条规则，已配过则换热点也不受影响）`)
+	// 手机打不开局域网地址——诊断三件套按序查（2026-10-28 实录：只看 NetworkCategory=Public 就断言
+	// 防火墙拦截是误诊——实机 Get-NetFirewallProfile 显示 Private/Public 全 Disabled，真凶是热点 AP 隔离）：
+	//   ① Get-NetFirewallProfile：防火墙真开着吗（Enabled=False 时网络类别/放行规则全无意义——先验「实际在拦」再谈「默认应该拦」）
+	//   ② 开着 → Get-NetConnectionProfile 看类别；管理员放行端口（收敛原则：端口+RFC1918 私网段，不给程序全放行）：
+	//      New-NetFirewallRule -Direction Inbound -Action Allow -Protocol TCP -LocalPort 8787
+	//        -RemoteAddress 10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
+	//   ③ 防火墙关着还打不开 → 热点/路由器 AP 隔离（设备间互访被禁，2026-10-28 小米WiFi 实锤），换个热点验证
+	if (lan) console.log(`[daily-brief server] 手机打不开？按序查：①防火墙启用状态 ②端口放行 ③热点 AP 隔离（三件套见源码注释）`)
 })

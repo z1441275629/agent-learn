@@ -229,7 +229,7 @@ Windows 任务计划 09:00 → daily-brief 产线（Node，fanout 4 主题）→
 
 **网络环境摩擦两笔**（2026-10-28 真实使用第一天，全在「交付边界」不在代码里）：
 
-1. **手机打不开局域网地址 → Windows 把 WiFi 判成「公用网络」**：公用配置文件默认拦所有入站（电脑自己 localhost 能开=服务无罪）。修复=管理员 PowerShell 加端口级收敛规则（`New-NetFirewallRule -Direction Inbound -Action Allow -Protocol TCP -LocalPort 8787 -RemoteAddress <私网段>`）——**放行端口+私网段，不放行程序**：node.exe 全放行等于给机器上所有 node 程序开公网门。规则已实录进 server.ts 启动打印（探测到局域网地址时提示一行）。
+1. **手机打不开局域网地址——一次误诊的完整实录**：症状是电脑 localhost 能开、手机同 WiFi 超时。第一次诊断查到 `NetworkCategory=Public` 就断言「公用配置默认拦入站」，加了端口级放行规则（`New-NetFirewallRule ... -LocalPort 8787 -RemoteAddress <私网段>`，收敛原则：**放行端口+私网段，不放行程序**——node.exe 全放行等于给机器上所有 node 程序开门）。**换了个人热点后什么防火墙操作都没做就能访问了——诊断被现实打脸**：实机 `Get-NetFirewallProfile` 显示 Private/Public 两个 profile 全 `Enabled=False`（防火墙整个关着，网络类别和放行规则全无意义），真凶是小米 WiFi 的**AP 隔离**（设备间互访被禁）。教训：**「默认应该拦」≠「实际在拦」——中间隔一个 Enabled 开关；诊断三件套按序：①防火墙启用状态 ②类别+端口放行 ③AP 隔离（换个热点最快验证）**。三件套已实录进 server.ts 启动注释。
 2. **热点一换 IP 漂移 → .env 钉死 BRIEF_PUBLIC_URL 秒变死链**（192.168.19.x → 10.190.x；个人热点段远不止 192.168——iPhone=172.20.10.x）。修复=[lan.ts](daily-brief/lan.ts) 发送时刻自动探测：**非内部 IPv4 只有一个就直接用（段无关——「哪个段」是先验猜测，「单网卡单地址」是事实）**，多网卡按 RFC1918 挑；BRIEF_PUBLIC_URL 降级为钉死逃生门（内网穿透固定域名才配）。P6 探针顺手逮住自己一条：断言 regex 数错 IP 段数（10 前缀 1 段+公共后缀 2 段=三段 IP）——「探针挂先查断言再查实现」第三次兑现。
 
 ## 8. 验收：真实用户一周 + 博客
