@@ -1,0 +1,13 @@
+{
+	"name": "AI 情报日报 v2",
+	"appid": "",
+	"description": "多用户情报日报（模块 12 毕业项目 v2：邀请码注册 / 各订各的 / 按人推送）",
+	"versionName": "2.0.0",
+	"versionCode": "200",
+	"h5": {
+		"title": "AI 情报日报",
+		"router": {
+			"mode": "hash"
+		}
+	}
+}

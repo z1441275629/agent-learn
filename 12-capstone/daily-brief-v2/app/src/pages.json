@@ -1,0 +1,40 @@
+{
+	"pages": [
+		{
+			"path": "pages/report/report",
+			"style": { "navigationBarTitleText": "AI 情报日报" }
+		},
+		{
+			"path": "pages/topics/topics",
+			"style": { "navigationBarTitleText": "订阅管理" }
+		},
+		{
+			"path": "pages/history/history",
+			"style": { "navigationBarTitleText": "成本台账" }
+		},
+		{
+			"path": "pages/me/me",
+			"style": { "navigationBarTitleText": "我的" }
+		},
+		{
+			"path": "pages/login/login",
+			"style": { "navigationBarTitleText": "登录" }
+		}
+	],
+	"tabBar": {
+		"color": "#8b949e",
+		"selectedColor": "#1f6feb",
+		"list": [
+			{ "pagePath": "pages/report/report", "text": "日报" },
+			{ "pagePath": "pages/topics/topics", "text": "订阅" },
+			{ "pagePath": "pages/history/history", "text": "台账" },
+			{ "pagePath": "pages/me/me", "text": "我的" }
+		]
+	},
+	"globalStyle": {
+		"navigationBarTextStyle": "black",
+		"navigationBarTitleText": "AI 情报日报",
+		"navigationBarBackgroundColor": "#f8f9fa",
+		"backgroundColor": "#f5f6f8"
+	}
+}
