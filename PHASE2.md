@@ -60,7 +60,7 @@
 | 09  | `09-harness/`     | Agent Harness | 2 周   | 给 agent 加壳：权限/沙箱/hooks/resume        | ☑   |
 | 10  | `10-multi-agent/` | 多 Agent       | 2.5 周 | 五种编排模式 + 3-agent 协作系统                | ☑   |
 | 11  | `11-production/`  | 生产工程          | 2.5 周 | evals + Langfuse tracing + 注入攻防      | ☑   |
-| 12  | `12-capstone/`    | 框架横评 + 毕业项目   | 3 周   | 框架重写 + 四件套应用（含 chat UI）              | ☐   |
+| 12  | `12-capstone/`    | 框架横评 + 毕业项目   | 3 周   | 框架重写 + 四件套应用（含 chat UI）              | ☑   |
 
 每个模块的节奏（沿用 Phase 1，多一步框架对照）：**30 分钟读资料 → 写代码（自己写，卡住 15 分钟再问 ZCode）→ 用框架对照重写关键部分 → 脱稿讲 2 分钟 → 在本文件加一句话总结**。
 
