@@ -1,12 +1,14 @@
 // 模块 12 毕业项目 v2 探针：零 token 零外部副作用（§2 同款纪律——不烧 LLM、不真发微信、不碰真数据）
 //
-// 块 1 覆盖（P1~P6，后续块同步长 P7~P9，见 DESIGN.md §6）：
+// 块 1 覆盖（P1~P6，后续块同步长，见 DESIGN.md §6）：
 //   P1 注册+登录行为链：有效邀请码注册 → 正确密码登录发 token → 错密码拒绝
 //   P2 注册门禁四态：重码拒绝 / 用户名重复 / 弱密码 / 坏用户名
 //   P3 session 生命周期：token 取回用户 / logout 失效 / 过期 token 拒绝
 //   P4 SSRF 四拒：127.0.0.1 / 192.168 内网 / [::1] / file: 协议——rss 是唯一用户控 URL 的入口
 //   P5 RSS2+Atom 双形状解析：CDATA 标题、Atom link 数组取 alternate href
 //   P6 抓取缓存：同 (type,query) 共享同一 Promise；失败不缓存（可重试）
+//   P7 多租户落盘隔离（runUser 闭包） / P8 全局日预算熔断
+//   P9 重置码链路（造码→重置→旧 session 吊销→码单次消费）/ P10 预置话题库形状
 // 跑法：node 12-capstone/daily-brief-v2/probe.ts
 import fs from 'node:fs/promises'
 import path from 'node:path'
@@ -173,6 +175,30 @@ const daveSt = JSON.parse(await fs.readFile(path.join(reportsOfProbe(daveP.user!
 check('dave 落 skipped status 且无日报', daveSt.skipped.includes('预算') && (await fs.readFile(path.join(reportsOfProbe(daveP.user!.id), `${todayStr}.md`), 'utf8').catch(() => null)) === null)
 const carolMd = await fs.readFile(path.join(reportsOfProbe(carolP.user!.id), `${todayStr}.md`), 'utf8').catch(() => null)
 check('carol 日报正常落盘（跑满的钱不白花）', !!carolMd)
+
+console.log('P9 重置码链路（忘记密码自救：admin 造码→本人重置→旧 session 全吊销→码单次消费）')
+const bobLogin1 = await users.login('bob7', 'password-777') // 重置前造一个在途 session——验「重置即吊销全部旧会话」
+const rcBad = await users.createResetCode(aliceP.user!.id, 'nobody-here')
+check('给不存在的用户造码被拒', !!rcBad.error)
+const rc = await users.createResetCode(aliceP.user!.id, 'bob7')
+check('admin 为 bob7 生成重置码', typeof rc.code === 'string')
+check('码与用户名不匹配被拒（防拿别人的码改别人的号）', (await users.resetPassword('alice7', rc.code!, 'new-password-999')).error === '重置码与用户名不匹配')
+check('弱新密码被拒且码未消费', (await users.resetPassword('bob7', rc.code!, 'short')).error === '新密码至少 8 位')
+check('重置成功', (await users.resetPassword('bob7', rc.code!, 'new-password-999')).ok === true)
+check('旧密码登录失败', (await users.login('bob7', 'password-777')).error === '用户名或密码不对')
+check('新密码登录成功', typeof (await users.login('bob7', 'new-password-999')).token === 'string')
+check('重置后旧 session 全部吊销（密码都丢了，旧会话不可信）', (await users.getSessionUser(bobLogin1.token!)) === null)
+check('重置码单次消费（重放被拒）', (await users.resetPassword('bob7', rc.code!, 'another-pass-999')).error === '重置码无效或已被使用')
+
+console.log('P10 预置话题库形状（server 端 SubscriptionsSchema 同款约束的探针镜像——勾了 preset 存回去必须过 zod）')
+const { TOPIC_PRESETS } = await import('./presets.ts')
+const ENUM = ['hn', 'github', 'arxiv', 'rss']
+check('预置话题 ≥6 个', TOPIC_PRESETS.length >= 6)
+check('preset id 唯一（勾选/取消的 key）', new Set(TOPIC_PRESETS.map((p) => p.id)).size === TOPIC_PRESETS.length)
+check(
+	'每个 preset 形状合法（id/name/focus 非空 + 源非空 + type 四枚举 + query 非空）',
+	TOPIC_PRESETS.every((p) => p.id && p.name && typeof p.focus === 'string' && p.sources.length >= 1 && p.sources.every((s) => (ENUM as string[]).includes(s.type) && !!s.query)),
+)
 
 await fs.rm(TMP, { recursive: true, force: true }) // 清场：探针目录全删，可重复跑
 console.log(`\n探针结果: ${pass}/${pass + fail} ${fail === 0 ? '✓ 全过' : '✗ 有失败——看上面归因'}`)

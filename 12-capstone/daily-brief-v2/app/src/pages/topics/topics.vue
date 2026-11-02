@@ -1,44 +1,55 @@
 <template>
 	<view class="page">
-		<view class="muted hint">订阅 = 产线的 fanout 依据。「我是谁」一句话决定研究员怎么筛、日报用什么口吻；改完「保存全部」整体提交，明天的日报按新清单跑</view>
+		<view class="muted hint">勾话题就行，源已经配好。「我是谁」一句话决定研究员怎么筛、日报用什么口吻；改完保存，明天的日报按新清单跑</view>
 
-		<!-- audience：v2 新字段（v1「读者是学 agent 的工程师」硬编码在 prompt 里，多用户下不成立） -->
+		<!-- audience：v2 字段（v1 读者人设硬编码在 prompt 里，多用户下不成立） -->
 		<view class="card">
-			<view class="field">
+			<view class="field" style="margin-top: 0">
 				<text class="label">我是谁（给研究员的一句话）</text>
 				<input v-model="audience" placeholder="如：转型 AI 工程师的前端开发者" />
 			</view>
 		</view>
 
-		<view v-for="(t, i) in topics" :key="i" class="card">
-			<view class="row">
-				<text class="card-title">{{ t.name || '（新主题）' }}</text>
-				<view class="grow"></view>
-				<button class="btn warn sm" @click="del(i)">删除</button>
+		<!-- 预置话题 chips 多选：用户只管「关注什么」，源是运营者 curated（RSS 全部实测可拉才入库） -->
+		<view class="card">
+			<text class="card-title">关注哪些话题？</text>
+			<view class="chips">
+				<view v-for="p in presets" :key="p.id" :class="['chip', picked(p.id) ? 'on' : '']" @click="toggle(p)">
+					<text>{{ picked(p.id) ? '✓ ' : '' }}{{ p.name }}</text>
+				</view>
 			</view>
 			<view class="field">
-				<text class="label">主题名（中文）</text>
-				<input v-model="t.name" placeholder="如：AI Agent 工程" />
+				<text class="label">没有想要的？输入话题名自己加</text>
+				<view class="row">
+					<input class="grow" v-model="customName" placeholder="如：量子计算 / quantum computing" @confirm="addCustom" />
+					<button class="btn" @click="addCustom">添加</button>
+				</view>
 			</view>
-			<view class="field">
-				<text class="label">关注点（给研究员的提示）</text>
-				<input v-model="t.focus" placeholder="如：agent 框架、多 agent 编排" />
-			</view>
+			<text class="muted tip">自定义话题自动配 Hacker News / GitHub / arXiv 检索源（英文关键词效果好）；中文资讯勾上面的预置话题</text>
+		</view>
 
-			<!-- v2：数据源是数组——type 从注册表四选一（不再限死 HN+GitHub，行业新闻走 RSS） -->
-			<text class="label src-label">数据源（至少 1 个，可混搭）</text>
-			<view v-for="(s, j) in t.sources" :key="j" class="row src-row">
-				<picker mode="selector" :range="SOURCE_TYPES" range-key="label" @change="onPickType(i, j, $event)">
-					<view class="btn ghost sm type-btn">{{ labelOf(s.type) }} ▾</view>
-				</picker>
-				<input class="grow src-input" v-model="s.query" :placeholder="placeholderOf(s.type)" />
-				<button v-if="t.sources.length > 1" class="btn warn sm" @click="t.sources.splice(j, 1)">✕</button>
+		<!-- 已选清单：预置+自定义混排；展开可微调 focus（默认用预设的，不动也行） -->
+		<view v-if="topics.length" class="card">
+			<text class="card-title">已选 {{ topics.length }} 个话题</text>
+			<view v-for="(t, i) in topics" :key="t.id" class="topic-item">
+				<view class="row topic-head" @click="expanded = expanded === t.id ? '' : t.id">
+					<text class="topic-name">{{ t.name }}</text>
+					<text class="muted src-badge">{{ srcCount(t) }}</text>
+					<view class="grow"></view>
+					<text class="muted">{{ expanded === t.id ? '▲' : '▼' }}</text>
+					<text class="del" @click.stop="del(i)">✕</text>
+				</view>
+				<view v-if="expanded === t.id" class="topic-body">
+					<view class="field">
+						<text class="label">关注点（给研究员的提示，可不改）</text>
+						<input v-model="t.focus" placeholder="一句话：这个话题重点看什么" />
+					</view>
+					<text class="muted src-list">{{ t.sources.map(srcLabel).join(' · ') }}</text>
+				</view>
 			</view>
-			<button class="btn ghost sm add-src" @click="t.sources.push({ type: 'rss', query: '' })">＋ 加数据源</button>
 		</view>
 
 		<view class="row actions">
-			<button class="btn ghost" @click="add">＋ 新增主题</button>
 			<button class="btn grow" :disabled="saving" @click="save">{{ saving ? '保存中…' : '保存全部' }}</button>
 		</view>
 	</view>
@@ -47,55 +58,66 @@
 <script setup lang="ts">
 import { onShow } from '@dcloudio/uni-app'
 import { ref } from 'vue'
-import { fetchTopics, saveTopics, type Topic, type SourceType } from '../../api'
-
-// 源注册表的 H5 侧镜像（server zod 枚举同一份四选一；label 给 picker、query placeholder 教用户填什么）
-const SOURCE_TYPES: Array<{ type: SourceType; label: string; ph: string }> = [
-	{ type: 'hn', label: 'Hacker News', ph: '如：AI agent' },
-	{ type: 'github', label: 'GitHub', ph: '如：ai agent framework（近 7 天新仓库按星排）' },
-	{ type: 'arxiv', label: 'arXiv', ph: '如：LLM agent' },
-	{ type: 'rss', label: 'RSS', ph: '目标站的 RSS 地址（https://…）' },
-]
-const labelOf = (t: SourceType) => SOURCE_TYPES.find((s) => s.type === t)?.label ?? t
-const placeholderOf = (t: SourceType) => SOURCE_TYPES.find((s) => s.type === t)?.ph ?? ''
+import { fetchTopics, saveTopics, fetchPresets, type Topic, type TopicPreset, type SourceSpec } from '../../api'
 
 const audience = ref('')
 const topics = ref<Topic[]>([])
+const presets = ref<TopicPreset[]>([])
+const customName = ref('')
+const expanded = ref('')
 const saving = ref(false)
 
 onShow(async () => {
-	const j = await fetchTopics().catch(() => null)
+	const [j, p] = await Promise.all([
+		fetchTopics().catch(() => null),
+		fetchPresets().catch(() => null),
+	])
 	if (j) {
 		audience.value = j.audience
 		topics.value = j.topics
 	}
+	if (p) presets.value = p.presets
 })
 
-function add() {
-	// id 自动生成（v1 让用户手填——易错且无收益：id 只是 ledger key 的标识位）
-	topics.value.push({ id: 'topic-' + Math.random().toString(36).slice(2, 8), name: '', focus: '', sources: [{ type: 'rss', query: '' }] })
+const picked = (id: string) => topics.value.some((t) => t.id === id)
+
+// 勾/取消预置话题：源从 preset 拷贝（防后续编辑 preset 串改已存订阅）
+function toggle(p: TopicPreset) {
+	const i = topics.value.findIndex((t) => t.id === p.id)
+	if (i >= 0) topics.value.splice(i, 1)
+	else topics.value.push({ id: p.id, name: p.name, focus: p.focus, sources: p.sources.map((s) => ({ ...s })) })
 }
 
-function onPickType(ti: number, si: number, e: any) {
-	const picked = SOURCE_TYPES[Number(e.detail.value)]
-	if (picked) topics.value[ti].sources[si].type = picked.type
+// 自定义话题自动配源（presets.ts autoSourcesFor 的 H5 镜像）：三检索源直配话题名——用户不需要知道什么是「源」
+const autoSources = (name: string): SourceSpec[] => [
+	{ type: 'hn', query: name },
+	{ type: 'github', query: name },
+	{ type: 'arxiv', query: name },
+]
+function addCustom() {
+	const name = customName.value.trim()
+	if (!name) return uni.showToast({ title: '先填话题名', icon: 'none' })
+	if (topics.value.some((t) => t.name === name)) {
+		customName.value = ''
+		return uni.showToast({ title: '已经在清单里了', icon: 'none' })
+	}
+	topics.value.push({ id: 'custom-' + Math.random().toString(36).slice(2, 8), name, focus: `关于「${name}」的最新动态`, sources: autoSources(name) })
+	customName.value = ''
 }
+
+const srcLabel = (s: SourceSpec) => ({ hn: 'HN', github: 'GitHub', arxiv: 'arXiv', rss: 'RSS' }[s.type] ?? s.type)
+const srcCount = (t: Topic) => `${t.sources.length} 源`
 
 function del(i: number) {
-	uni.showModal({ title: '确认删除', content: `删掉「${topics.value[i].name || '这个主题'}」？明天起不再出这个板块`, success: (r) => r.confirm && topics.value.splice(i, 1) })
+	uni.showModal({ title: '确认删除', content: `删掉「${topics.value[i].name}」？明天起不再出这个板块`, success: (r) => r.confirm && topics.value.splice(i, 1) })
 }
 
 async function save() {
-	// 前端挡漏填（后端 zod 挡格式——双层校验，v1 同款分工）
 	if (!audience.value.trim()) return uni.showToast({ title: '「我是谁」要填一句', icon: 'none' })
-	for (const t of topics.value) {
-		if (!t.name.trim()) return uni.showToast({ title: '有主题没填名字', icon: 'none' })
-		if (t.sources.some((s) => !s.query.trim())) return uni.showToast({ title: `「${t.name}」有数据源没填检索词/地址`, icon: 'none' })
-	}
 	saving.value = true
 	try {
 		const r = await saveTopics({ audience: audience.value.trim(), topics: topics.value })
-		uni.showToast({ title: `已保存 ${r.saved} 个主题`, icon: 'success' })
+		uni.showToast({ title: r.saved ? `已保存 ${r.saved} 个主题` : '已保存（还没选话题，明天会跳过）', icon: 'none' })
 	} catch (err: any) {
 		// server 端 zod 校验不过——把 issues 首条亮出来
 		uni.showModal({ title: '保存被拒', content: String(err?.issues?.[0]?.message ?? err?.message ?? err).slice(0, 80), showCancel: false })
@@ -113,30 +135,66 @@ async function save() {
 }
 .card-title {
 	font-weight: 600;
-}
-.src-label {
 	display: block;
-	margin-top: 16px;
 }
-.src-row {
-	margin-top: 8px;
+/* chips 云：流式换行，选中态主色描边+浅底 */
+.chips {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 10px;
+	margin-top: 14px;
 }
-.type-btn {
-	padding: 6px 10px;
-	white-space: nowrap;
-}
-.src-input {
-	height: auto; /* 同 App.vue：uni-input 默认固定高，不写 auto 会被 padding 压塌 */
+.chip {
+	padding: 8px 14px;
 	border: 1px solid #d0d7de;
-	border-radius: 8px;
-	padding: 8px 10px;
-	font-size: 14px;
-	line-height: 1.4;
+	border-radius: 999px;
 	background: #fafbfc;
-	box-sizing: border-box;
+	font-size: 14px;
+	color: #24292f;
 }
-.add-src {
+.chip.on {
+	border-color: #1f6feb;
+	background: #ddf4ff;
+	color: #1f6feb;
+	font-weight: 600;
+}
+.tip {
+	display: block;
 	margin-top: 10px;
+	line-height: 1.6;
+}
+.topic-item {
+	border-bottom: 1px dashed #eaeef2;
+	margin-top: 12px;
+	padding-bottom: 4px;
+}
+.topic-item:last-child {
+	border-bottom: none;
+}
+.topic-head {
+	cursor: pointer;
+}
+.topic-name {
+	font-size: 15px;
+}
+.src-badge {
+	background: #f0f2f5;
+	border-radius: 10px;
+	padding: 2px 8px;
+	font-size: 12px;
+}
+.del {
+	color: #d1242f;
+	padding: 2px 6px;
+	font-size: 15px;
+}
+.topic-body {
+	padding: 2px 0 8px;
+}
+.src-list {
+	display: block;
+	margin-top: 10px;
+	word-break: break-all;
 }
 .actions {
 	padding: 12px 16px 24px;

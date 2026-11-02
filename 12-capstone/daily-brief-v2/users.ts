@@ -14,6 +14,7 @@ const DIR = import.meta.dirname
 const DATA = process.env.V2_DATA_DIR ? path.resolve(process.env.V2_DATA_DIR) : path.join(DIR, 'data')
 const USERS_DIR = path.join(DATA, 'users')
 const INVITES = path.join(DATA, 'invites.json')
+const RESETS = path.join(DATA, 'resets.json')
 const SESSIONS = path.join(DATA, 'sessions.json')
 const SESSION_TTL_MS = 30 * 86400e3
 
@@ -183,6 +184,60 @@ export async function changePassword(uid: string, oldPass: string, newPass: stri
 		if (!verifyPass(oldPass, user.pass)) return { error: '旧密码不对' }
 		user.pass = hashPass(newPass)
 		await writeJSON(path.join(USERS_DIR, uid, 'profile.json'), user)
+		return { ok: true }
+	})
+}
+
+// ---------- 重置码（忘记密码的入口，与邀请码同构：admin 生成→线下交给用户→先验后消费） ----------
+// 无邮件依赖（免费服务器不引第三方）：运营者拿到码后通过已有渠道（微信/口耳）转交。
+type ResetPool = Record<string, { uid: string; username: string; createdAt: string; usedAt?: string }>
+async function loadResets(): Promise<ResetPool> {
+	return readJSON<ResetPool>(RESETS, {})
+}
+// 重置成功后吊销该用户全部 session：密码都丢了，旧会话不可信（可能正是被偷的那个）
+async function revokeSessions(uid: string): Promise<void> {
+	const sessions = await readJSON<Record<string, { uid: string; expiresAt: number }>>(SESSIONS, {})
+	let changed = false
+	for (const [t, s] of Object.entries(sessions))
+		if (s.uid === uid) {
+			delete sessions[t]
+			changed = true
+		}
+	if (changed) await writeJSON(SESSIONS, sessions)
+}
+export async function createResetCode(byUid: string, username: string): Promise<{ code?: string; error?: string }> {
+	return serialized(async () => {
+		const users = await listUsers()
+		const target = users.find((u) => u.username === username)
+		if (!target) return { error: `没有这个用户：${username}` }
+		const pool = await loadResets()
+		const code = crypto.randomBytes(6).toString('base64url')
+		pool[code] = { uid: target.id, username, createdAt: new Date().toISOString() }
+		await writeJSON(RESETS, pool)
+		console.log(`[resets] ${username} 的重置码由 ${byUid.slice(0, 8)}… 生成`)
+		return { code }
+	})
+}
+export async function listResetCodes(): Promise<ResetPool> {
+	return loadResets()
+}
+export async function resetPassword(username: string, code: string, newPass: string): Promise<{ ok?: boolean; error?: string }> {
+	if (newPass.length < 8) return { error: '新密码至少 8 位' }
+	if (!code?.trim()) return { error: '请填重置码' }
+	return serialized(async () => {
+		// 先验后消费（同一串行队列内=原子窗口）：码错连用户都不用查
+		const pool = await loadResets()
+		const entry = pool[code.trim()]
+		if (!entry || entry.usedAt) return { error: '重置码无效或已被使用' }
+		if (entry.username !== username) return { error: '重置码与用户名不匹配' }
+		const user = await getUser(entry.uid)
+		if (!user) return { error: '用户不存在' }
+		user.pass = hashPass(newPass)
+		await writeJSON(path.join(USERS_DIR, user.id, 'profile.json'), user)
+		entry.usedAt = new Date().toISOString()
+		await writeJSON(RESETS, pool)
+		await revokeSessions(user.id)
+		console.log(`[resets] ${username} 密码已重置（旧 session 全部吊销）`)
 		return { ok: true }
 	})
 }

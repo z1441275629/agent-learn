@@ -60,7 +60,9 @@ uid 是 `randomBytes(8).toString('hex')`（16 字符随机）——目录名不�
 - scryptSync(password, salt16B, 64B) 存 `salt:hash`；verify 用 timingSafeEqual（等长比较防时序）。
 - session：登录发 `randomBytes(32).hex` token，sessions.json 存储（server 重启不掉线），30 天过期读时懒删。
 - 邀请码：invites.json；**bootstrap**——零用户+空邀请池时用 env `BOOTSTRAP_INVITE_CODE`（缺省随机生成并打印一次，只此一次）。
-- admin：第一个注册用户自动 admin；admin 可生成邀请码、看全局预算、全量补跑（最小面：/api/admin/*）。
+- 重置码（忘记密码入口）：resets.json，与邀请码同构（admin 生成→线下转交→先验后消费、单次）；重置成功吊销该用户全部旧 session（密码都丢了旧会话不可信）。无邮件依赖——免费服务器不引第三方。
+- 预置话题库 presets.ts：订阅从「填源」变「勾话题」（用户反馈）；RSS 源须实测可拉可解析才入库（36kr/zhihu 状态 200 但反爬页 0 items 不入）。自定义话题只填名字，自动配 hn/github/arxiv 检索源。
+- admin：第一个注册用户自动 admin；admin 可生成邀请码/重置码、看全局预算与用户列表、全量补跑（最小面：/api/admin/*）。
 - 写操作（注册/邀请码消费/session 写）全走串行队列（v1 emitProgress 同款）——读改写竞态的家常防线。
 
 ### pipeline.ts —— 多租户产线（块 2）
@@ -73,7 +75,7 @@ uid 是 `randomBytes(8).toString('hex')`（16 字符随机）——目录名不�
 ### server.ts —— 多用户 API（块 3）
 
 - session 鉴权中间件（cookie `sid` → sessions.json → req.user）。
-- 路由：`POST /api/auth/register|login|logout` · `GET /api/me` · `PUT /api/me`（sendkey/密码）· `GET|POST /api/topics`（当前人）· `GET /api/latest|/api/report?date=|/api/history|/api/progress?date=`（当前人）· `GET /api/events`（当前人 SSE）· `POST /api/run`（**只跑自己**，admin 可全量）· `/api/admin/invites|budget`。
+- 路由：`POST /api/auth/register|login|logout|reset`（reset=忘记密码自救：用户名+admin 发的重置码+新密码，成功吊销该用户全部旧 session）· `GET /api/me` · `PUT /api/me`（sendkey/密码）· `GET /api/topic-presets`（预置话题库）· `GET|POST /api/topics`（当前人）· `GET /api/latest|/api/report?date=`（available 倒序，默认最新）`|/api/history|/api/progress?date=`（当前人）· `GET /api/events`（当前人 SSE）· `POST /api/run`（**只跑自己**，admin 可全量）· `/api/admin/invites|budget` · `GET /api/admin/users|POST /api/admin/reset-code`（admin 为用户造重置码，线下转交）。
 - rate limit：内存令牌桶 per-IP。
 - CORS 去掉 v1 的 `*`（公网同源部署；本地 dev 走 vite proxy 也同源）。
 - 静态托管 app/dist/build/h5（uniapp 约定路径，v1 教训）。

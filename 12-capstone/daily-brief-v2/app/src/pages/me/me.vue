@@ -47,13 +47,25 @@
 				<text class="muted">今日预算：{{ budget.calls }}/{{ budget.limits.calls }} 次调用 · {{ budget.promptTokens + budget.completionTokens }}/{{ budget.limits.tokens }} tokens</text>
 			</view>
 		</view>
+
+		<!-- admin 运营区：用户与重置码（忘记密码的运营侧入口——码线下转交，无邮件依赖） -->
+		<view v-if="me?.admin" class="card">
+			<text class="card-title">用户（{{ users.length }}）</text>
+			<view v-for="u in users" :key="u.username" class="row user-row">
+				<text>{{ u.username }}</text>
+				<text v-if="u.admin" class="muted">· 管理员</text>
+				<view class="grow"></view>
+				<button class="btn ghost sm" :disabled="makingReset" @click="makeReset(u.username)">发重置码</button>
+			</view>
+			<view v-if="!users.length" class="muted invite-empty">加载中…</view>
+		</view>
 	</view>
 </template>
 
 <script setup lang="ts">
 import { onShow } from '@dcloudio/uni-app'
 import { ref } from 'vue'
-import { fetchMe, saveSendkey, changePassword, logout, createInvite, fetchInvites, fetchBudget, type Me } from '../../api'
+import { fetchMe, saveSendkey, changePassword, logout, createInvite, fetchInvites, fetchBudget, fetchAdminUsers, createResetCode, type Me, type AdminUser } from '../../api'
 
 const me = ref<Me | null>(null)
 const sendkey = ref('')
@@ -65,6 +77,8 @@ const changingP = ref(false)
 const invites = ref<Record<string, { usedBy?: string; usedAt?: string }>>({})
 const budget = ref<any>(null)
 const makingCode = ref(false)
+const users = ref<AdminUser[]>([])
+const makingReset = ref(false)
 
 onShow(refresh)
 
@@ -75,6 +89,7 @@ async function refresh() {
 			// admin 运营区并行拉（403 不会发生——admin 已验；网络错就空着，下次 onShow 再拉）
 			fetchInvites().then((j) => (invites.value = j)).catch(() => {})
 			fetchBudget().then((j) => (budget.value = j)).catch(() => {})
+			fetchAdminUsers().then((j) => (users.value = j)).catch(() => {})
 		}
 	} catch {
 		/* 401 已被 api 层拦截跳登录 */
@@ -130,6 +145,19 @@ async function makeCode() {
 		makingCode.value = false
 	}
 }
+
+async function makeReset(username: string) {
+	makingReset.value = true
+	try {
+		const r = await createResetCode(username)
+		// 码只在此弹窗出现一次（不落列表页——重置码用完即弃，池子在 data/resets.json 里可审计）
+		uni.showModal({ title: `${username} 的重置码`, content: `${r.code}\n（转给本人，登录页「忘记密码」用）`, showCancel: false })
+	} catch (err: any) {
+		uni.showToast({ title: String(err?.message).slice(0, 40), icon: 'none' })
+	} finally {
+		makingReset.value = false
+	}
+}
 </script>
 
 <style>
@@ -175,5 +203,12 @@ async function makeCode() {
 	margin-top: 12px;
 	border-top: 1px dashed #eaeef2;
 	padding-top: 10px;
+}
+.user-row {
+	padding: 10px 0;
+	border-bottom: 1px dashed #eaeef2;
+}
+.user-row:last-of-type {
+	border-bottom: none;
 }
 </style>

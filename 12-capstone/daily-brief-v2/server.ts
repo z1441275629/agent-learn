@@ -17,6 +17,7 @@ import { spawn } from 'node:child_process'
 import { z } from 'zod'
 import * as users from './users.ts'
 import { budgetExceeded, type Budget } from './pipeline.ts'
+import { TOPIC_PRESETS } from './presets.ts'
 import { lanIPv4 } from './lan.ts'
 
 const DIR = import.meta.dirname
@@ -202,6 +203,12 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse) {
 			clearSessionCookie(res)
 			return json(res, 200, { ok: true })
 		}
+		// 忘记密码的自救入口（登录页调用，无 session）：用户名+admin 发的重置码+新密码
+		if (url.pathname === '/api/auth/reset' && req.method === 'POST') {
+			const b = await readJSONBody(req)
+			const r = await users.resetPassword(String(b.username ?? ''), String(b.code ?? ''), String(b.newPassword ?? ''))
+			return r.ok ? json(res, 200, { ok: true }) : json(res, 400, { error: r.error })
+		}
 
 		// ---- me：自己的信息 / 填 sendkey / 改密码 ----
 		if (url.pathname === '/api/me' && req.method === 'GET') {
@@ -225,7 +232,11 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse) {
 			return r.ok ? json(res, 200, { ok: true }) : json(res, 400, { error: r.error })
 		}
 
-		// ---- 订阅（当前人） ----
+		// ---- 订阅（当前人）+ 预置话题库 ----
+		if (req.method === 'GET' && url.pathname === '/api/topic-presets') {
+			if (needAuth()) return
+			return json(res, 200, { presets: TOPIC_PRESETS })
+		}
 		if (url.pathname === '/api/topics') {
 			if (needAuth()) return
 			const file = path.join(DATA, 'users', user!.id, 'subscriptions.json')
@@ -244,12 +255,13 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse) {
 		if (req.method === 'GET' && (url.pathname === '/api/latest' || url.pathname === '/api/report')) {
 			if (needAuth()) return
 			const dir = path.join(REPORTS, user!.id)
+			// 倒序（新→旧）：默认取 dates[0]=最新，日期选择器也不用翻到底
 			const dates = (await fs.readdir(dir).catch(() => [] as string[]))
 				.map((f) => /^(\d{4}-\d{2}-\d{2})\.md$/.exec(f)?.[1])
 				.filter((d): d is string => !!d)
-				.sort()
+				.sort((a, b) => b.localeCompare(a))
 			if (dates.length === 0) return json(res, 404, { error: '还没有日报（配好订阅后点「生成」或等每天 09:00）' })
-			const date = url.searchParams.get('date') ?? dates[dates.length - 1]
+			const date = url.searchParams.get('date') ?? dates[0]
 			const markdown = await fs.readFile(path.join(dir, `${date}.md`), 'utf8').catch(() => null)
 			if (markdown === null) return json(res, 404, { error: `${date} 没有日报`, available: dates })
 			return json(res, 200, {
@@ -308,6 +320,16 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse) {
 				return json(res, 200, { code })
 			}
 			if (url.pathname === '/api/admin/invites' && req.method === 'GET') return json(res, 200, await users.listInvites())
+			// 用户列表 + 重置码：忘记密码的运营侧入口（码线下转交，无邮件依赖）
+			if (url.pathname === '/api/admin/users' && req.method === 'GET') {
+				const list = await users.listUsers()
+				return json(res, 200, list.map((u) => ({ username: u.username, admin: u.admin, createdAt: u.createdAt })))
+			}
+			if (url.pathname === '/api/admin/reset-code' && req.method === 'POST') {
+				const b = await readJSONBody(req)
+				const r = await users.createResetCode(user!.id, String(b.username ?? ''))
+				return r.code ? json(res, 200, { code: r.code }) : json(res, 400, { error: r.error })
+			}
 			if (url.pathname === '/api/admin/budget' && req.method === 'GET') {
 				const b = await readJSON<Budget>(path.join(DATA, `budget-${today()}.json`), { date: today(), calls: 0, promptTokens: 0, completionTokens: 0 })
 				return json(res, 200, {

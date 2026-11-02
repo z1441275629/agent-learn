@@ -78,10 +78,25 @@ export const fetchMe = () => request<Me>('/api/me')
 export const saveSendkey = (sendkey: string) => request<{ saved: boolean; sendkeyMasked: string | null }>('/api/me', 'PUT', { sendkey })
 export const changePassword = (oldPassword: string, newPassword: string) => request<{ ok: boolean }>('/api/me/password', 'PUT', { oldPassword, newPassword })
 export const triggerRun = () => request<{ started?: boolean; running?: boolean; message?: string }>('/api/run', 'POST')
+// 预置话题库（订阅页勾选用——「订阅」从填源变成勾话题）
+export interface TopicPreset {
+	id: string
+	name: string
+	focus: string
+	sources: SourceSpec[]
+}
+export const fetchPresets = () => request<{ presets: TopicPreset[] }>('/api/topic-presets')
 // admin 三件（非 admin 403 → request throw「只有管理员」）
 export const createInvite = () => request<{ code: string }>('/api/admin/invites', 'POST')
 export const fetchInvites = () => request<Record<string, { usedBy?: string; usedAt?: string }>>('/api/admin/invites')
 export const fetchBudget = () => request<{ calls: number; promptTokens: number; completionTokens: number; limits: { calls: number; tokens: number } }>('/api/admin/budget')
+export interface AdminUser {
+	username: string
+	admin: boolean
+	createdAt: string
+}
+export const fetchAdminUsers = () => request<AdminUser[]>('/api/admin/users')
+export const createResetCode = (username: string) => request<{ code: string }>('/api/admin/reset-code', 'POST', { username })
 
 // ---------- auth 三件：不走 request（401=密码错≠未登录），错误原样给调用方 ----------
 export async function login(username: string, password: string): Promise<{ ok: boolean; error?: string }> {
@@ -102,6 +117,17 @@ export async function register(username: string, password: string, inviteCode: s
 	})
 	const data: any = await res.json().catch(() => ({}))
 	return res.ok ? { ok: true } : { ok: false, error: data?.error ?? `注册失败 ${res.status}` }
+}
+
+// 忘记密码自救（登录页，无 session）：用户名 + admin 发的重置码 + 新密码
+export async function resetPassword(username: string, code: string, newPassword: string): Promise<{ ok: boolean; error?: string }> {
+	const res = await fetch('/api/auth/reset', {
+		method: 'POST',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify({ username, code, newPassword }),
+	})
+	const data: any = await res.json().catch(() => ({}))
+	return res.ok ? { ok: true } : { ok: false, error: data?.error ?? `重置失败 ${res.status}` }
 }
 
 export async function logout(): Promise<void> {
