@@ -11,6 +11,9 @@
 //   LLM_EMBED_MODEL       embedding 模型名（GLM: embedding-3 | 火山: doubao-embedding... | 硅基: BAAI/bge-large-zh-v1.5）
 //   LLM_EMBED_API_KEY     embedding 的 key（**可选**——同平台时省略，回落用 LLM_API_KEY；
 //                        分别平台时填它的 key，如 chat 用火山、embed 用硅基流动的免费 bge）
+//   LLM_VISION_BASE_URL / LLM_VISION_MODEL / LLM_VISION_API_KEY
+//                         视觉档（多模态看图/OCR）：三件都可单独覆盖；缺省沿备用档→主档回落，
+//                         模型默认 glm-4.5v（备用档 bigmodel 的视觉模型）
 //
 // client（聊天）+ embedClient（embedding）两个 OpenAI 兼容客户端都在这建——「LLM 客户端」唯一事实源，
 // 换平台只改 .env。key 默认共用 LLM_API_KEY；embed 想挂别的平台（如免费 embed 服务）用 LLM_EMBED_API_KEY 覆盖。
@@ -41,6 +44,11 @@ const lightKey = process.env.LLM_LIGHT_API_KEY || apiKey
 const BACKUP_BASE_URL = process.env.LLM_BACKUP_BASE_URL || LIGHT_BASE_URL
 const BACKUP_MODEL = process.env.LLM_BACKUP_MODEL || LIGHT_MODEL
 const backupKey = process.env.LLM_BACKUP_API_KEY || lightKey
+// 视觉档（模块 13 多模态：看图/OCR）：链路 LLM_VISION_* → 备用档（GLM 视觉）→ 主档。
+// 模型缺省 glm-4.5v（备用档 bigmodel 的视觉模型）；端点/KEY 沿回落链。配了别的平台整套覆盖即可。
+const VISION_BASE_URL = process.env.LLM_VISION_BASE_URL || BACKUP_BASE_URL
+const VISION_MODEL = process.env.LLM_VISION_MODEL || 'glm-4.5v'
+const visionKey = process.env.LLM_VISION_API_KEY || backupKey
 // thinking 协议标识：模型怎么表达思考开关——换模型只改这一个值，agent 翻译层读它
 //   openapi → 火山/GLM/DeepSeek 风格：{ thinking: { type: enabled|disabled } } + reasoning_effort
 //   bool    → 某些 OpenAI 兼容模型：thinking: true|false（单布尔）
@@ -64,5 +72,7 @@ const embedClient = new OpenAI({ apiKey: embedKey, baseURL: EMBED_BASE_URL })
 export const lightClient = LIGHT_MODEL ? new OpenAI({ apiKey: lightKey, baseURL: LIGHT_BASE_URL }) : null
 // 备用档同理：BACKUP_MODEL 解析出来非空（自带或回落小档）才建——failover 层据此决定切不切
 export const backupClient = BACKUP_MODEL ? new OpenAI({ apiKey: backupKey, baseURL: BACKUP_BASE_URL }) : null
+// 视觉档：端点/KEY 齐才建（null = 未配置，调用方降级——本地 OCR 不依赖它）
+export const visionClient = VISION_BASE_URL && visionKey ? new OpenAI({ apiKey: visionKey, baseURL: VISION_BASE_URL }) : null
 export { client, embedClient }
-export { MODEL, BUDGET_TOKENS, EMBED_MODEL, LIGHT_MODEL, BACKUP_MODEL }
+export { MODEL, BUDGET_TOKENS, EMBED_MODEL, LIGHT_MODEL, BACKUP_MODEL, VISION_MODEL }

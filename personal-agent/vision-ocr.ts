@@ -6,27 +6,21 @@
 //   视觉 LLM：版式理解强、能顺手修整（去页眉页脚、合并断行）；但可能编字、不给可靠坐标、按图计费
 // 所以接口统一成 OcrResult：AI 引擎 bbox/confidence 缺省（不伪造），UI 自动降级（无坐标就不做高亮）。
 //
-// 配置（与仓库「平台无关」纪律一致，缺省沿用备用档=GLM 视觉）：
-//   OCR_VISION_BASE_URL / OCR_VISION_MODEL / OCR_VISION_API_KEY
-//   三者都可单独覆盖；KEY 缺省回落 LLM_BACKUP_API_KEY → LLM_API_KEY
+// 配置统一走 09-harness/llm.ts（「LLM 客户端唯一事实源」）：
+//   LLM_VISION_BASE_URL / LLM_VISION_MODEL / LLM_VISION_API_KEY
+//   缺省沿备用档（GLM 视觉）→ 主档回落，模型默认 glm-4.5v。
 //
 // 注意：思考开关按 LLM_THINKING_STYLE 走（PITFALLS #37：reasoning_effort 在 ARK 端点是死参数，
 // thinking:{type:'disabled'} 才真生效）。OCR 是浅任务，不付思考预算。
-import OpenAI from 'openai'
+import type OpenAI from 'openai'
 import { z } from 'zod'
-import { THINKING_STYLE } from '../09-harness/llm.ts'
+import { THINKING_STYLE, visionClient, VISION_MODEL } from '../09-harness/llm.ts'
 import type { OcrResult } from './ocr.ts'
 
-const BASE = process.env.OCR_VISION_BASE_URL || process.env.LLM_BACKUP_BASE_URL || process.env.LLM_BASE_URL || ''
-const MODEL = process.env.OCR_VISION_MODEL || 'glm-4.5v'
-const KEY = process.env.OCR_VISION_API_KEY || process.env.LLM_BACKUP_API_KEY || process.env.LLM_API_KEY || ''
-
-// 懒建客户端：没配视觉模型时只让 AI 路线失败，本地路线照常可用（绝不能因 AI 配置缺失把整个工具打死）
-let client: OpenAI | null = null
+// 没配视觉档时只让 AI 路线失败，本地路线照常可用（绝不能因 AI 配置缺失把整个工具打死）
 function getClient(): OpenAI {
-	if (!BASE || !KEY) throw new Error('AI 识别未配置：需要 OCR_VISION_BASE_URL / OCR_VISION_API_KEY（或 LLM_BACKUP_*）')
-	if (!client) client = new OpenAI({ apiKey: KEY, baseURL: BASE })
-	return client
+	if (!visionClient) throw new Error('AI 识别未配置：LLM_VISION_MODEL / LLM_VISION_API_KEY（缺省回落备用档）')
+	return visionClient
 }
 
 const RespSchema = z.object({
@@ -65,7 +59,7 @@ export async function recognizeWithAI(image: Buffer, mime = 'image/png'): Promis
 	for (let attempt = 0; attempt < 2; attempt++) {
 		try {
 			const res = await getClient().chat.completions.create({
-				model: MODEL,
+				model: VISION_MODEL,
 				messages: [
 					{ role: 'system', content: SYSTEM },
 					{
