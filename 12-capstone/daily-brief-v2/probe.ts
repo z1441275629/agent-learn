@@ -200,6 +200,19 @@ check(
 	TOPIC_PRESETS.every((p) => p.id && p.name && typeof p.focus === 'string' && p.sources.length >= 1 && p.sources.every((s) => (ENUM as string[]).includes(s.type) && !!s.query)),
 )
 
+console.log('P11 推送正文组装（微信打不开自签链接——全文进 desp 才是主通道；Server酱 32KB 上限）')
+{
+	const md = '# 情报日报\n\n## AI Agent 工程\n\n- [条目一](https://example.com/1) 评\n\n## 今日总评\n\n今天最重要的事……'
+	const short = pipe.buildDailyPush(md, '今天最重要的事……', 'https://192.168.0.1:8788/#/pages/report/report')
+	check('正常日报：总评头 + 全文 + 链接尾', short.startsWith('**今日总评**') && short.includes('条目一') && short.trimEnd().endsWith('](https://192.168.0.1:8788/#/pages/report/report)'))
+	check('正常日报不触发截断', !short.includes('已截断'))
+	check('无 url 时不带链接段（探测不到服务地址的兜底）', !pipe.buildDailyPush(md, '总评').includes('打开完整日报'))
+	const huge = '# 大日报\n\n' + '很长的正文内容。'.repeat(9000) // ≈160KB，远超上限
+	const long = pipe.buildDailyPush(huge, '总评', 'https://x/')
+	check(`超长日报按字节截到 ≤32KB（实测 ${Buffer.byteLength(long, 'utf8')}B）`, Buffer.byteLength(long, 'utf8') <= 32768 && long.includes('已截断'))
+	check('截断保尾：链接逃生门不被切掉', long.trimEnd().endsWith('](https://x/)'))
+}
+
 await fs.rm(TMP, { recursive: true, force: true }) // 清场：探针目录全删，可重复跑
 console.log(`\n探针结果: ${pass}/${pass + fail} ${fail === 0 ? '✓ 全过' : '✗ 有失败——看上面归因'}`)
 if (fail > 0) process.exitCode = 1

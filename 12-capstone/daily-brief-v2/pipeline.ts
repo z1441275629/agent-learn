@@ -246,6 +246,29 @@ async function notifyUser(sendkey: string | undefined, title: string, desp: stri
 	return r.sent ? '已推送' : `推送失败：${maskKey(sendkey)}（${r.reason ?? '未知'}）`
 }
 
+// ---------- 推送正文组装（导出给探针：微信里链接不是主通道——正文才是） ----------
+// 用户实录：推送里只有「打开日报」按钮——微信内置浏览器对自签 https 没有「继续前往」入口，点了
+// 打不开；链接文字又复制不了。解法=日报全文直接进 desp（Server酱 markdown 正文，上限 32KB，
+// 日报全文约 10~15KB），链接降级为附属（电脑/已收藏的浏览器可用）。超长按字节截正文，头尾结构保留。
+const DESP_MAX = 30000 // 32KB 上限减截断标记余量
+function truncateUtf8(s: string, maxBytes: number): string {
+	const buf = Buffer.from(s, 'utf8')
+	if (buf.length <= maxBytes) return s
+	return buf.subarray(0, maxBytes).toString('utf8') // 截在多字节中间会出 1 个替换字符，末尾可接受
+}
+export function buildDailyPush(markdown: string, summary: string, url?: string): string {
+	const head = `**今日总评**\n\n${summary}\n\n---\n\n`
+	const tail = url ? `\n\n---\n\n[在浏览器打开完整日报](${url})` : ''
+	const budget = DESP_MAX - Buffer.byteLength(head + tail, 'utf8')
+	let body = markdown
+	let cut = false
+	if (Buffer.byteLength(body, 'utf8') > budget) {
+		body = truncateUtf8(body, budget)
+		cut = true
+	}
+	return head + body + (cut ? '\n\n（正文超长已截断——完整版看下方链接）' : '') + tail
+}
+
 // ---------- 单用户产线（v1 main 的全部，闭包化：per-user ledger / audience 注入 / 记账统一入口） ----------
 export async function runUser(
 	user: Profile,
@@ -387,13 +410,14 @@ ${revision ? `\n上一版被质检打回，问题：${revision.issues.join('；'
 	const { reportPath, totals: tot, elapsedMs } = await writeOutputs(REPORTS, { markdown, results, verdict, ledger, startedAt: t0 })
 	await emitProgress(REPORTS, 'done', `落盘完成 · ${tot.calls} 调用 · ${tot.promptTokens}/${tot.completionTokens} tokens · ${(elapsedMs / 1000).toFixed(0)}s · ${verdict.pass ? '过审' : '未过审'}`)
 
-	// 通知：标题进卡片，desp 放总评 + 链接（自动探测 IP 漂移跟随 / V2_PUBLIC_URL 钉死逃生门）
+	// 通知：标题进卡片，desp=总评头+全文+链接尾（链接自动探测 IP 漂移跟随 / V2_PUBLIC_URL 钉死逃生门；
+	// 微信里链接打不开自签 https——全文进正文才是主通道，见 buildDailyPush）
 	const summary = markdown.includes('## 今日总评') ? markdown.split('## 今日总评')[1].trim().slice(0, 500) : markdown.slice(0, 500)
 	const url = publicURL()
 	const note = await notifyUser(
 		user.sendkey,
 		`情报日报 ${today()}${verdict.pass ? '已生成' : '已生成（质检未过审）'}`,
-		url ? `${summary}\n\n---\n\n[打开日报](${url})` : `${summary}\n\n（未探测到服务地址——请在服务器本机查看）`
+		buildDailyPush(markdown, summary, url ?? undefined),
 	)
 	console.log(`[${user.username}] 日报 ${reportPath ? '落盘' : '未落盘'} · ${tot.calls} 调用 · 通知 ${note}`)
 	await emitProgress(REPORTS, 'notify', note)
