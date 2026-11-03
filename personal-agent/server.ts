@@ -9,6 +9,7 @@ import http from 'node:http'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { recognize, terminateOcr } from './ocr.ts'
+import { recognizeWithAI } from './vision-ocr.ts'
 import { translateLines } from './translate.ts'
 
 const DIR = import.meta.dirname
@@ -50,11 +51,13 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse) {
 			return res.end(html)
 		}
 		if (req.method === 'POST' && url.pathname === '/api/ocr') {
-			const body = JSON.parse(await readBody(req)) as { image?: string }
+			const body = JSON.parse(await readBody(req)) as { image?: string; engine?: string }
 			if (!body.image) return json(res, 400, { error: '缺 image 字段（dataURL 或 base64）' })
 			const image = decodeImage(body.image)
+			// 两条识别路线（模块 13 对照作业）：local=本地 tesseract（默认，带坐标）；ai=视觉 LLM（版式强、无坐标）
+			const engine = body.engine === 'ai' ? 'ai' : 'local'
 			const t0 = Date.now()
-			const ocr = await recognize(image)
+			const ocr = engine === 'ai' ? await recognizeWithAI(image) : await recognize(image)
 			// OCR 秒级返回先给用户；翻译另有网络延迟——可选 ?translate=0 跳过（离线/省 token）
 			let translations: { id: number; zh: string }[] = []
 			let translateError: string | undefined
@@ -64,14 +67,15 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse) {
 				translateError = t.error
 			}
 			console.log(
-				`[pa] OCR ${ocr.lines.length} 行 · 置信 ${Math.round(ocr.confidence)} · ${ocr.elapsedMs}ms` +
-					` · 翻译 ${translations.length} 行${translateError ? `（失败：${translateError}）` : ''} · 总 ${Date.now() - t0}ms`,
+				`[pa] OCR(${ocr.engine}) ${ocr.lines.length} 行` +
+					(typeof ocr.confidence === 'number' ? ` · 置信 ${Math.round(ocr.confidence)}` : '') +
+					` · ${ocr.elapsedMs}ms · 翻译 ${translations.length} 行${translateError ? `（失败：${translateError}）` : ''} · 总 ${Date.now() - t0}ms`,
 			)
 			return json(res, 200, { ...ocr, translations, translateError })
 		}
 		json(res, 404, { error: `没这个路由：${req.method} ${url.pathname}` })
 	} catch (err: any) {
-		const code = err?.code === 413 ? 413 : err?.code === 400 ? 400 : 500
+		const code = [400, 413, 502].includes(err?.code) ? err.code : 500
 		if (code === 500) console.error('[pa] 炸了：', err?.message)
 		json(res, code, { error: err?.message ?? '未知错误' })
 	}

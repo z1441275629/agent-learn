@@ -4,6 +4,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { recognize, normalizeCjk, terminateOcr } from './ocr.ts'
 import { needsTranslation } from './translate.ts'
+import { parseVisionLines } from './vision-ocr.ts'
 
 let pass = 0
 let fail = 0
@@ -32,8 +33,21 @@ check('英文行原文正确', r.lines.some((l) => l.text.includes('Hello Agent 
 check('数字/编号行识别到', r.lines.some((l) => l.text.includes('2026-1103')))
 check('中文行被归一（无「发 票」碎片）', r.lines.some((l) => l.text.includes('发票')) && !r.lines.some((l) => l.text.includes('发 票')))
 check('每行都带坐标（复制定位/高亮的依据）', r.lines.every((l) => l.bbox && l.bbox.y1 > l.bbox.y0))
-check('按版面顺序排序（y 递增）', r.lines.every((l, i) => i === 0 || r.lines[i - 1].bbox.y0 <= l.bbox.y0))
-check(`整体置信 > 60（实际 ${Math.round(r.confidence)}）`, r.confidence > 60)
+check('按版面顺序排序（y 递增）', r.lines.every((l, i) => i === 0 || r.lines[i - 1].bbox!.y0 <= l.bbox!.y0))
+check(`整体置信 > 60（实际 ${Math.round(r.confidence ?? 0)}）`, (r.confidence ?? 0) > 60)
+check('本地引擎标记 engine=local 且每行带坐标', r.engine === 'local' && r.lines.every((l) => !!l.bbox))
+
+console.log('Q4 AI 引擎输出解析（纯函数：模型不总听话，围栏/两种行形状都要接住）')
+check('标准形状 {"lines":[{"text":..}]}', parseVisionLines('{"lines":[{"text":"第一行"},{"text":"第二行"}]}').join('|') === '第一行|第二行')
+check('剥 ```json 围栏', parseVisionLines('```json\n{"lines":[{"text":"a"}]}\n```').join('') === 'a')
+check('宽容字符串数组 [".."]', parseVisionLines('{"lines":["a","b"]}').join('|') === 'a|b')
+check('前后废话只取 JSON 段', parseVisionLines('好的，结果如下：{"lines":[{"text":"x"}]} 以上。').join('') === 'x')
+check('空行被过滤', parseVisionLines('{"lines":[{"text":"a"},{"text":"  "}]}').length === 1)
+{
+	let threw = false
+	try { parseVisionLines('抱歉我无法识别') } catch { threw = true }
+	check('非 JSON 明确报错（触发重试，不静默返回空）', threw)
+}
 
 await terminateOcr()
 console.log(`\n探针结果: ${pass}/${pass + fail} ${fail === 0 ? '✓ 全过' : '✗ 有失败——看上面归因'}`)

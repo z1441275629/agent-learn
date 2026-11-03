@@ -19,13 +19,16 @@ const LANGS = ['chi_sim'] as const // 多语言 'chi_sim+eng' 在 Windows 上会
 export interface OcrLine {
 	id: number
 	text: string
-	confidence: number
-	bbox: { x0: number; y0: number; x1: number; y1: number }
+	/** 本地引擎有置信度；AI 引擎没有（模型不给可靠置信度，别伪造一个数字） */
+	confidence?: number
+	/** 本地引擎有坐标；AI 引擎没有（LLM 报坐标幻觉严重，不给假坐标） */
+	bbox?: { x0: number; y0: number; x1: number; y1: number }
 }
 export interface OcrResult {
+	engine: 'local' | 'ai'
 	text: string
 	lines: OcrLine[]
-	confidence: number
+	confidence?: number
 	elapsedMs: number
 }
 
@@ -81,6 +84,7 @@ export async function recognize(image: Buffer): Promise<OcrResult> {
 		.sort((a, b) => a.bbox.y0 - b.bbox.y0 || a.bbox.x0 - b.bbox.x0)
 		.map((l, i) => ({ id: i, ...l }))
 	return {
+		engine: 'local',
 		text: normalizeCjk(String(data.text ?? '').trim()),
 		lines,
 		confidence: Number(data.confidence ?? 0),

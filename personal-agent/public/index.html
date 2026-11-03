@@ -31,6 +31,10 @@
   button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
   button:disabled { opacity: .5; cursor: default; }
   label.toggle { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); cursor: pointer; }
+  /* 引擎切换：两段式分段控件 */
+  .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  .seg-btn { border: 0; border-radius: 0; padding: 6px 12px; background: #fff; color: var(--muted); }
+  .seg-btn.on { background: var(--accent); color: #fff; }
   .meta { color: var(--muted); font-size: 12px; margin-top: 8px; }
   /* 行列表 */
   .lines { display: flex; flex-direction: column; gap: 6px; }
@@ -59,6 +63,10 @@
     <div id="drop" tabindex="0">粘贴 / 拖入 / 点击选择截图</div>
     <input type="file" id="file" accept="image/*" hidden />
     <div class="toolbar">
+      <div class="seg" role="group" aria-label="识别引擎">
+        <button class="seg-btn on" data-engine="local" title="本地 tesseract：免费离线、带坐标、可悬停定位">本地</button>
+        <button class="seg-btn" data-engine="ai" title="视觉 LLM：版式理解强，但无坐标、按图计费">AI 识别</button>
+      </div>
       <label class="toggle"><input type="checkbox" id="translate" checked /> 翻译成中文</label>
       <button id="copyAll" disabled>复制全文</button>
       <button id="clear" disabled>清空</button>
@@ -77,8 +85,17 @@
 const $ = (id) => document.getElementById(id)
 const drop = $('drop'), fileInput = $('file'), result = $('result'), meta = $('meta')
 const errBox = $('err'), copyAllBtn = $('copyAll'), clearBtn = $('clear'), translateChk = $('translate')
-let currentLines = []   // [{id,text,confidence,bbox}]
+let currentLines = []   // [{id,text,confidence?,bbox?}]
 let currentImage = null // dataURL
+let engine = localStorage.getItem('pa.engine') === 'ai' ? 'ai' : 'local' // 两条识别路线（模块 13 对照）
+
+function setEngine(e) {
+  engine = e === 'ai' ? 'ai' : 'local'
+  localStorage.setItem('pa.engine', engine)
+  document.querySelectorAll('.seg-btn').forEach((b) => b.classList.toggle('on', b.dataset.engine === engine))
+}
+document.querySelectorAll('.seg-btn').forEach((b) => b.addEventListener('click', () => setEngine(b.dataset.engine)))
+setEngine(engine)
 
 function toast(msg) {
   const t = $('toast'); t.textContent = msg; t.classList.add('on')
@@ -108,10 +125,10 @@ async function handleImage(dataUrl) {
   try {
     const res = await fetch('/api/ocr' + (translateChk.checked ? '' : '?translate=0'), {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ image: dataUrl }),
+      body: JSON.stringify({ image: dataUrl, engine }),
     })
     const j = await res.json()
-    if (!res.ok) throw new Error(j.error || ('HTTP ' + res.status))
+    if (!res.ok) throw new Error((j.error || ('HTTP ' + res.status)) + (res.status === 502 ? ' ——可切到「本地」引擎重试' : ''))
     render(j, (performance.now() - t0) / 1000)
   } catch (e) {
     result.className = 'empty'; result.textContent = '识别失败：' + e.message
@@ -121,18 +138,19 @@ async function handleImage(dataUrl) {
 function render(j, secs) {
   currentLines = j.lines || []
   const zh = new Map((j.translations || []).map((t) => [t.id, t.zh]))
-  meta.textContent = `${currentLines.length} 行 · 置信 ${Math.round(j.confidence)}% · OCR ${j.elapsedMs}ms · 共 ${secs.toFixed(1)}s` + (j.translateError ? ' · 翻译失败（只显示原文）' : '')
+  const tag = j.engine === 'ai' ? 'AI 识别' : '本地 OCR'
+  meta.textContent = `${tag} · ${currentLines.length} 行` + (typeof j.confidence === 'number' ? ` · 置信 ${Math.round(j.confidence)}%` : '') + ` · OCR ${j.elapsedMs}ms · 共 ${secs.toFixed(1)}s` + (j.translateError ? ' · 翻译失败（只显示原文）' : '')
   if (j.translateError) showError('翻译服务失败：' + j.translateError + '——OCR 结果不受影响')
   copyAllBtn.disabled = clearBtn.disabled = currentLines.length === 0
   if (currentLines.length === 0) { result.className = 'empty'; result.textContent = '没识别到文字——试试更清晰/更大字号的截图'; return }
   result.className = 'lines'; result.innerHTML = ''
   for (const l of currentLines) {
     const div = document.createElement('div')
-    div.className = 'line' + (l.confidence < 60 ? ' low' : '')
+    const lowConf = typeof l.confidence === 'number' && l.confidence < 60
+    div.className = 'line' + (lowConf ? ' low' : '')
     div.dataset.id = l.id
-    const conf = `<span class="conf">${Math.round(l.confidence)}%</span>`
+    if (typeof l.confidence === 'number') div.innerHTML = `<span class="conf">${Math.round(l.confidence)}%</span>`
     const orig = document.createElement('div'); orig.className = 'orig'; orig.textContent = l.text
-    div.innerHTML = conf
     div.appendChild(orig)
     if (zh.has(l.id)) {
       const z = document.createElement('div'); z.className = 'zh'; z.textContent = zh.get(l.id)
@@ -141,8 +159,11 @@ function render(j, secs) {
       div.appendChild(z)
     }
     div.addEventListener('click', async () => toast(await copyText(l.text) ? '已复制这一行' : '复制失败'))
-    div.addEventListener('mouseenter', () => highlight(l.bbox))
-    div.addEventListener('mouseleave', () => { const hl = $('hl'); if (hl) hl.style.display = 'none' })
+    // AI 引擎没有坐标（LLM 报坐标幻觉严重）——只在有 bbox 时启用悬停高亮
+    if (l.bbox) {
+      div.addEventListener('mouseenter', () => highlight(l.bbox))
+      div.addEventListener('mouseleave', () => { const hl = $('hl'); if (hl) hl.style.display = 'none' })
+    }
     result.appendChild(div)
   }
 }
