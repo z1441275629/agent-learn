@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>截图取字 · 个人 Agent 工作台</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --card: #fff; --text: #1f2328; --muted: #6b7280;
+    --line: #e5e7eb; --accent: #2563eb; --accent-soft: #eef2ff; --warn: #d97706;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.6 system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif; }
+  header { padding: 18px 22px 6px; }
+  h1 { font-size: 19px; margin: 0 0 2px; }
+  .sub { color: var(--muted); font-size: 13px; }
+  main { display: grid; grid-template-columns: minmax(280px, 420px) 1fr; gap: 16px; padding: 14px 22px 28px; align-items: start; }
+  @media (max-width: 860px) { main { grid-template-columns: 1fr; } }
+  .card { background: var(--card); border-radius: 12px; box-shadow: 0 1px 2px rgba(0,0,0,.05); padding: 14px; }
+  /* 拖放区 */
+  #drop { border: 2px dashed #cbd5e1; border-radius: 10px; min-height: 180px; display: flex; align-items: center; justify-content: center; text-align: center; color: var(--muted); cursor: pointer; transition: .15s; padding: 16px; }
+  #drop.hover { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
+  #drop.has-img { border-style: solid; border-color: transparent; padding: 0; }
+  #drop img { max-width: 100%; border-radius: 8px; display: block; }
+  /* 坐标覆盖层：悬停某行时在图上高亮对应区域 */
+  #imgwrap { position: relative; display: inline-block; max-width: 100%; }
+  #imgwrap img { max-width: 100%; display: block; border-radius: 8px; }
+  .hl { position: absolute; border: 2px solid var(--accent); background: rgba(37,99,235,.14); border-radius: 3px; pointer-events: none; display: none; }
+  .toolbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 10px; }
+  button { font: inherit; font-size: 13px; padding: 6px 12px; border-radius: 8px; border: 1px solid var(--line); background: #fff; color: var(--text); cursor: pointer; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button:disabled { opacity: .5; cursor: default; }
+  label.toggle { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); cursor: pointer; }
+  .meta { color: var(--muted); font-size: 12px; margin-top: 8px; }
+  /* 行列表 */
+  .lines { display: flex; flex-direction: column; gap: 6px; }
+  .line { border: 1px solid var(--line); border-radius: 9px; padding: 8px 10px; cursor: copy; transition: .12s; }
+  .line:hover { border-color: var(--accent); background: var(--accent-soft); }
+  .line .orig { white-space: pre-wrap; word-break: break-word; }
+  .line .zh { margin-top: 4px; padding-top: 4px; border-top: 1px dashed var(--line); color: #0f766e; white-space: pre-wrap; word-break: break-word; }
+  .line.low { border-left: 3px solid var(--warn); }
+  .line.low .conf { color: var(--warn); }
+  .conf { float: right; font-size: 11px; color: #9ca3af; margin-left: 8px; }
+  .empty { color: var(--muted); padding: 24px 8px; text-align: center; }
+  .err { color: #b91c1c; background: #fef2f2; border-radius: 8px; padding: 8px 10px; font-size: 13px; margin-top: 10px; }
+  #toast { position: fixed; left: 50%; bottom: 34px; transform: translateX(-50%) translateY(20px); background: #111827; color: #fff; padding: 9px 16px; border-radius: 999px; font-size: 13px; opacity: 0; transition: .2s; pointer-events: none; }
+  #toast.on { opacity: .95; transform: translateX(-50%) translateY(0); }
+  .spin { display: inline-block; width: 14px; height: 14px; border: 2px solid #cbd5e1; border-top-color: var(--accent); border-radius: 50%; animation: r .8s linear infinite; vertical-align: -2px; margin-right: 6px; }
+  @keyframes r { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+<header>
+  <h1>截图取字</h1>
+  <div class="sub">Win+Shift+S 截图 → 本页 <b>Ctrl+V</b> 粘贴（或拖入图片）→ 悬停看原文在图中位置，<b>点一行复制一行</b></div>
+</header>
+<main>
+  <section class="card">
+    <div id="drop" tabindex="0">粘贴 / 拖入 / 点击选择截图</div>
+    <input type="file" id="file" accept="image/*" hidden />
+    <div class="toolbar">
+      <label class="toggle"><input type="checkbox" id="translate" checked /> 翻译成中文</label>
+      <button id="copyAll" disabled>复制全文</button>
+      <button id="clear" disabled>清空</button>
+    </div>
+    <div class="meta" id="meta"></div>
+    <div id="err" class="err" style="display:none"></div>
+  </section>
+
+  <section class="card">
+    <div id="result" class="empty">识别结果会出现在这里</div>
+  </section>
+</main>
+<div id="toast"></div>
+
+<script>
+const $ = (id) => document.getElementById(id)
+const drop = $('drop'), fileInput = $('file'), result = $('result'), meta = $('meta')
+const errBox = $('err'), copyAllBtn = $('copyAll'), clearBtn = $('clear'), translateChk = $('translate')
+let currentLines = []   // [{id,text,confidence,bbox}]
+let currentImage = null // dataURL
+
+function toast(msg) {
+  const t = $('toast'); t.textContent = msg; t.classList.add('on')
+  clearTimeout(toast._t); toast._t = setTimeout(() => t.classList.remove('on'), 1400)
+}
+
+// 剪贴板：https/localhost 有 navigator.clipboard；http://局域网IP 不是 secure context → execCommand 兜底
+async function copyText(text) {
+  try {
+    if (navigator.clipboard && window.isSecureContext) { await navigator.clipboard.writeText(text); return true }
+    const ta = document.createElement('textarea'); ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0'
+    document.body.appendChild(ta); ta.select(); const ok = document.execCommand('copy'); ta.remove(); return ok
+  } catch { return false }
+}
+
+function showError(msg) { errBox.textContent = msg; errBox.style.display = 'block' }
+function clearError() { errBox.style.display = 'none' }
+
+async function handleImage(dataUrl) {
+  clearError(); currentImage = dataUrl
+  drop.classList.add('has-img')
+  drop.innerHTML = `<div id="imgwrap"><img id="preview" src="${dataUrl}" alt="截图预览"><div class="hl" id="hl"></div></div>`
+  result.className = 'empty'; result.innerHTML = '<span class="spin"></span>识别中…'
+  meta.textContent = ''
+  copyAllBtn.disabled = clearBtn.disabled = true
+  const t0 = performance.now()
+  try {
+    const res = await fetch('/api/ocr' + (translateChk.checked ? '' : '?translate=0'), {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ image: dataUrl }),
+    })
+    const j = await res.json()
+    if (!res.ok) throw new Error(j.error || ('HTTP ' + res.status))
+    render(j, (performance.now() - t0) / 1000)
+  } catch (e) {
+    result.className = 'empty'; result.textContent = '识别失败：' + e.message
+  }
+}
+
+function render(j, secs) {
+  currentLines = j.lines || []
+  const zh = new Map((j.translations || []).map((t) => [t.id, t.zh]))
+  meta.textContent = `${currentLines.length} 行 · 置信 ${Math.round(j.confidence)}% · OCR ${j.elapsedMs}ms · 共 ${secs.toFixed(1)}s` + (j.translateError ? ' · 翻译失败（只显示原文）' : '')
+  if (j.translateError) showError('翻译服务失败：' + j.translateError + '——OCR 结果不受影响')
+  copyAllBtn.disabled = clearBtn.disabled = currentLines.length === 0
+  if (currentLines.length === 0) { result.className = 'empty'; result.textContent = '没识别到文字——试试更清晰/更大字号的截图'; return }
+  result.className = 'lines'; result.innerHTML = ''
+  for (const l of currentLines) {
+    const div = document.createElement('div')
+    div.className = 'line' + (l.confidence < 60 ? ' low' : '')
+    div.dataset.id = l.id
+    const conf = `<span class="conf">${Math.round(l.confidence)}%</span>`
+    const orig = document.createElement('div'); orig.className = 'orig'; orig.textContent = l.text
+    div.innerHTML = conf
+    div.appendChild(orig)
+    if (zh.has(l.id)) {
+      const z = document.createElement('div'); z.className = 'zh'; z.textContent = zh.get(l.id)
+      z.title = '点击复制译文'
+      z.addEventListener('click', async (e) => { e.stopPropagation(); toast(await copyText(z.textContent) ? '已复制译文' : '复制失败') })
+      div.appendChild(z)
+    }
+    div.addEventListener('click', async () => toast(await copyText(l.text) ? '已复制这一行' : '复制失败'))
+    div.addEventListener('mouseenter', () => highlight(l.bbox))
+    div.addEventListener('mouseleave', () => { const hl = $('hl'); if (hl) hl.style.display = 'none' })
+    result.appendChild(div)
+  }
+}
+
+// 坐标高亮：OCR 坐标是原图坐标系，按显示尺寸等比缩放
+function highlight(bbox) {
+  const img = $('preview'), hl = $('hl')
+  if (!img || !hl || !bbox) return
+  const sx = img.clientWidth / img.naturalWidth, sy = img.clientHeight / img.naturalHeight
+  hl.style.left = bbox.x0 * sx + 'px'; hl.style.top = bbox.y0 * sy + 'px'
+  hl.style.width = (bbox.x1 - bbox.x0) * sx + 'px'; hl.style.height = (bbox.y1 - bbox.y0) * sy + 'px'
+  hl.style.display = 'block'
+}
+
+// ---------- 输入：粘贴 / 拖放 / 选择 ----------
+document.addEventListener('paste', (e) => {
+  for (const item of e.clipboardData?.items || []) {
+    if (item.type.startsWith('image/')) {
+      const f = item.getAsFile()
+      const r = new FileReader()
+      r.onload = () => handleImage(r.result)
+      r.readAsDataURL(f)
+      e.preventDefault()
+      return
+    }
+  }
+})
+drop.addEventListener('click', () => fileInput.click())
+drop.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') fileInput.click() })
+fileInput.addEventListener('change', () => {
+  const f = fileInput.files?.[0]; fileInput.value = ''
+  if (!f) return
+  const r = new FileReader(); r.onload = () => handleImage(r.result); r.readAsDataURL(f)
+})
+for (const evt of ['dragenter', 'dragover']) drop.addEventListener(evt, (e) => { e.preventDefault(); drop.classList.add('hover') })
+for (const evt of ['dragleave', 'drop']) drop.addEventListener(evt, (e) => { e.preventDefault(); drop.classList.remove('hover') })
+drop.addEventListener('drop', (e) => {
+  const f = [...(e.dataTransfer?.files || [])].find((f) => f.type.startsWith('image/'))
+  if (!f) return
+  const r = new FileReader(); r.onload = () => handleImage(r.result); r.readAsDataURL(f)
+})
+
+copyAllBtn.addEventListener('click', async () => {
+  const text = currentLines.map((l) => l.text).join('\n')
+  toast(await copyText(text) ? `已复制全文（${currentLines.length} 行）` : '复制失败')
+})
+clearBtn.addEventListener('click', () => {
+  currentLines = []; currentImage = null
+  drop.classList.remove('has-img'); drop.textContent = '粘贴 / 拖入 / 点击选择截图'
+  result.className = 'empty'; result.textContent = '识别结果会出现在这里'
+  meta.textContent = ''; clearError(); copyAllBtn.disabled = clearBtn.disabled = true
+})
+</script>
+</body>
+</html>

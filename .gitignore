@@ -47,3 +47,6 @@ node_modules/
 
 # v2 TLS 自签证书私钥（make-cert.sh 产物，绝不入库）
 12-capstone/daily-brief-v2/certs/
+
+# personal-agent：语言包从 npm 包自愈拷贝，不入库
+personal-agent/.tessdata/
