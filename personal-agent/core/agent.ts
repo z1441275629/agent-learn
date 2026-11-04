@@ -10,8 +10,11 @@
 //   - 步数上限：超限后最后一轮去掉 tools 强制出文本答案，不许工具死循环烧钱
 //   - 工具结果截断：源头减量，别等超预算再救（模块 06 的 token 经济学）
 //
-// 权限门（risk 分级 + 确认 UI）在本层留了钩子：v1 只注册 read 工具（自动放行），
-// write 工具 + 「人批」确认流是下一层——闸门结构先就位，不和使用面一起堆。
+// 权限门（risk 分级 + 确认 UI）在本层留了钩子：write 工具执行前必须过 onConfirm，
+// 没接/抛错/拒绝一律 fail closed——门是唯一放行通道，dispatch 里没有后门。
+//
+// 同轮多调用的执行策略：read 并发（无副作用，墙钟取 max）；write 串行过门（一次一张卡，
+// 决策顺序可见、「总是允许」顺序生效）；喂回模型的 tool 消息一律按 tool_calls 原序。
 
 import type OpenAI from 'openai'
 
@@ -176,31 +179,58 @@ export async function runToolLoop(
         .sort(([a], [b]) => a - b)
         .map(([_, c]) => ({ id: c.id, type: 'function', function: { name: c.name, arguments: c.args } })),
     })
-    for (const [_, call] of [...calls.entries()].sort(([a], [b]) => a - b)) {
+
+    // 同轮多调用的执行策略：
+    //   - read 无副作用 → 并发跑（模型一次要 N 个只读调用，墙钟是 max 不是 sum）
+    //   - write 过确认门 → 严格串行，卡一张一张出：后面的决定能看到前面的结果；
+    //     「本会话总是允许」也靠顺序生效（批第一个时勾了，同工具第二个自动放行）
+    //   - 喂回的 tool 消息按 tool_calls 原序拼：并发完成序会乱，但 API 契约要求
+    //     每个调用都有对应结果，原序最稳
+    const ordered = [...calls.entries()].sort(([a], [b]) => a - b).map(([_, c]) => c)
+    const resultByIndex = new Map<number, ToolTrace>()
+
+    // ① read 并发：每调用独立计时/留痕，跑完即发帧（帧序=完成序，界面芯片随之）
+    await Promise.all(
+      ordered.map(async (call, i) => {
+        const def = byName.get(call.name)
+        if (def?.risk === 'write') return
+        const t0 = Date.now()
+        const result = await dispatch(def, call.name, call.args, maxResultChars)
+        const item: ToolTrace = { name: call.name, args: call.args, result, ms: Date.now() - t0 }
+        resultByIndex.set(i, item)
+        onToolCall?.(item)
+      }),
+    )
+
+    // ② write 串行过门（一次只摆一张卡）
+    for (let i = 0; i < ordered.length; i++) {
+      const call = ordered[i]
       const def = byName.get(call.name)
+      if (def?.risk !== 'write') continue
       const t0 = Date.now()
-      let result: string
-      if (def?.risk !== 'write') {
-        result = await dispatch(def, call.name, call.args, maxResultChars)
-      } else {
-        // 确认门：write 工具先问人，批准才真跑。没接门/门抛错/拒绝都按拒绝落账（fail closed）；
-        // 拒绝也是一次「已应答的工具调用」——照常喂回模型，它能看到原因并调整说法
-        let allowed = false
-        if (onConfirm) {
-          try {
-            allowed = await onConfirm({ name: call.name, args: call.args })
-          } catch {
-            allowed = false
-          }
+      // 确认门：write 工具先问人，批准才真跑。没接门/门抛错/拒绝都按拒绝落账（fail closed）；
+      // 拒绝也是一次「已应答的工具调用」——照常喂回模型，它能看到原因并调整说法
+      let allowed = false
+      if (onConfirm) {
+        try {
+          allowed = await onConfirm({ name: call.name, args: call.args })
+        } catch {
+          allowed = false
         }
-        result = allowed
-          ? await dispatch(def, call.name, call.args, maxResultChars)
-          : JSON.stringify({ error: onConfirm ? '用户拒绝了这次工具调用' : '写入类工具未接确认门，已自动拒绝' })
       }
+      const result = allowed
+        ? await dispatch(def, call.name, call.args, maxResultChars)
+        : JSON.stringify({ error: onConfirm ? '用户拒绝了这次工具调用' : '写入类工具未接确认门，已自动拒绝' })
       const item: ToolTrace = { name: call.name, args: call.args, result, ms: Date.now() - t0 }
-      trace.push(item)
+      resultByIndex.set(i, item)
       onToolCall?.(item)
-      messages.push({ role: 'tool', tool_call_id: call.id, content: result })
+    }
+
+    // ③ 按原序落账 + 喂回（完成序可乱，落账序不乱）
+    for (let i = 0; i < ordered.length; i++) {
+      const item = resultByIndex.get(i)!
+      trace.push(item)
+      messages.push({ role: 'tool', tool_call_id: ordered[i].id, content: item.result })
     }
     rounds++
   }

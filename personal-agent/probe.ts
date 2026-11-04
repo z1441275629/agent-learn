@@ -1017,6 +1017,122 @@ console.log('Q15 PCM16 WAV 编码（录音上传的格式底座——webm 被转
   check('空块输出只有头', encodeWav([], 16000).size === 44)
 }
 
+console.log('Q16 同轮多工具执行策略（read 并发 / write 串行过门 / 喂回原序）')
+{
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+  const slow = (name: string, ms: number): ToolDef => ({
+    name,
+    description: `慢 ${ms}ms`,
+    parameters: { type: 'object', properties: {} },
+    risk: 'read',
+    run: async () => {
+      await sleep(ms)
+      return `${name} 完成`
+    },
+  })
+  const write = (name: string): ToolDef => ({
+    name,
+    description: '写入',
+    parameters: { type: 'object', properties: {} },
+    risk: 'write',
+    run: async () => `${name} 已写入`,
+  })
+  const textDelta = (t: string) => ({ choices: [{ delta: { content: t } }] })
+  const toolCall = (index: number, id: string, name: string) => [
+    { choices: [{ delta: { tool_calls: [{ index, id, type: 'function', function: { name, arguments: '{}' } }] } }] },
+  ]
+  function fakeClient(script: (() => any[])[]) {
+    let i = 0
+    const calls: any[] = []
+    return {
+      calls,
+      chat: {
+        completions: {
+          create: async (body: any, opts: any) => {
+            calls.push({ body, opts })
+            const chunks = script[Math.min(i, script.length - 1)]()
+            i++
+            return (async function* () {
+              for (const c of chunks) yield c
+            })()
+          },
+        },
+      },
+    } as any
+  }
+
+  // ① read 并发：两个 150ms 的只读调用，墙钟应远小于串行的 300ms
+  {
+    const a = slow('ra', 150)
+    const b = slow('rb', 150)
+    const client = fakeClient([
+      () => [...toolCall(0, 'c1', 'ra'), ...toolCall(1, 'c2', 'rb')],
+      () => [textDelta('done')],
+    ])
+    const t0 = Date.now()
+    const r = await runToolLoop(client, 'm', [{ role: 'user', content: 'q' }], { tools: [a, b] })
+    const wall = Date.now() - t0
+    check('两个 read 并发（墙钟 < 260ms，串行会 ≥300ms）', wall < 260, `${wall}ms`)
+    check('并发不丢结果', r.trace.length === 2 && r.text === 'done')
+  }
+
+  // ② 完成序乱（后发的先完成）→ 喂回与落账仍按 tool_calls 原序
+  {
+    const a = slow('ra', 180) // index 0 慢
+    const b = slow('rb', 20) // index 1 快，先完成
+    const client = fakeClient([
+      () => [...toolCall(0, 'c1', 'ra'), ...toolCall(1, 'c2', 'rb')],
+      () => [textDelta('done')],
+    ])
+    const r = await runToolLoop(client, 'm', [{ role: 'user', content: 'q' }], { tools: [a, b] })
+    check('trace 按 tool_calls 原序（不是完成序）', r.trace[0].name === 'ra' && r.trace[1].name === 'rb')
+    const toolMsgs = client.calls[1].body.messages.filter((m: any) => m.role === 'tool')
+    check(
+      'tool 消息 id 对应原序',
+      toolMsgs[0]?.tool_call_id === 'c1' && toolMsgs[1]?.tool_call_id === 'c2',
+      JSON.stringify(toolMsgs.map((m: any) => m.tool_call_id)),
+    )
+  }
+
+  // ③ write 串行过门：一卡一卡问——第二张卡必须等第一张落定才出现
+  {
+    const w1 = write('w1')
+    const w2 = write('w2')
+    const seq: string[] = []
+    const gate = async (req: { name: string }) => {
+      seq.push(`ask:${req.name}`)
+      await sleep(40)
+      seq.push(`ok:${req.name}`)
+      return true
+    }
+    const client = fakeClient([
+      () => [...toolCall(0, 'c1', 'w1'), ...toolCall(1, 'c2', 'w2')],
+      () => [textDelta('done')],
+    ])
+    const r = await runToolLoop(client, 'm', [{ role: 'user', content: 'q' }], { tools: [w1, w2], onConfirm: gate })
+    check('卡一张一张出（ask→ok→ask→ok，不是两张叠着）', seq.join(' ') === 'ask:w1 ok:w1 ask:w2 ok:w2', seq.join(' '))
+    check('两张卡都批准后都真跑了', r.trace.length === 2 && r.trace.every((t) => t.result.includes('已写入')))
+  }
+
+  // ④ read+write 混轮：read 照常执行，write 照常过门，喂回原序
+  {
+    const ro = slow('ro', 30)
+    const wr = write('wr')
+    const client = fakeClient([
+      () => [...toolCall(0, 'c1', 'ro'), ...toolCall(1, 'c2', 'wr')],
+      () => [textDelta('done')],
+    ])
+    const r = await runToolLoop(client, 'm', [{ role: 'user', content: 'q' }], {
+      tools: [ro, wr],
+      onConfirm: async () => false, // 拒绝
+    })
+    check(
+      '混轮：read 执行 + write 被拒后都有结果',
+      r.trace[0].result.includes('完成') && r.trace[1].result.includes('拒绝'),
+    )
+  }
+}
+
 await terminateOcr()
 console.log(`\n探针结果: ${pass}/${pass + fail} ${fail === 0 ? '✓ 全过' : '✗ 有失败——看上面归因'}`)
 if (fail > 0) process.exitCode = 1
