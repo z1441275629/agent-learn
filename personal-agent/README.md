@@ -56,9 +56,12 @@
 - **语音输入（双引擎，工具栏切换）**：麦克风录音转文字进输入框，两条路线对照——
   - **浏览器引擎**（默认，Chrome/Edge）：Web Speech API 边说边出字（未定段随说随显、定稿定格），
     停止后可编辑再发送。零成本零后端，但不支持的浏览器（Firefox）没有此能力
-  - **大模型引擎**（`POST /api/asr`，任何浏览器可用）：MediaRecorder 整段录音 → 上传后端 →
-    OpenAI 兼容 `/audio/transcriptions`（GLM-ASR，`PA_ASR_*` 三件套可整体换平台，缺省回落
-    备用/小档/embed 档的按量端点）→ 文本说完 1~2s 一次进草稿。按时长计费（分/分钟级）
+  - **大模型引擎**（`POST /api/asr`，任何浏览器可用）：Web Audio 采 PCM → 浏览器手写 PCM16 WAV
+    （`web/src/utils/wav.ts`，纯函数探针钉死）→ 上传后端 → OpenAI 兼容
+    `/audio/transcriptions`（GLM-ASR，`PA_ASR_*` 三件套可整体换平台，缺省回落
+    备用/小档/embed 档的按量端点）→ 文本说完 1~2s 一次进草稿。按时长计费（分/分钟级）。
+    不用 MediaRecorder 直传是踩过坑的：Chrome 只产 webm/opus，GLM-ASR 端点 400
+    「不支持当前文件格式」——「OpenAI 兼容」指协议不指文件格式，wav 才是转写端点的最大公约数
   - 两引擎同一拼接语义（已有草稿则另起一行）；不支持的浏览器自动落大模型引擎、选项置灰；
     两头都没配时 🎤 一并隐藏。流式 ASR（WebSocket 边说边出字）与原生语音多模态（音频直接
     进模型）是后续层——接口形态完全不同（WS 状态机/多模态 content）
@@ -111,7 +114,7 @@ POST   /api/chat/confirm          应答写入工具确认卡（confirmId + appr
   `onConfirm` 确认门：没接门/门抛错/拒绝一律不放行（fail closed），拒绝也是一次已应答的
   工具调用（理由喂回模型）；工具清单在 `tools.ts`（core 不认识具体工具）
 
-消息如何变成 API 形状（图片省略、失败消息排除）在 `chat.ts`；摘要/窗口的调度在 `server.ts`
+消息如何变成 API 形状（图片省略、失败消息排除）在 `chat.ts`；摘要/窗口的调度在 `server/chat-service.ts`
 的 `prepareContext()`——便宜的先做（省略图片），贵的后做（LLM 摘要），最后才是丢历史的滑窗。
 记忆注入也在 `prepareContext()`（system 前缀，开窗时与摘要前缀一起保住）；抽取钩子在
 `runMemoryExtraction()`（回答落盘后异步跑、串行化、自己消化异常——绝不弄崩对话）。
@@ -145,6 +148,25 @@ LLM_VISION_API_KEY=...    # 缺省 LLM_BACKUP_API_KEY → LLM_API_KEY
 ```
 
 AI 失败（配额/网络/输出不合规重试后）返回 502，UI 提示切回本地——AI 挂不拖累本地路线。
+
+### 后端（Koa）
+
+源码在 `personal-agent/server/`（`server.ts` 是指向它的薄入口，保留 `node personal-agent/server.ts`
+的历史跑法）。按职责拆开——HTTP 形状只改 `routes/`，对话域逻辑不带 HTTP 概念：
+
+```text
+server/
+├── index.ts        # 入口：组装 + 监听 + 信号收尾（tesseract worker）
+├── app.ts          # Koa 应用工厂：错误映射 / 静态托管（public/，防目录穿越）→ 路由挂载 → 404 兜底
+├── state.ts        # 进程级单例（store/memories/kb/tools/ASR）+ 确认门状态 + 记忆抽取串行链
+├── http.ts         # JSON 应答 / 请求体读取（25MB 上限）/ dataURL 解码
+├── chat-service.ts # 对话域服务：会话详情视图 / 上下文预算调度（摘要+滑窗）/ 知识库注入
+└── routes/         # chat（SSE + 确认门）/ sessions / memories / kb / models / asr / ocr
+```
+
+SSE 的 Koa 姿势：`ctx.respond = false` 接管原生 res 直写帧（断开 abort、半截落盘、确认门随流
+收尾的流控语义原样保留）；`respond = false` 只在开流前一刻设置——之前的校验失败仍走 Koa 的
+JSON 错误路径，不会被吞。
 
 ### 前端（Vue 3 + Vite）
 

@@ -43,6 +43,7 @@ import { runToolLoop, truncateToolResult, type ToolDef } from './core/agent.ts'
 import { builtinTools } from './tools.ts'
 import { mergeVoiceResults, voiceErrorMessage, type VoiceResultItem } from './web/src/utils/voice.ts'
 import { resolveAsrConfig, validateAsrAudio, parseTranscription } from './asr.ts'
+import { encodeWav } from './web/src/utils/wav.ts'
 
 let pass = 0
 let fail = 0
@@ -971,6 +972,49 @@ console.log('Q14 服务端转写纯逻辑（配置回落矩阵 / 音频校验 / 
     threw = '抛了'
   }
   check('完全没 text 字段也抛', threw === '抛了')
+}
+
+console.log('Q15 PCM16 WAV 编码（录音上传的格式底座——webm 被转写端点 400 过，wav 手写不猜白名单）')
+{
+  const f = (...vals: number[]) => Float32Array.from(vals)
+  const wav = encodeWav([f(0, 0.5, -0.5, 1, -1, 1.5, -1.5)], 16000)
+  check(
+    'blob 类型与大小（44 头 + 2 字节/样本）',
+    wav.type === 'audio/wav' && wav.size === 44 + 7 * 2,
+    `${wav.type} ${wav.size}B`,
+  )
+  const buf = new Uint8Array(await wav.arrayBuffer())
+  const view = new DataView(buf.buffer)
+  const ascii = (o: number) => String.fromCharCode(...buf.subarray(o, o + 4))
+  check(
+    'RIFF/WAVE/fmt /data 四段标记',
+    ascii(0) === 'RIFF' && ascii(8) === 'WAVE' && ascii(12) === 'fmt ' && ascii(36) === 'data',
+  )
+  check('RIFF 块大小 = 文件 - 8', view.getUint32(4, true) === 44 + 14 - 8)
+  check(
+    'fmt：PCM 单声道 16bit 16k',
+    view.getUint16(20, true) === 1 &&
+      view.getUint16(22, true) === 1 &&
+      view.getUint16(34, true) === 16 &&
+      view.getUint32(24, true) === 16000,
+  )
+  check('字节率/块对齐派生正确', view.getUint32(28, true) === 32000 && view.getUint16(32, true) === 2)
+  check('data 块大小 = 样本数 × 2', view.getUint32(40, true) === 14)
+  const s16 = (i: number) => view.getInt16(44 + i * 2, true)
+  check(
+    '0 → 0；±0.5 截断量化',
+    s16(0) === 0 && s16(1) === Math.trunc(0.5 * 0x7fff) && s16(2) === Math.round(-0.5 * 0x8000),
+  )
+  check('+1 → 32767；-1 → -32768（小端有符号）', s16(3) === 0x7fff && s16(4) === -0x8000)
+  check('越界 clamp 到 ±1', s16(5) === 0x7fff && s16(6) === -0x8000)
+  const two = encodeWav([f(0.25), f(0.75)], 8000)
+  const tv = new DataView((await two.arrayBuffer()) as ArrayBuffer)
+  check(
+    '多块按序拼接不丢样本',
+    tv.getInt16(44, true) === Math.trunc(0.25 * 0x7fff) && tv.getInt16(46, true) === Math.trunc(0.75 * 0x7fff),
+  )
+  check('采样率写进头（8k）', tv.getUint32(24, true) === 8000)
+  check('空块输出只有头', encodeWav([], 16000).size === 44)
 }
 
 await terminateOcr()
