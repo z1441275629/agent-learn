@@ -10,6 +10,8 @@ export interface AppConfig {
   dataDir: string
   /** 单次发送的上下文预算（估算 token；超了触发摘要/窗口）。PA_CONTEXT_BUDGET 可改 */
   contextBudget: number
+  /** 长期记忆总开关（抽取 + 注入一起关）。PA_MEMORY=0 关闭 */
+  memoryEnabled: boolean
 }
 
 export function loadConfig(): AppConfig {
@@ -19,5 +21,6 @@ export function loadConfig(): AppConfig {
   return {
     dataDir,
     contextBudget: Number.isFinite(budget) && budget > 0 ? budget : 6000,
+    memoryEnabled: process.env.PA_MEMORY !== '0',
   }
 }

@@ -5,8 +5,9 @@ defineProps<{
   models: ModelEntry[]
   sessions: SessionSummary[]
   sessionId: string | null
+  memoryCount: number
 }>()
-const emit = defineEmits<{ open: [id: string]; newChat: [] }>()
+const emit = defineEmits<{ open: [id: string]; newChat: []; toggleMemory: [] }>()
 
 // Vue 3.4+ 的 defineModel：子组件里像普通 ref 一样用，父组件用 v-model:model-id 绑定
 const modelId = defineModel<string>('modelId', { required: true })
@@ -21,16 +22,14 @@ function openSession(event: Event): void {
 
 <template>
   <div class="chat-toolbar">
-    <select
-      class="picker session-picker"
-      :value="sessionId ?? ''"
-      title="历史会话"
-      @change="openSession"
-    >
+    <select class="picker session-picker" :value="sessionId ?? ''" title="历史会话" @change="openSession">
       <option v-if="!sessionId" value="">新对话（未保存）</option>
       <option v-for="s in sessions" :key="s.id" :value="s.id">{{ s.title }}</option>
     </select>
     <button class="ghost" @click="emit('newChat')">新对话</button>
+    <button class="ghost" title="跨会话长期记忆（自动抽取，可查看/删除）" @click="emit('toggleMemory')">
+      记忆 {{ memoryCount }}
+    </button>
 
     <span class="divider"></span>
 

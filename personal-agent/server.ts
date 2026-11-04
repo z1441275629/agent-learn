@@ -26,6 +26,13 @@ import { buildApiMessages, deriveTitle, type ChatUsage } from './chat.ts'
 import { loadConfig } from './core/config.ts'
 import { createSessionStore, type SessionDoc, type StoredImage } from './core/sessions.ts'
 import {
+  createMemoryStore,
+  extractMemories,
+  memorySystemContent,
+  mergeMemoryList,
+  shouldAcceptExtraction,
+} from './core/memories.ts'
+import {
   applyWindow,
   messagesTokens,
   splitForCompaction,
@@ -40,6 +47,7 @@ const HOST = process.env.PA_HOST || '127.0.0.1'
 const MAX_BODY = 25 * 1024 * 1024 // 截图/图片附件一般在几 MB；25MB 上限防误打爆
 const config = loadConfig()
 const store = createSessionStore(config.dataDir)
+const memories = createMemoryStore(config.dataDir)
 /** 同一会话同时只跑一轮：多标签页/重复点击时，后来的请求 409，避免账本写乱 */
 const runningSessions = new Set<string>()
 
@@ -154,27 +162,36 @@ async function safeAppend(
  * 摘要用 light 档并关思考：压缩是确定性的信息整理，不值得付主模型的价和推理预算。
  */
 async function prepareContext(doc: SessionDoc, entry: (typeof MODELS)[number], elideOldImages: boolean) {
-  const since = doc.summaryUntil ?? 0
-  const active = doc.messages.filter((m) => m.id > since)
-  const buildView = async (messages: typeof active, summary: string | undefined) => {
+  const memoryEntries = config.memoryEnabled ? await memories.list() : []
+  const buildView = async (messages: SessionDoc['messages'], summary: string | undefined) => {
     const api = await buildApiMessages(messages, {
       elideOldImages,
       loadImage: (file) => store.readImage(doc.id, file),
     })
-    return summary ? [{ role: 'user', content: `【前情摘要】\n${summary}` }, ...api] : api
+    return [
+      // 记忆是 system 前缀、摘要是 user 前缀——开窗时这两个前缀都要保住（prefixCount 见下）
+      ...(memoryEntries.length ? [{ role: 'system', content: memorySystemContent(memoryEntries) }] : []),
+      ...(summary ? [{ role: 'user', content: `【前情摘要】\n${summary}` }] : []),
+      ...api,
+    ]
   }
+  const prefixLen = (memoryEntries.length ? 1 : 0) + (doc.summary ? 1 : 0)
 
-  const view = await buildView(active, doc.summary)
+  const view = await buildView(
+    doc.messages.filter((m) => m.id > (doc.summaryUntil ?? 0)),
+    doc.summary,
+  )
   const tokens = messagesTokens(view)
   if (tokens <= config.contextBudget) return view
 
+  const active = doc.messages.filter((m) => m.id > (doc.summaryUntil ?? 0))
   const plan = splitForCompaction(active, {
     budgetTokens: config.contextBudget,
     tokenOfTurn: (turn) => storedMessagesTokens(turn),
   })
   if (plan.summarize.length === 0) {
     console.warn(`[pa] 上下文 ${Math.round(tokens)} > 预算 ${config.contextBudget}，但没有可压缩的旧轮——开窗兜底`)
-    return applyWindow(view, config.contextBudget, doc.summary ? 1 : 0)
+    return applyWindow(view, config.contextBudget, prefixLen)
   }
 
   const summarizer = MODELS.find((m) => m.id === 'light') ?? entry
@@ -195,13 +212,52 @@ async function prepareContext(doc: SessionDoc, entry: (typeof MODELS)[number], e
     )
     if (after > config.contextBudget) {
       console.warn(`[pa] 压缩后仍超预算——开窗兜底`)
-      return applyWindow(next, config.contextBudget, 1)
+      return applyWindow(next, config.contextBudget, memoryEntries.length + 1)
     }
     return next
   } catch (err: any) {
     console.error(`[pa] 摘要失败，退回滑动窗口：${err?.message ?? err}`)
-    return applyWindow(view, config.contextBudget, doc.summary ? 1 : 0)
+    return applyWindow(view, config.contextBudget, prefixLen)
   }
+}
+
+// ---------- 记忆抽取钩子：回答完成后异步跑，绝不阻塞/弄崩对话 ----------
+// 课程 07 的教训在这条链上全用得上：
+//   - 不 await 的钩子里异常逃逸 = unhandled rejection 崩进程——必须自己消化
+//   - 两个会话同时抽取 = 同一文件的读改写竞态——串行化（链式 promise）
+//   - 输出不合法/清空式输出 = 守门拒绝、大声报错，记忆保持原样（静默丢记忆比崩溃更糟）
+let memoryChain: Promise<void> = Promise.resolve()
+function runMemoryExtraction(sid: string, turn: { userText: string; assistantText: string }): void {
+  memoryChain = memoryChain
+    .then(async () => {
+      if (!config.memoryEnabled) return
+      const extractor = MODELS.find((m) => m.id === 'light') ?? MODELS[0]
+      const existing = await memories.list()
+      const result = await extractMemories(
+        extractor.client,
+        extractor.model,
+        existing.map((e) => e.text),
+        [
+          { role: 'user', text: turn.userText },
+          { role: 'assistant', text: turn.assistantText },
+        ],
+        { thinkingParams: thinkingParams('off') },
+      )
+      if (!shouldAcceptExtraction(result.texts, existing.length)) {
+        console.warn(`[pa] 记忆抽取想清空 ${existing.length} 条——拒绝（真要清空请用界面）`)
+        return
+      }
+      const diff = mergeMemoryList(existing, result.texts)
+      if (diff.added.length === 0 && diff.removed.length === 0) return // 没变化不写盘
+      await memories.save(diff.entries)
+      console.log(
+        `[pa] 记忆更新：+${diff.added.length} -${diff.removed.length} → 共 ${diff.entries.length} 条` +
+          `（抽取 ${result.promptTokens}+${result.completionTokens} tokens）· session ${sid}`,
+      )
+      for (const t of diff.added) console.log(`[pa] 记忆 + ${t}`)
+      for (const t of diff.removed) console.log(`[pa] 记忆 - ${t}`)
+    })
+    .catch((err: any) => console.error(`[pa] 记忆抽取失败（本轮跳过，记忆保持原样）：${err?.message ?? err}`))
 }
 
 // ---------- 对话：服务端持有账本，客户端只发新消息；流式 SSE ----------
@@ -327,6 +383,8 @@ async function handleChat(req: http.IncomingMessage, res: http.ServerResponse) {
         console.log(
           `[pa] chat ${entry.id}(${entry.model}) · ${textOut.length} 字 · ${usage?.total_tokens ?? '?'} tokens · ${elapsedMs}ms · session ${sid}`,
         )
+        // 回答完整落盘后才抽记忆：半截/出错的回答不抽（对话可能还没说完）
+        runMemoryExtraction(sid, { userText: text, assistantText: textOut })
       }
     } catch (err: any) {
       const elapsedMs = Date.now() - t0
@@ -396,6 +454,21 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse) {
         'Cache-Control': 'private, max-age=31536000, immutable',
       })
       return res.end(image.data)
+    }
+
+    // 记忆（跨会话长期记忆的查看/删除——用户能看到它记了什么，错了能删）
+    if (req.method === 'GET' && url.pathname === '/api/memories') {
+      return json(res, 200, { memories: await memories.list() })
+    }
+    if (req.method === 'DELETE' && url.pathname === '/api/memories') {
+      await memories.clear()
+      return json(res, 200, { ok: true })
+    }
+    const memoryMatch = /^\/api\/memories\/([^/]+)$/.exec(url.pathname)
+    if (memoryMatch && req.method === 'DELETE') {
+      const ok = await memories.remove(decodeURIComponent(memoryMatch[1]))
+      if (!ok) return json(res, 404, { error: '没有这条记忆' })
+      return json(res, 200, { ok: true })
     }
 
     if (req.method === 'POST' && url.pathname === '/api/chat') return await handleChat(req, res)

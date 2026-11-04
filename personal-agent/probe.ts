@@ -9,6 +9,15 @@ import { parseVisionLines } from './vision-ocr.ts'
 import { buildApiMessages, deriveTitle, type StoredMessageLike } from './chat.ts'
 import { createSessionStore, parseImageDataUrl } from './core/sessions.ts'
 import {
+  createMemoryStore,
+  extractMemories,
+  buildExtractionUserPrompt,
+  memorySystemContent,
+  mergeMemoryList,
+  parseMemoryList,
+  shouldAcceptExtraction,
+} from './core/memories.ts'
+import {
   IMAGE_TOKEN_ESTIMATE,
   applyWindow,
   contentTokens,
@@ -298,6 +307,103 @@ console.log('Q7 上下文预算（token 估算 / 轮分组 / 摘要+滑窗兜底
       }
       check('空摘要明确报 502（触发窗口兜底，不静默吞掉上下文）', code === 502)
     }
+  }
+}
+
+console.log('Q8 长期记忆（抽取输出守门 / 完整列表重放 / 存储回环）')
+{
+  check('标准数组解析', parseMemoryList('["a","b"]')?.join('|') === 'a|b')
+  check('剥围栏 + 前后废话截取 JSON 段', parseMemoryList('好的：```json\n["a"]\n``` 完成')?.[0] === 'a')
+  check('空白条目被过滤', parseMemoryList('["a","  "]')?.length === 1)
+  check('非数组返回 null（不许静默吞）', parseMemoryList('{"items":[]}') === null)
+  check('对象元素返回 null（形状不对就是不对）', parseMemoryList('[{"text":"a"}]') === null)
+  check('超长条目返回 null（提示词约束每条一句话）', parseMemoryList(`["${'x'.repeat(301)}"]`) === null)
+  check('彻底不是 JSON 返回 null', parseMemoryList('抱歉我无法完成') === null)
+
+  {
+    const now = new Date('2026-11-04T00:00:00Z')
+    const existing = [
+      { id: 'm1', text: '用户家里 5 口人', createdAt: '2026-11-01', updatedAt: '2026-11-01' },
+      { id: 'm2', text: '用户在做 Agent 开发', createdAt: '2026-11-02', updatedAt: '2026-11-02' },
+    ]
+    const diff = mergeMemoryList(existing, ['用户在做 Agent 开发', '用户 2026-11-04 起每天跑步'], now)
+    check('措辞未变的条目沿用原 id（同一条记忆不是新记忆）', diff.entries[0].id === 'm2')
+    check('新文本发新 id + 时间戳', diff.entries[1].id !== 'm1' && diff.entries[1].createdAt === now.toISOString())
+    check(
+      'diff 正确报告增删',
+      diff.added.join() === '用户 2026-11-04 起每天跑步' && diff.removed.join() === '用户家里 5 口人',
+    )
+  }
+
+  check('守门：已有记忆非空时拒绝清空式输出', shouldAcceptExtraction([], 3) === false)
+  check('守门：空库接受空列表（还没有可丢的）', shouldAcceptExtraction([], 0) === true)
+  check('守门：非空列表总是接受', shouldAcceptExtraction(['a'], 3) === true)
+
+  check(
+    'system 注入含全部条目与使用说明',
+    memorySystemContent([{ text: 'A' }, { text: 'B' }]).includes('- A') &&
+      memorySystemContent([{ text: 'A' }]).includes('长期记忆'),
+  )
+  {
+    const prompt = buildExtractionUserPrompt(['旧事实'], '用户：新对话', '2026-11-04')
+    check('抽取输入带今天日期（绝对日期规则的锚点）', prompt.includes('今天是 2026-11-04'))
+    check(
+      '抽取输入同时带已有记忆与新对话',
+      prompt.includes('【已有记忆】') && prompt.includes('- 旧事实') && prompt.includes('【新对话】'),
+    )
+  }
+
+  {
+    let captured: any
+    const fakeClient = {
+      chat: {
+        completions: {
+          create: async (params: any) => {
+            captured = params
+            return {
+              choices: [{ message: { content: '["记忆甲"]' } }],
+              usage: { prompt_tokens: 30, completion_tokens: 5 },
+            }
+          },
+        },
+      },
+    } as any
+    const result = await extractMemories(fakeClient, 'light-model', ['旧事实'], [{ role: 'user', text: '记住：甲' }], {
+      thinkingParams: { thinking: { type: 'disabled' } },
+    })
+    check('抽取返回解析后的列表与 usage', result.texts.join() === '记忆甲' && result.promptTokens === 30)
+    check('抽取系统提示词含「一条不能丢」约束', captured.messages[0].content.includes('一条不能丢'))
+    check('抽取关思考（不付推理预算）', captured.thinking?.type === 'disabled')
+    check('抽取不传 tools', !('tools' in captured))
+    {
+      const brokenClient = {
+        chat: { completions: { create: async () => ({ choices: [{ message: { content: '我说不了' } }] }) } },
+      } as any
+      let code = 0
+      try {
+        await extractMemories(brokenClient, 'm', [], [{ role: 'user', text: 'x' }])
+      } catch (err: any) {
+        code = err?.code ?? 0
+      }
+      check('抽取输出不合法明确报 502（守门触发，记忆保持原样）', code === 502)
+    }
+  }
+
+  {
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'pa-mem-'))
+    const memStore = createMemoryStore(tmp)
+    check('空库返回空列表', (await memStore.list()).length === 0)
+    const now = new Date('2026-11-04T00:00:00Z')
+    const diff = mergeMemoryList([], ['事实一', '事实二'], now)
+    await memStore.save(diff.entries)
+    const loaded = await memStore.list()
+    check('保存/读回一致', loaded.length === 2 && loaded[0].text === '事实一')
+    check('删除存在的 id 返回 true', (await memStore.remove(loaded[0].id)) === true)
+    check('删除后的列表少一条', (await memStore.list()).length === 1)
+    check('删除不存在的 id 返回 false', (await memStore.remove('nope')) === false)
+    await memStore.clear()
+    check('清空后为空', (await memStore.list()).length === 0)
+    await fs.rm(tmp, { recursive: true, force: true })
   }
 }
 

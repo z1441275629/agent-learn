@@ -40,6 +40,14 @@ export interface SessionSummary {
   messageCount: number
 }
 
+/** 跨会话长期记忆（服务端抽取落盘，用户可查看/删除） */
+export interface MemoryItem {
+  id: string
+  text: string
+  createdAt: string
+  updatedAt: string
+}
+
 export interface SessionDetail {
   id: string
   title: string

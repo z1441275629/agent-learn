@@ -26,6 +26,10 @@
   （关思考），`summary` + `summaryUntil` 落盘——之后每轮只发「摘要 + 截止点之后的原文」，
   不重复摘要、重启也有效；摘要失败或仍超预算则按整轮滑动窗口兜底，最新一轮永远保留。
   原文在账本里始终完整，界面历史不受影响
+- **长期记忆**：回答完成后，后台把对话里关于用户的持久事实/偏好抽出来存进 `data/memories.json`
+  （light 档、关思考），下一轮起以 system 前缀注入——**跨会话生效**。工具栏「记忆 N」可查看/删除，
+  记错了能删；抽取输出过守门（非数组/对象元素/超长条目拒绝，已有记忆非空时拒绝清空式输出），
+  失败只跳过本轮、记忆保持原样。`PA_MEMORY=0` 整体关闭（抽取+注入一起停）
 - **语音输入**：按钮已占位，下一版接
 
 服务端 `POST /api/chat`：客户端只发**新消息**（历史在服务端账本里），`stream:true` +
@@ -38,6 +42,10 @@ GET    /api/sessions              列表（标题/更新时间/消息数）
 GET    /api/sessions/:id          详情（消息 + 图片 URL）
 DELETE /api/sessions/:id          删除
 GET    /api/sessions/:id/images/* 会话图片（字节落盘，不塞 JSON）
+
+GET    /api/memories              长期记忆列表
+DELETE /api/memories/:id          删除一条记忆
+DELETE /api/memories              清空
 ```
 
 ### 产品核心（personal-agent/core/）
@@ -50,9 +58,14 @@ GET    /api/sessions/:id/images/* 会话图片（字节落盘，不塞 JSON）
   原子写（tmp → rename）、id/文件名白名单防目录穿越；存储根由构造参数注入，不写死
 - `core/context.ts`：上下文预算。token 粗估（中文 1 字/token、英文 4 字符/token、图片固定 1400/张）、
   按轮分组、摘要/保留切分、滑窗兜底、摘要调用；纯函数部分全部由探针覆盖
+- `core/memories.ts`：长期记忆。抽取提示词/输出守门（课程 07 B 路线：回答完成钩子抽取，
+  完整列表重放保 id）、`memories.json` 单文件原子存储；去重合并不做向量——抽取时把已有记忆
+  整份喂给模型由它输出更新版，代码只守门
 
 消息如何变成 API 形状（图片省略、失败消息排除）在 `chat.ts`；摘要/窗口的调度在 `server.ts`
 的 `prepareContext()`——便宜的先做（省略图片），贵的后做（LLM 摘要），最后才是丢历史的滑窗。
+记忆注入也在 `prepareContext()`（system 前缀，开窗时与摘要前缀一起保住）；抽取钩子在
+`runMemoryExtraction()`（回答落盘后异步跑、串行化、自己消化异常——绝不弄崩对话）。
 
 ### 截图取字（模块 13 · 多模态第一件）
 
@@ -123,7 +136,8 @@ PA_DATA_DIR=D:/pa-data node personal-agent/server.ts
 ```
 
 环境变量：`PA_PORT`（默认 8798）、`PA_HOST`（默认 127.0.0.1，只本机）、
-`PA_DATA_DIR`（默认 `personal-agent/data`）、`PA_CONTEXT_BUDGET`（默认 6000 估算 token）。
+`PA_DATA_DIR`（默认 `personal-agent/data`）、`PA_CONTEXT_BUDGET`（默认 6000 估算 token）、
+`PA_MEMORY`（`0` 关闭长期记忆）。
 
 > `PA_HOST=0.0.0.0` 会把**全部会话内容和图片**暴露给局域网，且目前没有鉴权——只在可信网络临时用。
 

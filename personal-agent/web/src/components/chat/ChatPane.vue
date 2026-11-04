@@ -1,7 +1,10 @@
 <script setup lang="ts">
+import { watch } from 'vue'
 import { useChat } from '../../composables/useChat'
+import { useMemories } from '../../composables/useMemories'
 import ChatComposer from './ChatComposer.vue'
 import ChatToolbar from './ChatToolbar.vue'
+import MemoryPanel from './MemoryPanel.vue'
 import MessageList from './MessageList.vue'
 
 defineProps<{ active: boolean }>()
@@ -26,7 +29,20 @@ const {
   stop,
 } = useChat()
 
-void init()
+const {
+  items: memoryItems,
+  open: memoryOpen,
+  load: loadMemories,
+  toggle: toggleMemory,
+  remove: removeMemory,
+  clearAll: clearMemories,
+} = useMemories()
+void init().then(() => loadMemories())
+
+// 回答结束后抽空刷一次记忆数：抽取在服务端 done 之后异步跑（1~3 秒），这里等 2.5s 再取
+watch(streaming, (now, was) => {
+  if (was && !now) setTimeout(() => void loadMemories(), 2500)
+})
 </script>
 
 <template>
@@ -38,8 +54,17 @@ void init()
       :models="models"
       :sessions="sessions"
       :session-id="sessionId"
+      :memory-count="memoryItems.length"
       @open="openSession"
       @new-chat="newChat"
+      @toggle-memory="toggleMemory"
+    />
+    <MemoryPanel
+      v-if="memoryOpen"
+      :items="memoryItems"
+      @close="memoryOpen = false"
+      @remove="removeMemory"
+      @clear="clearMemories"
     />
     <MessageList :messages="messages" />
     <ChatComposer

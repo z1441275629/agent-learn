@@ -3,6 +3,7 @@
 import type {
   ChatChunk,
   ChatRequest,
+  MemoryItem,
   ModelsPayload,
   OcrRequest,
   OcrResponse,
@@ -87,4 +88,23 @@ export async function runOcr(req: OcrRequest): Promise<OcrResponse> {
     throw new Error(msg + (res.status === 502 ? ' ——可切到「本地」引擎重试' : ''))
   }
   return res.json()
+}
+
+// ---------- 长期记忆（查看/删除——它记了什么，用户得看得见、管得着） ----------
+
+export async function listMemories(): Promise<MemoryItem[]> {
+  const res = await fetch('/api/memories')
+  if (!res.ok) throw new Error(await readError(res))
+  const j = await res.json()
+  return j.memories as MemoryItem[]
+}
+
+export async function deleteMemory(id: string): Promise<void> {
+  const res = await fetch(`/api/memories/${encodeURIComponent(id)}`, { method: 'DELETE' })
+  if (!res.ok) throw new Error(await readError(res))
+}
+
+export async function clearMemories(): Promise<void> {
+  const res = await fetch('/api/memories', { method: 'DELETE' })
+  if (!res.ok) throw new Error(await readError(res))
 }
