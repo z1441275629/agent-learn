@@ -11,6 +11,8 @@ export interface ModelsPayload {
   models: ModelEntry[]
   defaultModelId: string
   thinkingLevels: string[]
+  /** 大模型转写可用时的模型名（语音引擎「大模型」选项的依据）；null = 未配置 */
+  asrModel: string | null
 }
 
 /** 服务商原始 usage：prompt/completion/total + cached_tokens/reasoning_tokens 等明细，形状随平台而异 */

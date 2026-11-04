@@ -19,6 +19,8 @@ const {
   elideImages,
   kbSearch,
   toolsOn,
+  voiceEngine,
+  asrModel,
   sessions,
   sessionId,
   messages,
@@ -64,9 +66,11 @@ watch(streaming, (now, was) => {
         v-model:elide="elideImages"
         v-model:kb-search="kbSearch"
         v-model:tools="toolsOn"
+        v-model:voice-engine="voiceEngine"
         :models="models"
         :memory-count="memoryItems.length"
         :kb-count="kbDocs.length"
+        :asr-model="asrModel"
         @toggle-memory="toggleMemory"
         @toggle-kb="toggleKb"
       />
@@ -77,6 +81,8 @@ watch(streaming, (now, was) => {
         :pending="pending"
         :streaming="streaming"
         :active="active"
+        :voice-engine="voiceEngine"
+        :asr-model="asrModel"
         @send="send"
         @stop="stop"
         @add-images="addImages"

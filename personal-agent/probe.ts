@@ -42,6 +42,7 @@ import {
 import { runToolLoop, truncateToolResult, type ToolDef } from './core/agent.ts'
 import { builtinTools } from './tools.ts'
 import { mergeVoiceResults, voiceErrorMessage, type VoiceResultItem } from './web/src/utils/voice.ts'
+import { resolveAsrConfig, validateAsrAudio, parseTranscription } from './asr.ts'
 
 let pass = 0
 let fail = 0
@@ -852,7 +853,11 @@ console.log('Q12 记忆写侧对偶（forget 精确删 / add_note 入库即检�
 console.log('Q13 语音输入纯逻辑（累积结果全量重建 / 错误码给人话）')
 {
   // 照真实 DOM 形状造段：results[i][0] 是 Alternative 对象，文本在 .transcript（不是字符串）
-  const item = (text: string, isFinal: boolean): VoiceResultItem => ({ isFinal, length: 1, 0: { transcript: text, confidence: 0.9 } })
+  const item = (text: string, isFinal: boolean): VoiceResultItem => ({
+    isFinal,
+    length: 1,
+    0: { transcript: text, confidence: 0.9 },
+  })
   check(
     'interim 不进 final',
     mergeVoiceResults([item('今天', false)]).finalText === '' &&
@@ -873,7 +878,8 @@ console.log('Q13 语音输入纯逻辑（累积结果全量重建 / 错误码给
   )
   check(
     '多候选只取最优 [0]',
-    mergeVoiceResults([{ isFinal: true, length: 2, 0: { transcript: '最优' }, 1: { transcript: '备选' } }]).finalText === '最优',
+    mergeVoiceResults([{ isFinal: true, length: 2, 0: { transcript: '最优' }, 1: { transcript: '备选' } }])
+      .finalText === '最优',
   )
   check(
     '文本取自 .transcript（对象不会拼成 [object …]）',
@@ -884,6 +890,87 @@ console.log('Q13 语音输入纯逻辑（累积结果全量重建 / 错误码给
   check('无声可静默处理', voiceErrorMessage({ error: 'no-speech' }).includes('没听到'))
   check('aborted 静默（正常停止路径）', voiceErrorMessage({ error: 'aborted' }) === '')
   check('未知错误也有一句话', voiceErrorMessage({ error: 'strange' }).includes('strange'))
+}
+
+console.log('Q14 服务端转写纯逻辑（配置回落矩阵 / 音频校验 / 响应解析）')
+{
+  // 配置回落：专用 PA_ASR_* > 小档 LLM_LIGHT_* > Embed 档；缺 baseUrl 或 key = 整个能力不可用（null）
+  const full = resolveAsrConfig({ PA_ASR_BASE_URL: 'https://a.example/v1', PA_ASR_API_KEY: 'k1', PA_ASR_MODEL: 'm1' })
+  check('专用配置全量生效', full?.baseUrl === 'https://a.example/v1' && full?.apiKey === 'k1' && full?.model === 'm1')
+  const partial = resolveAsrConfig({ PA_ASR_BASE_URL: 'https://a.example/v1', PA_ASR_API_KEY: 'k1' })
+  check('model 缺省 glm-asr', partial?.model === 'glm-asr')
+  const fallback = resolveAsrConfig({ LLM_LIGHT_BASE_URL: 'https://light.example/v1', LLM_LIGHT_API_KEY: 'k2' })
+  check('回落到小档配置（无备用档时）', fallback?.baseUrl === 'https://light.example/v1' && fallback?.apiKey === 'k2')
+  const embedFallback = resolveAsrConfig({ LLM_EMBED_BASE_URL: 'https://e.example/v1', LLM_EMBED_API_KEY: 'k3' })
+  check('再回落到 embed 档', embedFallback?.baseUrl === 'https://e.example/v1')
+  // ASR 走按量计费端点：备用档（bigmodel paas）优先于小档（coding 订阅端点不挂音频路由，实测 404）
+  const backupFirst = resolveAsrConfig({
+    LLM_BACKUP_BASE_URL: 'https://backup.example/v4',
+    LLM_BACKUP_API_KEY: 'kb',
+    LLM_LIGHT_BASE_URL: 'https://light.example/v1',
+    LLM_LIGHT_API_KEY: 'kl',
+  })
+  check(
+    '备用档优先于小档（音频路由只在按量端点）',
+    backupFirst?.baseUrl === 'https://backup.example/v4' && backupFirst?.apiKey === 'kb',
+  )
+  check(
+    '尾斜杠裁掉',
+    resolveAsrConfig({ PA_ASR_BASE_URL: 'https://a/v1/', PA_ASR_API_KEY: 'k' })?.baseUrl === 'https://a/v1',
+  )
+  check(
+    '专用优先于回落',
+    resolveAsrConfig({
+      PA_ASR_BASE_URL: 'https://a/v1',
+      PA_ASR_API_KEY: 'k',
+      LLM_LIGHT_BASE_URL: 'https://l/v1',
+      LLM_LIGHT_API_KEY: 'k',
+    })?.baseUrl === 'https://a/v1',
+  )
+  check('缺 baseUrl = 不可用', resolveAsrConfig({ PA_ASR_API_KEY: 'k' }) === null)
+  check('缺 key = 不可用', resolveAsrConfig({ PA_ASR_BASE_URL: 'https://a/v1' }) === null)
+  check('空环境 = 不可用', resolveAsrConfig({}) === null)
+
+  // 音频校验：MediaRecorder 给的 mime 带 ;codecs= 参数，剥掉再对白名单
+  check('webm;codecs=opus 放行', validateAsrAudio('audio/webm;codecs=opus', 1024).ok)
+  check('wav/wave/x-wav 都是 wav 家族', validateAsrAudio('audio/wave', 1).ok && validateAsrAudio('audio/x-wav', 1).ok)
+  check('mp3 的两种写法都放行', validateAsrAudio('audio/mpeg', 1).ok && validateAsrAudio('audio/mp3', 1).ok)
+  const bad = validateAsrAudio('video/mp4', 1024)
+  check('非音频 mime 拒绝（400）', !bad.ok && bad.code === 400, bad.error ?? '')
+  const empty = validateAsrAudio('audio/webm', 0)
+  check('空数据拒绝（400）', !empty.ok && empty.code === 400)
+  const big = validateAsrAudio('audio/webm', 26 * 1024 * 1024)
+  check('超 25MB 拒绝（413）', !big.ok && big.code === 413)
+  check('裸 mime 不带参数也放行', validateAsrAudio('audio/webm', 10).ok)
+
+  // 响应解析：OpenAI 兼容 {text}，取完 trim；错误形状抛出来交给路由转 502
+  check('正常响应取 text 并 trim', parseTranscription({ text: '  今天天气怎么样 \n' }) === '今天天气怎么样')
+  check('text 为空串照常返回', parseTranscription({ text: '' }) === '')
+  check(
+    'json 里 text 为数字不接',
+    (() => {
+      try {
+        parseTranscription({ text: 123 })
+        return false
+      } catch {
+        return true
+      }
+    })(),
+  )
+  let threw = ''
+  try {
+    parseTranscription({ error: { message: 'bad key' } })
+  } catch (e: any) {
+    threw = e?.message ?? ''
+  }
+  check('错误形状抛异常', threw.includes('bad key'), threw)
+  try {
+    parseTranscription({ foo: 1 })
+    threw = '没抛'
+  } catch {
+    threw = '抛了'
+  }
+  check('完全没 text 字段也抛', threw === '抛了')
 }
 
 await terminateOcr()

@@ -91,6 +91,30 @@ export async function runOcr(req: OcrRequest): Promise<OcrResponse> {
   return res.json()
 }
 
+// ---------- 大模型语音转写（方式①：MediaRecorder 整段上传 → /api/asr → 文本） ----------
+
+export interface AsrResult {
+  text: string
+  elapsedMs: number
+  model: string
+}
+
+export async function transcribeAudio(audio: Blob): Promise<AsrResult> {
+  const dataUrl = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(String(reader.result))
+    reader.onerror = () => reject(reader.error ?? new Error('读音频失败'))
+    reader.readAsDataURL(audio)
+  })
+  const res = await fetch('/api/asr', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ audio: dataUrl }),
+  })
+  if (!res.ok) throw new Error(await readError(res))
+  return res.json()
+}
+
 // ---------- 长期记忆（查看/删除——它记了什么，用户得看得见、管得着） ----------
 
 export async function listMemories(): Promise<MemoryItem[]> {

@@ -9,6 +9,7 @@ import { reactive, ref } from 'vue'
 import { confirmToolCall, fetchModels, getSession, listSessions, streamChat } from '../api'
 import type { ConfirmCard, DisplayMessage, ModelEntry, PendingAttachment, SessionSummary } from '../types'
 import { toast } from '../utils/toast'
+import { speechRecognitionSupported } from '../utils/voice'
 
 const MAX_DOC_BYTES = 100 * 1024
 
@@ -22,6 +23,9 @@ export function useChat() {
   const elideImages = ref(true)
   const kbSearch = ref(true)
   const toolsOn = ref(true)
+  // 语音引擎：浏览器原生（免费实时）vs 大模型转写（/api/asr，说完出结果）
+  const voiceEngine = ref<'browser' | 'asr'>('browser')
+  const asrModel = ref<string | null>(null)
 
   const sessions = ref<SessionSummary[]>([])
   const sessionId = ref<string | null>(null)
@@ -39,6 +43,11 @@ export function useChat() {
       if (!modelId.value || !ids.has(modelId.value)) {
         modelId.value = payload.defaultModelId || payload.models[0]?.id || 'main'
       }
+      asrModel.value = payload.asrModel ?? null
+      // 引擎缺省：浏览器不支持原生 SR 且配了大模型转写 → 直接落在大模型；配置消失则回落浏览器
+      if (!speechRecognitionSupported() && payload.asrModel && voiceEngine.value === 'browser')
+        voiceEngine.value = 'asr'
+      if (!payload.asrModel && voiceEngine.value === 'asr') voiceEngine.value = 'browser'
     } catch (e: any) {
       toast('模型目录加载失败：' + (e?.message ?? e))
     }
@@ -253,6 +262,8 @@ export function useChat() {
     elideImages,
     kbSearch,
     toolsOn,
+    voiceEngine,
+    asrModel,
     sessions,
     sessionId,
     messages,

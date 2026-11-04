@@ -35,6 +35,7 @@ import {
 import { createKbStore, renderKbBlock, withKbContext } from './core/rag.ts'
 import { runToolLoop, type ToolTrace } from './core/agent.ts'
 import { builtinTools } from './tools.ts'
+import { resolveAsrConfig, transcribe, validateAsrAudio } from './asr.ts'
 import {
   applyWindow,
   messagesTokens,
@@ -53,6 +54,8 @@ const store = createSessionStore(config.dataDir)
 const memories = createMemoryStore(config.dataDir)
 const kb = createKbStore(config.dataDir)
 const tools = builtinTools({ kb, memories })
+// 大模型转写配置（PA_ASR_* 可整体换平台；缺省回落小档/embed 档端点与 key）
+const ASR = resolveAsrConfig(process.env)
 /** 同一会话同时只跑一轮：多标签页/重复点击时，后来的请求 409，避免账本写乱 */
 const runningSessions = new Set<string>()
 
@@ -510,12 +513,13 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse) {
       })
     }
 
-    // 模型目录 + 思考档位（UI 下拉框数据源）
+    // 模型目录 + 思考档位（UI 下拉框数据源）；asrModel = 大模型转写可用与否（语音引擎选项的依据）
     if (req.method === 'GET' && url.pathname === '/api/models') {
       return json(res, 200, {
         models: MODELS.map(({ id, label, model, vision }) => ({ id, label, model, vision })),
         defaultModelId: DEFAULT_MODEL_ID,
         thinkingLevels: THINKING_LEVELS,
+        asrModel: ASR?.model ?? null,
       })
     }
 
@@ -604,6 +608,40 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse) {
     }
 
     if (req.method === 'POST' && url.pathname === '/api/chat') return await handleChat(req, res)
+
+    // 大模型语音转写（方式①）：前端 MediaRecorder 整段上传 → OpenAI 兼容转写端点 → 文本回输入框
+    if (req.method === 'POST' && url.pathname === '/api/asr') {
+      if (!ASR)
+        return json(res, 503, { error: '未配置转写端点（PA_ASR_BASE_URL / PA_ASR_API_KEY，或回落小档/embed 档）' })
+      const body = JSON.parse(await readBody(req)) as { audio?: string; mime?: string; name?: string }
+      if (typeof body.audio !== 'string' || !body.audio)
+        return json(res, 400, { error: '缺 audio 字段（dataURL 或 base64）' })
+      // dataURL 前缀自带 mime（可带 ;codecs=… 等参数——MediaRecorder 的 Blob type 就有），优先于 body.mime
+      let mime = String(body.mime ?? '')
+      let b64 = body.audio
+      const s = body.audio.trim()
+      if (s.startsWith('data:')) {
+        const comma = s.indexOf(',')
+        const meta = s.slice(5, comma) // 形如 audio/webm;codecs=opus;base64
+        const cut = meta.lastIndexOf(';base64')
+        if (cut >= 0) {
+          mime = meta.slice(0, cut)
+          b64 = s.slice(comma + 1)
+        }
+      }
+      const data = Buffer.from(b64, 'base64')
+      const check = validateAsrAudio(mime, data.length)
+      if (!check.ok) return json(res, check.code, { error: check.error })
+      try {
+        const r = await transcribe(ASR, { data, mime, name: body.name })
+        console.log(
+          `[pa] 语音转写 ${ASR.model} · ${(data.length / 1024) | 0}KB · ${r.text.length} 字 · ${r.elapsedMs}ms`,
+        )
+        return json(res, 200, { text: r.text, elapsedMs: r.elapsedMs, model: ASR.model })
+      } catch (err: any) {
+        return json(res, 502, { error: `转写失败：${err?.message ?? err}` })
+      }
+    }
 
     if (req.method === 'POST' && url.pathname === '/api/ocr') {
       const body = JSON.parse(await readBody(req)) as { image?: string; engine?: string }

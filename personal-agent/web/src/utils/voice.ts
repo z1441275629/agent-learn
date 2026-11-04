@@ -32,6 +32,12 @@ export function mergeVoiceResults(results: Iterable<VoiceResultItem>): { finalTe
   return { finalText, interimText }
 }
 
+/** 当前浏览器有没有原生 SpeechRecognition（Chrome/Edge 有；Firefox 没有） */
+export function speechRecognitionSupported(): boolean {
+  const w = window as any
+  return !!(w.SpeechRecognition ?? w.webkitSpeechRecognition)
+}
+
 /** onerror 的 error 码 → 给用户看的话。'' = 静默（aborted 是正常停止路径） */
 export function voiceErrorMessage(err: { error?: string }): string {
   switch (err?.error) {

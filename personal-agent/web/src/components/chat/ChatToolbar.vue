@@ -1,10 +1,13 @@
 <script setup lang="ts">
 import type { ModelEntry } from '../../types'
+import { speechRecognitionSupported } from '../../utils/voice'
 
 defineProps<{
   models: ModelEntry[]
   memoryCount: number
   kbCount: number
+  /** 大模型转写可用时的模型名（null = 没配端点，语音引擎切换整个隐藏） */
+  asrModel: string | null
 }>()
 const emit = defineEmits<{ toggleMemory: []; toggleKb: [] }>()
 
@@ -14,6 +17,7 @@ const thinking = defineModel<string>('thinking', { required: true })
 const elide = defineModel<boolean>('elide', { required: true })
 const kbSearch = defineModel<boolean>('kbSearch', { required: true })
 const tools = defineModel<boolean>('tools', { required: true })
+const voiceEngine = defineModel<'browser' | 'asr'>('voiceEngine', { required: true })
 </script>
 
 <template>
@@ -38,6 +42,15 @@ const tools = defineModel<boolean>('tools', { required: true })
       <option value="medium">思考：中</option>
       <option value="high">思考：高</option>
     </select>
+    <select
+      v-if="asrModel"
+      v-model="voiceEngine"
+      class="picker"
+      title="语音输入引擎：浏览器原生（免费、边说边出字，需 Chrome/Edge）vs 大模型转写（录音上传 /api/asr，说完约 1~2 秒出结果，按量计费）"
+    >
+      <option value="browser" :disabled="!speechRecognitionSupported()">语音：浏览器</option>
+      <option value="asr">语音：大模型</option>
+    </select>
     <label class="toggle" title="聊天 API 无状态：历史图片每轮都会重新计费。开启后旧图替换成文字占位">
       <input v-model="elide" type="checkbox" />
       图片仅最近一轮
@@ -46,7 +59,10 @@ const tools = defineModel<boolean>('tools', { required: true })
       <input v-model="tools" type="checkbox" />
       工具调用
     </label>
-    <label class="toggle" title="提问时按关键词检索知识库，命中的笔记片段作为参考注入（本地 BM25，零 API 成本）。工具调用开启时此开关不生效">
+    <label
+      class="toggle"
+      title="提问时按关键词检索知识库，命中的笔记片段作为参考注入（本地 BM25，零 API 成本）。工具调用开启时此开关不生效"
+    >
       <input v-model="kbSearch" type="checkbox" />
       知识库检索
     </label>
