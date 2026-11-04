@@ -21,6 +21,7 @@ export function useChat() {
   const thinking = ref('off')
   const elideImages = ref(true)
   const kbSearch = ref(true)
+  const toolsOn = ref(true)
 
   const sessions = ref<SessionSummary[]>([])
   const sessionId = ref<string | null>(null)
@@ -173,6 +174,7 @@ export function useChat() {
           thinking: thinking.value,
           imageElision: elideImages.value,
           kbSearch: kbSearch.value,
+          tools: toolsOn.value,
         },
         (chunk) => {
           if (chunk.type === 'session') {
@@ -181,11 +183,15 @@ export function useChat() {
           } else if (chunk.type === 'delta') {
             acc += chunk.text ?? ''
             placeholder.content = acc
+          } else if (chunk.type === 'tool') {
+            // 工具跑完才发这帧：参数/结果/耗时一次到位，界面收到的都是已发生的事实
+            placeholder.tools = [...(placeholder.tools ?? []), { name: chunk.name ?? '', args: chunk.args ?? '', result: chunk.result ?? '', ms: chunk.ms ?? 0 }]
           } else if (chunk.type === 'done') {
             placeholder.content = chunk.text || acc
             placeholder.usage = chunk.usage
             placeholder.elapsedMs = chunk.elapsedMs
             placeholder.model = chunk.model
+            if (chunk.tools?.length) placeholder.tools = chunk.tools
           }
         },
         controller.signal,
@@ -220,6 +226,7 @@ export function useChat() {
     thinking,
     elideImages,
     kbSearch,
+    toolsOn,
     sessions,
     sessionId,
     messages,

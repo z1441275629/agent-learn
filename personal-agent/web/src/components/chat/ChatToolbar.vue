@@ -13,6 +13,7 @@ const modelId = defineModel<string>('modelId', { required: true })
 const thinking = defineModel<string>('thinking', { required: true })
 const elide = defineModel<boolean>('elide', { required: true })
 const kbSearch = defineModel<boolean>('kbSearch', { required: true })
+const tools = defineModel<boolean>('tools', { required: true })
 </script>
 
 <template>
@@ -41,7 +42,11 @@ const kbSearch = defineModel<boolean>('kbSearch', { required: true })
       <input v-model="elide" type="checkbox" />
       图片仅最近一轮
     </label>
-    <label class="toggle" title="提问时按关键词检索知识库，命中的笔记片段作为参考注入（本地 BM25，零 API 成本）">
+    <label class="toggle" title="让模型调用工具（现在几点 / 检索知识库）。开启后知识库由模型自主检索，不再自动注入">
+      <input v-model="tools" type="checkbox" />
+      工具调用
+    </label>
+    <label class="toggle" title="提问时按关键词检索知识库，命中的笔记片段作为参考注入（本地 BM25，零 API 成本）。工具调用开启时此开关不生效">
       <input v-model="kbSearch" type="checkbox" />
       知识库检索
     </label>

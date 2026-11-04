@@ -33,6 +33,8 @@ import {
   shouldAcceptExtraction,
 } from './core/memories.ts'
 import { createKbStore, renderKbBlock, withKbContext } from './core/rag.ts'
+import { runToolLoop, type ToolTrace } from './core/agent.ts'
+import { builtinTools } from './tools.ts'
 import {
   applyWindow,
   messagesTokens,
@@ -50,6 +52,7 @@ const config = loadConfig()
 const store = createSessionStore(config.dataDir)
 const memories = createMemoryStore(config.dataDir)
 const kb = createKbStore(config.dataDir)
+const tools = builtinTools({ kb })
 /** 同一会话同时只跑一轮：多标签页/重复点击时，后来的请求 409，避免账本写乱 */
 const runningSessions = new Set<string>()
 
@@ -136,6 +139,7 @@ function sessionDetail(doc: SessionDoc) {
       elapsedMs: m.elapsedMs,
       error: m.error,
       interrupted: m.interrupted,
+      tools: m.tools,
     })),
   }
 }
@@ -168,8 +172,20 @@ async function prepareContext(
   entry: (typeof MODELS)[number],
   elideOldImages: boolean,
   kbBlock: string | null,
+  toolsOn: boolean,
 ) {
   const memoryEntries = config.memoryEnabled ? await memories.list() : []
+  // 工具模式下知识库走 search_kb 工具（模型自主检索），自动注入关闭——同一内容不双份进上下文；
+  // 有库时给一句使用引导，否则模型可能不知道该查
+  const kbCount = toolsOn ? (await kb.list()).length : 0
+  const guidance =
+    toolsOn && kbCount > 0
+      ? '用户有个人知识库（个人笔记）；问题涉及其个人记录、安排、项目时，先用 search_kb 工具检索再回答。'
+      : ''
+  const systemContent = [memoryEntries.length ? memorySystemContent(memoryEntries) : '', guidance]
+    .filter(Boolean)
+    .join('\n')
+  const basePrefix = systemContent ? 1 : 0
   const buildView = async (messages: SessionDoc['messages'], summary: string | undefined) => {
     // 知识库块塞进最后一条 user 消息（只进发送视图不落账本）；token 计量在注入之后，
     // 预算决策看到的是真实发送大小
@@ -181,13 +197,12 @@ async function prepareContext(
       kbBlock,
     )
     return [
-      // 记忆是 system 前缀、摘要是 user 前缀——开窗时这两个前缀都要保住（prefixCount 见下）
-      ...(memoryEntries.length ? [{ role: 'system', content: memorySystemContent(memoryEntries) }] : []),
+      // 记忆+引导是 system 前缀、摘要是 user 前缀——开窗时这些前缀都要保住（prefixCount 见下）
+      ...(systemContent ? [{ role: 'system', content: systemContent }] : []),
       ...(summary ? [{ role: 'user', content: `【前情摘要】\n${summary}` }] : []),
       ...api,
     ]
   }
-  const prefixLen = (memoryEntries.length ? 1 : 0) + (doc.summary ? 1 : 0)
 
   const view = await buildView(
     doc.messages.filter((m) => m.id > (doc.summaryUntil ?? 0)),
@@ -203,7 +218,7 @@ async function prepareContext(
   })
   if (plan.summarize.length === 0) {
     console.warn(`[pa] 上下文 ${Math.round(tokens)} > 预算 ${config.contextBudget}，但没有可压缩的旧轮——开窗兜底`)
-    return applyWindow(view, config.contextBudget, prefixLen)
+    return applyWindow(view, config.contextBudget, basePrefix + (doc.summary ? 1 : 0))
   }
 
   const summarizer = MODELS.find((m) => m.id === 'light') ?? entry
@@ -224,12 +239,12 @@ async function prepareContext(
     )
     if (after > config.contextBudget) {
       console.warn(`[pa] 压缩后仍超预算——开窗兜底`)
-      return applyWindow(next, config.contextBudget, memoryEntries.length + 1)
+      return applyWindow(next, config.contextBudget, basePrefix + 1)
     }
     return next
   } catch (err: any) {
     console.error(`[pa] 摘要失败，退回滑动窗口：${err?.message ?? err}`)
-    return applyWindow(view, config.contextBudget, prefixLen)
+    return applyWindow(view, config.contextBudget, basePrefix + (doc.summary ? 1 : 0))
   }
 }
 
@@ -279,6 +294,8 @@ interface ChatBody {
   thinking?: string
   imageElision?: boolean
   kbSearch?: boolean
+  /** 工具调用开关（默认开）；关闭后连 get_time 都不给，纯聊天 */
+  tools?: boolean
 }
 
 /** 用最新一条 user 文本检索知识库；命中才注入。寒暄级短查询不值得打扰索引（worthSearching） */
@@ -326,12 +343,11 @@ async function handleChat(req: http.IncomingMessage, res: http.ServerResponse) {
       },
     )
 
-    const messages = await prepareContext(
-      doc,
-      entry,
-      body.imageElision !== false,
-      body.kbSearch === false ? null : await kbContextFor(doc),
-    )
+    // 工具模式（默认开）：模型可调只读工具（get_time / search_kb）；知识库此时走工具检索，
+    // 自动注入只在工具关闭时做（同一内容不双份进上下文）
+    const toolsOn = body.tools !== false
+    const kbBlock = !toolsOn && body.kbSearch !== false ? await kbContextFor(doc) : null
+    const messages = await prepareContext(doc, entry, body.imageElision !== false, kbBlock, toolsOn)
 
     res.writeHead(200, {
       'Content-Type': 'text/event-stream; charset=utf-8',
@@ -351,63 +367,66 @@ async function handleChat(req: http.IncomingMessage, res: http.ServerResponse) {
       if (!res.writableEnded) ac.abort()
     })
     const t0 = Date.now()
-    let textOut = ''
-    let usage: ChatUsage = null
+    // 服务端自己留一份已流出文本：runToolLoop 抛错（网络等）时半截内容还在手里，能落盘
+    let streamedText = ''
+    let streamedTrace: ToolTrace[] = []
     const saveInterrupted = async (elapsedMs: number) => {
-      if (textOut) {
+      if (streamedText) {
         await safeAppend(sid, {
           role: 'assistant',
-          text: textOut,
+          text: streamedText,
           model: entry.model,
           elapsedMs,
           interrupted: true,
+          tools: streamedTrace.length ? streamedTrace : undefined,
         })
       }
-      console.log(`[pa] chat 已停止 · ${textOut.length} 字 · session ${sid}`)
+      console.log(`[pa] chat 已停止 · ${streamedText.length} 字 · session ${sid}`)
     }
     try {
-      const stream = (await entry.client.chat.completions.create(
-        {
-          model: entry.model,
-          messages,
-          stream: true,
-          stream_options: { include_usage: true }, // 最后一帧带完整 usage（cached/reasoning 明细）
-          ...thinkingParams(body.thinking ?? 'off'),
-        } as any,
-        { signal: ac.signal },
-      )) as any
-      for await (const chunk of stream) {
-        if (chunk.usage) usage = chunk.usage
-        const delta = chunk.choices?.[0]?.delta?.content
-        if (delta) {
-          textOut += delta
+      const result = await runToolLoop(entry.client, entry.model, messages, {
+        tools: toolsOn ? tools : [],
+        signal: ac.signal,
+        maxRounds: 5,
+        extraBody: thinkingParams(body.thinking ?? 'off'),
+        onText: (delta) => {
+          streamedText += delta
           send({ type: 'delta', text: delta })
-        }
-      }
+        },
+        onToolCall: (t) => {
+          streamedTrace = [...streamedTrace, t]
+          send({ type: 'tool', name: t.name, args: t.args, result: t.result, ms: t.ms })
+        },
+      })
       const elapsedMs = Date.now() - t0
-      if (ac.signal.aborted) {
+      const usage: ChatUsage = result.usage ?? null
+      if (result.aborted || ac.signal.aborted) {
         // 关键实测：OpenAI SDK 的上游流被 abort 时常常是「正常结束」而不是抛错，
         // 所以不能只靠 catch 判断用户是否点了停止——循环结束后必须再看一次信号。
         await saveInterrupted(elapsedMs)
       } else {
         await safeAppend(sid, {
           role: 'assistant',
-          text: textOut,
+          text: result.text,
           usage,
           model: entry.model,
           elapsedMs,
+          tools: result.trace.length ? result.trace : undefined,
         })
         send({
           type: 'done',
-          text: textOut,
+          text: result.text,
           usage,
           model: entry.model,
           modelId: entry.id,
           sessionId: sid,
           elapsedMs,
+          tools: result.trace.length ? result.trace : undefined,
         })
         console.log(
-          `[pa] chat ${entry.id}(${entry.model}) · ${textOut.length} 字 · ${usage?.total_tokens ?? '?'} tokens · ${elapsedMs}ms · session ${sid}`,
+          `[pa] chat ${entry.id}(${entry.model}) · ${result.text.length} 字 · ${usage?.total_tokens ?? '?'} tokens` +
+            ` · 工具 ${result.rounds} 轮${result.trace.length ? `（${result.trace.map((t) => t.name).join(',')}）` : ''}` +
+            ` · ${elapsedMs}ms · session ${sid}`,
         )
         // 回答完整落盘后才抽记忆：半截/出错的回答不抽（对话可能还没说完）
         runMemoryExtraction(sid, text)
@@ -419,8 +438,16 @@ async function handleChat(req: http.IncomingMessage, res: http.ServerResponse) {
         await saveInterrupted(elapsedMs)
       } else {
         const msg = String(err?.message ?? err).slice(0, 300)
-        // 失败的 assistant 消息落盘（error 非空）——界面能看到，但 buildApiMessages 会把它排除出上下文
-        await safeAppend(sid, { role: 'assistant', text: '', error: msg, model: entry.model, elapsedMs })
+        // 失败的 assistant 消息落盘（error 非空）——界面能看到，但 buildApiMessages 会把它排除出上下文。
+        // 已流出的半截文本一并保留：工具循环可能第二轮才断网，前一轮的字用户已经看到了
+        await safeAppend(sid, {
+          role: 'assistant',
+          text: streamedText,
+          error: msg,
+          model: entry.model,
+          elapsedMs,
+          tools: streamedTrace.length ? streamedTrace : undefined,
+        })
         send({ type: 'error', error: msg })
       }
     }

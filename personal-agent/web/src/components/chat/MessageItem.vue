@@ -1,9 +1,13 @@
 <script setup lang="ts">
+import { ref } from 'vue'
 import type { DisplayMessage } from '../../types'
 import MarkdownView from '../common/MarkdownView.vue'
 import UsageMeta from '../common/UsageMeta.vue'
 
 defineProps<{ message: DisplayMessage }>()
+
+// 工具痕迹默认收起：要点开才看参数/结果——痕迹是审计用的，不该淹没正文
+const openTool = ref<number | null>(null)
 </script>
 
 <template>
@@ -18,6 +22,21 @@ defineProps<{ message: DisplayMessage }>()
       </template>
 
       <template v-else>
+        <div v-if="message.tools?.length" class="tool-trace">
+          <button
+            v-for="(t, i) in message.tools"
+            :key="i"
+            class="tool-chip"
+            :class="{ open: openTool === i }"
+            @click="openTool = openTool === i ? null : i"
+          >
+            🔧 {{ t.name }} · {{ t.ms }}ms {{ openTool === i ? '▾' : '▸' }}
+          </button>
+          <div v-if="openTool !== null && message.tools[openTool]" class="tool-detail">
+            <div class="row"><span class="k">参数</span><code>{{ message.tools[openTool].args || '（无）' }}</code></div>
+            <div class="row"><span class="k">结果</span><pre>{{ message.tools[openTool].result }}</pre></div>
+          </div>
+        </div>
         <div v-if="message.streaming && !message.content" class="thinking"><span class="spin"></span>思考中…</div>
         <MarkdownView v-else :source="message.content" />
         <UsageMeta
@@ -102,5 +121,62 @@ defineProps<{ message: DisplayMessage }>()
 
 .thinking {
   color: var(--muted);
+}
+
+.tool-trace {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.tool-chip {
+  border: 1px solid var(--line);
+  background: #f6f8fa;
+  color: var(--muted);
+  border-radius: 999px;
+  padding: 2px 10px;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.tool-chip.open {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.tool-detail {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f6f8fa;
+  padding: 8px 10px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.tool-detail .row {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+}
+
+.tool-detail .row + .row {
+  margin-top: 6px;
+}
+
+.tool-detail .k {
+  flex: none;
+  font-weight: 600;
+}
+
+.tool-detail code,
+.tool-detail pre {
+  margin: 0;
+  font-family: ui-monospace, Consolas, monospace;
+  white-space: pre-wrap;
+  word-break: break-all;
 }
 </style>

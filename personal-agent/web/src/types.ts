@@ -16,6 +16,14 @@ export interface ModelsPayload {
 /** 服务商原始 usage：prompt/completion/total + cached_tokens/reasoning_tokens 等明细，形状随平台而异 */
 export type ChatUsage = any
 
+/** 一次工具调用的痕迹（展示用；args/result 都是字符串原文） */
+export interface ToolTraceInfo {
+  name: string
+  args: string
+  result: string
+  ms: number
+}
+
 /** 服务端会话里的消息（图片已是可访问的 URL，不再是 base64） */
 export interface DisplayMessage {
   id: number
@@ -29,6 +37,8 @@ export interface DisplayMessage {
   error?: string
   /** 用户点停止/断开时保存的半截回答 */
   interrupted?: boolean
+  /** 这条回答用过的工具（get_time / search_kb …） */
+  tools?: ToolTraceInfo[]
   /** 仅前端：正在流式接收 */
   streaming?: boolean
 }
@@ -115,12 +125,14 @@ export interface ChatRequest {
   modelId: string
   thinking: string
   imageElision: boolean
-  /** false = 本轮不做知识库检索（默认做） */
+  /** false = 本轮不做知识库检索（默认做；工具开启时检索交给模型自主调用） */
   kbSearch: boolean
+  /** false = 本轮禁用工具调用（默认开） */
+  tools: boolean
 }
 
 export interface ChatChunk {
-  type: 'session' | 'delta' | 'done' | 'error'
+  type: 'session' | 'delta' | 'tool' | 'done' | 'error'
   sessionId?: string
   title?: string
   text?: string
@@ -128,4 +140,11 @@ export interface ChatChunk {
   model?: string
   elapsedMs?: number
   error?: string
+  /** type:'tool' 时的一次工具调用；type:'done' 时是全量 trace */
+  tools?: ToolTraceInfo[]
+  /** type:'tool' 时的单条字段 */
+  name?: string
+  args?: string
+  result?: string
+  ms?: number
 }

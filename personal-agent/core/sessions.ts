@@ -31,6 +31,8 @@ export interface StoredMessage {
   error?: string
   /** 用户点「停止」/断开连接时保存的半截回答 */
   interrupted?: boolean
+  /** 本条回答产生的工具调用痕迹（展示用；重放上下文不喂给模型） */
+  tools?: { name: string; args: string; result: string; ms: number }[]
   createdAt: string
 }
 
@@ -64,6 +66,7 @@ export interface NewMessage {
   elapsedMs?: number
   error?: string
   interrupted?: boolean
+  tools?: { name: string; args: string; result: string; ms: number }[]
 }
 
 export interface AppendOptions {
@@ -194,6 +197,7 @@ export function createSessionStore(dataDir: string): SessionStore {
         elapsedMs: message.elapsedMs,
         error: message.error,
         interrupted: message.interrupted,
+        tools: message.tools,
         createdAt: new Date().toISOString(),
       })
       // 标题只由第一条 user 消息决定；后续 checkpoint 不能把它改掉

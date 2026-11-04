@@ -18,6 +18,7 @@ const {
   thinking,
   elideImages,
   kbSearch,
+  toolsOn,
   sessions,
   sessionId,
   messages,
@@ -61,6 +62,7 @@ watch(streaming, (now, was) => {
         v-model:thinking="thinking"
         v-model:elide="elideImages"
         v-model:kb-search="kbSearch"
+        v-model:tools="toolsOn"
         :models="models"
         :memory-count="memoryItems.length"
         :kb-count="kbDocs.length"

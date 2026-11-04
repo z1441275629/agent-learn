@@ -39,6 +39,7 @@ import {
   storedMessagesTokens,
   summarizeConversation,
 } from './core/context.ts'
+import { runToolLoop, truncateToolResult, type ToolDef } from './core/agent.ts'
 
 let pass = 0
 let fail = 0
@@ -519,6 +520,158 @@ console.log('Q9 知识库检索（BM25 本地检索：分词/切块/打分/注�
     check('超限文档 413 拒绝', tooBig)
     await fs.rm(tmp, { recursive: true, force: true })
   }
+}
+
+console.log('Q10 工具循环（假流式客户端：分片累积/喂回/usage 求和/错误咽喉/轮数上限/abort 是状态）')
+{
+  // —— 假客户端：按脚本回放 chunk 流；记录每次 create 的完整 body 供断言 ——
+  const textDelta = (t: string) => ({ choices: [{ delta: { content: t } }] })
+  const usage = (p: number, c: number) => ({
+    choices: [],
+    usage: { prompt_tokens: p, completion_tokens: c, total_tokens: p + c },
+  })
+  const toolCall = (index: number, id: string, name: string, argPieces: string[]) => [
+    { choices: [{ delta: { tool_calls: [{ index, id, type: 'function', function: { name, arguments: '' } }] } }] },
+    ...argPieces.map((a) => ({ choices: [{ delta: { tool_calls: [{ index, function: { arguments: a } }] } }] })),
+  ]
+  function fakeClient(script: ((body: any) => any[])[]) {
+    const calls: { body: any; opts: any }[] = []
+    let i = 0
+    return {
+      calls,
+      chat: {
+        completions: {
+          create: async (body: any, opts: any) => {
+            calls.push({ body, opts })
+            const chunks = script[Math.min(i, script.length - 1)](body)
+            i++
+            return (async function* () {
+              for (const c of chunks) {
+                if (opts?.signal?.aborted) return // 模拟 SDK：abort 后流正常收尾而不是抛错（PITFALLS #38）
+                yield c
+              }
+            })()
+          },
+        },
+      },
+    } as any
+  }
+  const echo: ToolDef = {
+    name: 'echo',
+    description: '回显参数',
+    parameters: { type: 'object', properties: {} },
+    risk: 'read',
+    run: async (a) => `ECHO:${JSON.stringify(a)}`,
+  }
+  const boom: ToolDef = {
+    name: 'boom',
+    description: '必炸',
+    parameters: { type: 'object', properties: {} },
+    risk: 'read',
+    run: async () => {
+      throw new Error('炸了')
+    },
+  }
+
+  // ① 快乐路径：先说话再要工具 → 执行 → 喂回 → 第二轮文本收尾
+  {
+    const client = fakeClient([
+      () => [textDelta('我先查一下，'), ...toolCall(0, 'call_1', 'echo', ['{"x"', ':1}']), usage(10, 5)],
+      () => [textDelta('答案是 1。'), usage(20, 4)],
+    ])
+    const r = await runToolLoop(client, 'm', [{ role: 'user', content: 'q' }], { tools: [echo] })
+    check('两轮文本都拼接', r.text === '我先查一下，答案是 1。', r.text)
+    check('轮数=1（一次工具往返）', r.rounds === 1)
+    check(
+      'trace 记录调用与结果',
+      r.trace.length === 1 && r.trace[0].name === 'echo' && r.trace[0].result === 'ECHO:{"x":1}',
+    )
+    check('trace 有耗时', r.trace[0].ms >= 0)
+    check(
+      '跨轮 usage 求和',
+      r.usage?.prompt_tokens === 30 && r.usage?.completion_tokens === 9 && r.usage?.total_tokens === 39,
+      JSON.stringify(r.usage),
+    )
+    const second = client.calls[1].body.messages
+    check(
+      'assistant 消息带 tool_calls（id/name/参数拼全）',
+      second[1].tool_calls?.[0]?.id === 'call_1' &&
+        second[1].tool_calls?.[0]?.function?.name === 'echo' &&
+        second[1].tool_calls?.[0]?.function?.arguments === '{"x":1}',
+    )
+    check(
+      '工具结果按 tool_call_id 喂回',
+      second[2].role === 'tool' && second[2].tool_call_id === 'call_1' && second[2].content === 'ECHO:{"x":1}',
+    )
+    check('工具轮 preamble 文本保留在 assistant content', second[1].content === '我先查一下，')
+    check('非 aborted', r.aborted === false)
+  }
+
+  // ② 一轮多个工具调用：按 index 顺序执行
+  {
+    const client = fakeClient([
+      () => [...toolCall(1, 'call_b', 'echo', ['{"n":2}']), ...toolCall(0, 'call_a', 'echo', ['{"n":1}']), usage(5, 5)],
+      () => [textDelta('ok')],
+    ])
+    const r = await runToolLoop(client, 'm', [{ role: 'user', content: 'q' }], { tools: [echo] })
+    check(
+      '多工具按 index 顺序执行',
+      r.trace.map((t) => t.result).join('|') === 'ECHO:{"n":1}|ECHO:{"n":2}',
+      r.trace.map((t) => t.result).join('|'),
+    )
+    check('两条 tool 消息都喂回', client.calls[1].body.messages.filter((m: any) => m.role === 'tool').length === 2)
+  }
+
+  // ③ dispatch 咽喉：错误是喂给模型的字符串，不是崩循环
+  {
+    const client = fakeClient([
+      () => [
+        ...toolCall(0, 'c1', 'nosuch', ['{}']),
+        ...toolCall(1, 'c2', 'echo', ['{bad json']),
+        ...toolCall(2, 'c3', 'boom', ['{}']),
+      ],
+      () => [textDelta('done')],
+    ])
+    const r = await runToolLoop(client, 'm', [{ role: 'user', content: 'q' }], { tools: [echo, boom] })
+    check('未注册工具 → 错误字符串', JSON.parse(r.trace[0].result).error?.includes('未注册的工具 nosuch'))
+    check('参数非 JSON → 错误字符串', JSON.parse(r.trace[1].result).error?.includes('参数不是合法 JSON'))
+    check('run 抛错 → 错误字符串', JSON.parse(r.trace[2].result).error?.includes('工具执行失败：炸了'))
+    check('循环没崩，第二轮照常', client.calls.length === 2 && r.text === 'done')
+  }
+
+  // ④ 轮数上限：去掉 tools 的最后一轮仍要工具 → 放弃并给兜底文本
+  {
+    const client = fakeClient([() => toolCall(0, 'c', 'echo', ['{}'])]) // 永远要工具
+    const r = await runToolLoop(client, 'm', [{ role: 'user', content: 'q' }], { tools: [echo], maxRounds: 1 })
+    check('上限后最后一轮不带 tools 字段', client.calls.length === 2 && !('tools' in client.calls[1].body))
+    check('仍要工具 → 兜底文本', r.text === '（工具调用轮数已达上限，未能生成回答）')
+  }
+
+  // ⑤ 空工具面：必须省略 tools 字段（空数组在部分 API 是报错，PITFALLS #25）
+  {
+    const client = fakeClient([() => [textDelta('纯聊天')]])
+    const r = await runToolLoop(client, 'm', [{ role: 'user', content: 'q' }], { tools: [] })
+    check('空工具面请求无 tools 字段', !('tools' in client.calls[0].body))
+    check('纯文本照常返回', r.text === '纯聊天' && r.rounds === 0 && r.trace.length === 0)
+  }
+
+  // ⑥ abort 是状态不是异常：上游流正常收尾，靠事后查信号判定
+  {
+    const ac = new AbortController()
+    const client = fakeClient([() => [textDelta('你'), textDelta('好'), textDelta('！')]])
+    const r = await runToolLoop(client, 'm', [{ role: 'user', content: 'q' }], {
+      tools: [],
+      signal: ac.signal,
+      onText: () => ac.abort(), // 第一个 delta 就停
+    })
+    check('abort 后返回 aborted=true', r.aborted === true)
+    check('半截文本保留', r.text === '你', r.text)
+  }
+
+  // ⑦ 结果截断在源头
+  const cut = truncateToolResult('x'.repeat(5000), 1200)
+  check('超长结果截断且带标记', cut.length <= 1200 && cut.includes('结果过长已截断'))
+  check('短结果原样通过', truncateToolResult('ok', 1200) === 'ok')
 }
 
 await terminateOcr()
