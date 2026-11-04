@@ -18,8 +18,8 @@
 - **文本附件**：≤100KB 直接读入正文（PDF 暂不支持，提示先转图/文本）
 - **完整 usage**：每条回复底部展示服务商原始 usage 的明细——prompt / completion / total /
   缓存命中 `cached_tokens` / 推理 `reasoning_tokens` / 耗时，不压成一个数
-- **历史会话**：会话在服务端（`core/sessions.ts`），刷新/重启后可恢复；工具栏下拉切换历史，
-  「新对话」开新账本
+- **历史会话**：会话在服务端（`core/sessions.ts`），左侧栏列表直选（当前项高亮，刷新/重启后
+  自动打开最近活跃的会话），顶部「＋ 新对话」开新账本
 - **停止后继续**：流式过程中按钮变「停止」，点它 abort 上游并把已生成的部分落盘（标 `interrupted`），
   下一轮上下文接着用
 - **上下文压缩**：超过 `PA_CONTEXT_BUDGET`（默认 6000 估算 token）时，旧轮交给 light 档模型摘要
@@ -27,9 +27,10 @@
   不重复摘要、重启也有效；摘要失败或仍超预算则按整轮滑动窗口兜底，最新一轮永远保留。
   原文在账本里始终完整，界面历史不受影响
 - **长期记忆**：回答完成后，后台把对话里关于用户的持久事实/偏好抽出来存进 `data/memories.json`
-  （light 档、关思考），下一轮起以 system 前缀注入——**跨会话生效**。工具栏「记忆 N」可查看/删除，
-  记错了能删；抽取输出过守门（非数组/对象元素/超长条目拒绝，已有记忆非空时拒绝清空式输出），
-  失败只跳过本轮、记忆保持原样。`PA_MEMORY=0` 整体关闭（抽取+注入一起停）
+  （light 档、关思考），下一轮起以 system 前缀注入——**跨会话生效**。工具栏「记忆 N」可查看/单条删除，
+  记错了能删；「清空」入口在 UI 里**禁用**（积累不易，防误触全清——真要清删 `data/memories.json`
+  或调 `DELETE /api/memories`）。抽取输出过守门（非数组/对象元素/超长条目拒绝，已有记忆非空时
+  拒绝清空式输出），失败只跳过本轮、记忆保持原样。`PA_MEMORY=0` 整体关闭（抽取+注入一起停）
 - **知识库检索**：个人笔记（.txt/.md，≤1MB）上传后自动切块（约 500 字）索引，提问时本地
   BM25 检索（CJK 二元组分词），命中片段作为【知识库参考】注入本轮提问——零 API 成本、离线、
   确定性。只记「我记得我写过 xxx」的实体/关键词查询，这正是 BM25 主场（课程 07 对照实验结论）；
@@ -122,10 +123,11 @@ web/
     ├── main.ts / App.vue / styles.css
     ├── types.ts            # 与 Node 服务端对齐的数据形状
     ├── api.ts              # 所有 fetch / SSE 解析都在这里
-    ├── composables/        # useChat（对话状态 + 流式）、useOcr（识别状态）
+    ├── composables/        # useChat（对话状态 + 流式）、useOcr（识别状态）、useMemories / useKb
     ├── components/
     │   ├── common/         # AppHeader / ToastHost / MarkdownView / UsageMeta
-    │   ├── chat/           # ChatPane / ChatToolbar / MessageList / MessageItem / ChatComposer / AttachmentChip
+    │   ├── chat/           # ChatPane / SessionSidebar（历史会话列表）/ ChatToolbar / MessageList /
+    │   │                   # MessageItem / ChatComposer / AttachmentChip / MemoryPanel / KbPanel
     │   └── ocr/            # OcrPane / OcrDropZone / OcrToolbar / OcrLineList / OcrLineItem
     └── utils/              # markdown / usage / clipboard / toast
 ```

@@ -8,6 +8,7 @@ import ChatToolbar from './ChatToolbar.vue'
 import KbPanel from './KbPanel.vue'
 import MemoryPanel from './MemoryPanel.vue'
 import MessageList from './MessageList.vue'
+import SessionSidebar from './SessionSidebar.vue'
 
 defineProps<{ active: boolean }>()
 
@@ -38,7 +39,6 @@ const {
   load: loadMemories,
   toggle: toggleMemory,
   remove: removeMemory,
-  clearAll: clearMemories,
 } = useMemories()
 const { docs: kbDocs, open: kbOpen, load: loadKb, toggle: toggleKb, upload: uploadKb, remove: removeKb } = useKb()
 void init().then(() => {
@@ -54,45 +54,46 @@ watch(streaming, (now, was) => {
 
 <template>
   <div class="chat-pane pane">
-    <ChatToolbar
-      v-model:model-id="modelId"
-      v-model:thinking="thinking"
-      v-model:elide="elideImages"
-      v-model:kb-search="kbSearch"
-      :models="models"
-      :sessions="sessions"
-      :session-id="sessionId"
-      :memory-count="memoryItems.length"
-      :kb-count="kbDocs.length"
-      @open="openSession"
-      @new-chat="newChat"
-      @toggle-memory="toggleMemory"
-      @toggle-kb="toggleKb"
-    />
-    <MemoryPanel
-      v-if="memoryOpen"
-      :items="memoryItems"
-      @close="memoryOpen = false"
-      @remove="removeMemory"
-      @clear="clearMemories"
-    />
-    <KbPanel v-if="kbOpen" :docs="kbDocs" @close="kbOpen = false" @upload="uploadKb" @remove="removeKb" />
-    <MessageList :messages="messages" />
-    <ChatComposer
-      :pending="pending"
-      :streaming="streaming"
-      :active="active"
-      @send="send"
-      @stop="stop"
-      @add-images="addImages"
-      @add-docs="addDocs"
-      @remove="removePending"
-    />
+    <SessionSidebar :sessions="sessions" :session-id="sessionId" @open="openSession" @new-chat="newChat" />
+    <div class="chat-main">
+      <ChatToolbar
+        v-model:model-id="modelId"
+        v-model:thinking="thinking"
+        v-model:elide="elideImages"
+        v-model:kb-search="kbSearch"
+        :models="models"
+        :memory-count="memoryItems.length"
+        :kb-count="kbDocs.length"
+        @toggle-memory="toggleMemory"
+        @toggle-kb="toggleKb"
+      />
+      <MemoryPanel v-if="memoryOpen" :items="memoryItems" @close="memoryOpen = false" @remove="removeMemory" />
+      <KbPanel v-if="kbOpen" :docs="kbDocs" @close="kbOpen = false" @upload="uploadKb" @remove="removeKb" />
+      <MessageList :messages="messages" />
+      <ChatComposer
+        :pending="pending"
+        :streaming="streaming"
+        :active="active"
+        @send="send"
+        @stop="stop"
+        @add-images="addImages"
+        @add-docs="addDocs"
+        @remove="removePending"
+      />
+    </div>
   </div>
 </template>
 
 <style scoped>
 .chat-pane {
+  display: flex;
+  align-items: stretch;
+  position: relative; /* 记忆/知识库面板的定位锚 */
+}
+
+.chat-main {
+  flex: 1;
+  min-width: 0;
   display: flex;
   flex-direction: column;
 }

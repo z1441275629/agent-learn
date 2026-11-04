@@ -2,7 +2,7 @@
 import type { MemoryItem } from '../../types'
 
 defineProps<{ items: MemoryItem[] }>()
-const emit = defineEmits<{ close: []; remove: [id: string]; clear: [] }>()
+const emit = defineEmits<{ close: []; remove: [id: string] }>()
 </script>
 
 <template>
@@ -12,7 +12,10 @@ const emit = defineEmits<{ close: []; remove: [id: string]; clear: [] }>()
     <div class="panel-head">
       <strong>长期记忆（{{ items.length }}）</strong>
       <div class="actions">
-        <button v-if="items.length" class="ghost danger" @click="emit('clear')">清空</button>
+        <!-- 清空入口禁用：积累不易，误触一次全没了；真要清空删 data/memories.json -->
+        <button class="ghost danger" disabled title="已禁用防误清空——真要清空，删除 data/memories.json 后重启">
+          清空
+        </button>
         <button class="ghost" @click="emit('close')">关闭</button>
       </div>
     </div>
@@ -109,6 +112,11 @@ const emit = defineEmits<{ close: []; remove: [id: string]; clear: [] }>()
 
 .ghost.danger {
   color: #c0392b;
+}
+
+.ghost:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 .del {

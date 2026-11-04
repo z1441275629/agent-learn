@@ -1,34 +1,22 @@
 <script setup lang="ts">
-import type { ModelEntry, SessionSummary } from '../../types'
+import type { ModelEntry } from '../../types'
 
 defineProps<{
   models: ModelEntry[]
-  sessions: SessionSummary[]
-  sessionId: string | null
   memoryCount: number
   kbCount: number
 }>()
-const emit = defineEmits<{ open: [id: string]; newChat: []; toggleMemory: []; toggleKb: [] }>()
+const emit = defineEmits<{ toggleMemory: []; toggleKb: [] }>()
 
 // Vue 3.4+ 的 defineModel：子组件里像普通 ref 一样用，父组件用 v-model:model-id 绑定
 const modelId = defineModel<string>('modelId', { required: true })
 const thinking = defineModel<string>('thinking', { required: true })
 const elide = defineModel<boolean>('elide', { required: true })
 const kbSearch = defineModel<boolean>('kbSearch', { required: true })
-
-function openSession(event: Event): void {
-  const id = (event.target as HTMLSelectElement).value
-  if (id) emit('open', id)
-}
 </script>
 
 <template>
   <div class="chat-toolbar">
-    <select class="picker session-picker" :value="sessionId ?? ''" title="历史会话" @change="openSession">
-      <option v-if="!sessionId" value="">新对话（未保存）</option>
-      <option v-for="s in sessions" :key="s.id" :value="s.id">{{ s.title }}</option>
-    </select>
-    <button class="ghost" @click="emit('newChat')">新对话</button>
     <button class="ghost" title="跨会话长期记忆（自动抽取，可查看/删除）" @click="emit('toggleMemory')">
       记忆 {{ memoryCount }}
     </button>
@@ -69,10 +57,6 @@ function openSession(event: Event): void {
   padding: 8px 18px;
   border-bottom: 1px solid var(--line);
   background: #fff;
-}
-
-.session-picker {
-  max-width: 220px;
 }
 
 .picker {
