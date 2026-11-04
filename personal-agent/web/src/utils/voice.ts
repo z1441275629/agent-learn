@@ -5,11 +5,15 @@
 // （Firefox 无此 API）——不支持就藏按钮，不硬撑。以后要多浏览器/离线再接服务端 ASR，
 // 只换 useVoiceInput 的实现，这里的纯函数照用。
 
-/** 浏览器 SpeechRecognitionResult 的最小形状（类数组：[0] 是最优候选） */
+/**
+ * 浏览器 SpeechRecognitionResult 的真实形状（照 DOM 规范，不是想象）：
+ * 索引访问拿到的是 SpeechRecognitionAlternative 对象，文本在 .transcript 里——
+ * 把 [0] 当字符串用会拼出「[object SpeechRecognitionAlternative]」（实测踩过）
+ */
 export interface VoiceResultItem {
   isFinal: boolean
   length: number
-  [index: number]: string
+  [index: number]: { transcript: string; confidence?: number }
 }
 
 /**
@@ -20,7 +24,8 @@ export function mergeVoiceResults(results: Iterable<VoiceResultItem>): { finalTe
   let finalText = ''
   let interimText = ''
   for (const r of results) {
-    const text = r[0] ?? '' // 只取最优候选；其余候选是备选，拼进去等于把识别噪音写进草稿
+    // 只取最优候选 [0]：其余是备选，拼进去等于把识别噪音写进草稿
+    const text = r[0]?.transcript ?? ''
     if (r.isFinal) finalText += text
     else interimText += text
   }

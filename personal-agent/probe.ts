@@ -851,8 +851,8 @@ console.log('Q12 记忆写侧对偶（forget 精确删 / add_note 入库即检�
 
 console.log('Q13 语音输入纯逻辑（累积结果全量重建 / 错误码给人话）')
 {
-  // 浏览器 onresult 的 results 是累积列表：interim 段会在后续事件里变成 final
-  const item = (text: string, isFinal: boolean): VoiceResultItem => ({ isFinal, length: 1, 0: text })
+  // 照真实 DOM 形状造段：results[i][0] 是 Alternative 对象，文本在 .transcript（不是字符串）
+  const item = (text: string, isFinal: boolean): VoiceResultItem => ({ isFinal, length: 1, 0: { transcript: text, confidence: 0.9 } })
   check(
     'interim 不进 final',
     mergeVoiceResults([item('今天', false)]).finalText === '' &&
@@ -873,7 +873,11 @@ console.log('Q13 语音输入纯逻辑（累积结果全量重建 / 错误码给
   )
   check(
     '多候选只取最优 [0]',
-    mergeVoiceResults([{ isFinal: true, length: 2, 0: '最优', 1: '备选' }]).finalText === '最优',
+    mergeVoiceResults([{ isFinal: true, length: 2, 0: { transcript: '最优' }, 1: { transcript: '备选' } }]).finalText === '最优',
+  )
+  check(
+    '文本取自 .transcript（对象不会拼成 [object …]）',
+    !mergeVoiceResults([item('检查', true)]).finalText.includes('[object'),
   )
   check('空列表全空', mergeVoiceResults([]).finalText === '' && mergeVoiceResults([]).interimText === '')
   check('权限错误给人话', voiceErrorMessage({ error: 'not-allowed' }).includes('麦克风'))
