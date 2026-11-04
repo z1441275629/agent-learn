@@ -83,6 +83,7 @@ export async function recognizeWithAI(image: Buffer, mime = 'image/png'): Promis
 				text: texts.join('\n'),
 				lines: texts.map((text, id) => ({ id, text })),
 				elapsedMs: Date.now() - t0,
+				usage: res.usage ?? null, // 完整对象（prompt/completion/total + cached/reasoning 明细），不压成一个数
 			}
 		} catch (err: any) {
 			lastErr = String(err?.message ?? err).slice(0, 300)

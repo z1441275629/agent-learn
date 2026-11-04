@@ -5,6 +5,7 @@ import path from 'node:path'
 import { recognize, normalizeCjk, terminateOcr } from './ocr.ts'
 import { needsTranslation } from './translate.ts'
 import { parseVisionLines } from './vision-ocr.ts'
+import { normalizeMessages, lastUserHasImages } from './chat.ts'
 
 let pass = 0
 let fail = 0
@@ -47,6 +48,36 @@ check('空行被过滤', parseVisionLines('{"lines":[{"text":"a"},{"text":"  "}]
 	let threw = false
 	try { parseVisionLines('抱歉我无法识别') } catch { threw = true }
 	check('非 JSON 明确报错（触发重试，不静默返回空）', threw)
+}
+
+console.log('Q5 对话消息归一（图片只随最近一条 user 消息发送：历史图片每轮都重新计费）')
+const PNG = 'data:image/png;base64,iVBORw0KGgo='
+{
+	const msgs = [
+		{ role: 'user' as const, content: [{ type: 'text' as const, text: '看图' }, { type: 'image' as const, dataUrl: PNG, name: 'a.png' }] },
+		{ role: 'assistant' as const, content: '收到' },
+		{ role: 'user' as const, content: [{ type: 'image' as const, dataUrl: PNG, name: 'b.png' }, { type: 'text' as const, text: '这张呢' }] },
+	]
+	const out = normalizeMessages(msgs)
+	const firstUser = out[0].content as any[]
+	const lastUser = out[2].content as any[]
+	check('最近一条 user 的图片保留为 image_url', lastUser.some((p) => p.type === 'image_url' && p.image_url.url === PNG))
+	check('历史图片降级成文字占位（不再付图 token）', firstUser.some((p) => p.type === 'text' && p.text.includes('a.png') && p.text.includes('已省略')))
+	check('历史图片不再有 image_url', !firstUser.some((p) => p.type === 'image_url'))
+	check('字符串消息原样透传', out[1].content === '收到')
+	check('关闭省略开关时历史图片保留', (normalizeMessages(msgs, false)[0].content as any[]).some((p) => p.type === 'image_url'))
+	check('lastUserHasImages 认出最近一轮有图', lastUserHasImages(msgs))
+	check('只有文本时 lastUserHasImages=false', lastUserHasImages([{ role: 'user', content: 'hi' }]) === false)
+	{
+		let threw = false
+		try { normalizeMessages([{ role: 'user', content: [{ type: 'image', dataUrl: 'https://example.com/a.png' }] }]) } catch { threw = true }
+		check('拒绝 http URL 图片（只收 dataURL 内联）', threw)
+	}
+	{
+		let threw = false
+		try { normalizeMessages([]) } catch { threw = true }
+		check('空 messages 明确报错', threw)
+	}
 }
 
 await terminateOcr()

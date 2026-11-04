@@ -30,6 +30,8 @@ export interface OcrResult {
 	lines: OcrLine[]
 	confidence?: number
 	elapsedMs: number
+	/** 服务商原始 usage（AI 引擎才有；本地 tesseract 不产生 token 计费，缺省） */
+	usage?: import('./chat.ts').ChatUsage
 }
 
 // 语言包自愈：npm 包装好后一份拷过来（只在缺的时候做，~20MB 不重复拷）
@@ -89,6 +91,7 @@ export async function recognize(image: Buffer): Promise<OcrResult> {
 		lines,
 		confidence: Number(data.confidence ?? 0),
 		elapsedMs: Date.now() - t0,
+		// 本地引擎没有 token 计费——usage 缺省（不伪造 0，0 会被误读成「这次真花了 0 token」）
 	}
 }
 

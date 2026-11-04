@@ -6,6 +6,7 @@
 import { z } from 'zod'
 import { client, MODEL, THINKING_STYLE } from '../09-harness/llm.ts'
 import type { OcrLine } from './ocr.ts'
+import type { ChatUsage } from './chat.ts'
 
 const RespSchema = z.object({ items: z.array(z.object({ id: z.number(), zh: z.string() })) })
 
@@ -25,13 +26,14 @@ const SYSTEM = `你是截图文字的翻译助手。把用户给的每一行文�
 - 已经是中文的行原样返回。
 - 严格输出 JSON，不要任何其他文字：{"items":[{"id":<原 id>,"zh":"<译文>"}]}`
 
-/** 逐行翻译；返回 id→译文。LLM 失败不阻塞 OCR（返回空 Map，UI 只显示原文） */
-export async function translateLines(lines: OcrLine[]): Promise<{ map: Map<number, string>; error?: string }> {
+/** 逐行翻译；返回 id→译文 + 服务商 usage。LLM 失败不阻塞 OCR（返回空 Map，UI 只显示原文） */
+export async function translateLines(lines: OcrLine[]): Promise<{ map: Map<number, string>; error?: string; usage?: ChatUsage }> {
 	const need = lines.filter((l) => needsTranslation(l.text))
 	if (need.length === 0) return { map: new Map() }
 	const payload = JSON.stringify(need.map((l) => ({ id: l.id, text: l.text })))
 	const map = new Map<number, string>()
 	let lastErr = ''
+	let usage: ChatUsage = null
 	for (let attempt = 0; attempt < 2; attempt++) {
 		try {
 			const res = await client.chat.completions.create({
@@ -55,10 +57,11 @@ export async function translateLines(lines: OcrLine[]): Promise<{ map: Map<numbe
 			const jsonText = raw.slice(raw.indexOf('{'), raw.lastIndexOf('}') + 1) // 防模型包 ```json 围栏
 			const parsed = RespSchema.parse(JSON.parse(jsonText))
 			for (const it of parsed.items) if (need.some((l) => l.id === it.id)) map.set(it.id, it.zh.trim())
-			return { map }
+			usage = res.usage ?? null
+			return { map, usage }
 		} catch (err: any) {
 			lastErr = String(err?.message ?? err).slice(0, 200)
 		}
 	}
-	return { map, error: lastErr }
+	return { map, error: lastErr, usage }
 }

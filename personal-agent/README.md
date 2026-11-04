@@ -4,6 +4,25 @@
 
 ## 已有能力
 
+### 对话（模块 14 · 常规 agent 界面）
+
+一个输入框起步：文字、图片、文本附件一起发，SSE 流式出字。
+
+- **模型可选**：下拉框数据来自 `GET /api/models`，目录由 `09-harness/llm.ts` 的四个档位生成
+  （主 / 小 / 备用 / 视觉），同模型去重；换平台只改 `.env`
+- **思考强度**：关 / 低 / 中 / 高，走统一翻译层 `thinkingParams()`——ARK 上只有开关真生效，
+  支持分级的平台会同时收到 `reasoning_effort`（PITFALLS #37）
+- **图片**：贴在输入框里随消息发送；**非视觉模型会前置 400**，不让用户对着上游报错猜。
+  默认「图片仅最近一轮」——聊天 API 无状态，历史图每轮都重新计费（一张 1080p 截图 2~3k tokens），
+  旧图自动换成文字占位，成本可控；取消勾选则原样保留
+- **文本附件**：≤100KB 直接读入正文（PDF 暂不支持，提示先转图/文本）
+- **完整 usage**：每条回复底部展示服务商原始 usage 的明细——prompt / completion / total /
+  缓存命中 `cached_tokens` / 推理 `reasoning_tokens` / 耗时，不压成一个数
+- **语音输入**：按钮已占位，下一版接
+
+服务端 `POST /api/chat`：`stream:true` + `stream_options.include_usage`；客户端断开即 abort
+上游，防止没人看的长回答继续烧 token。
+
 ### 截图取字（模块 13 · 多模态第一件）
 
 Win+Shift+S 截图 → 页面 Ctrl+V 粘贴 → 逐行文字 + 中文翻译，**点一行复制一行**、悬停看原文在图中位置。
@@ -35,8 +54,8 @@ LLM_VISION_API_KEY=...    # 缺省 LLM_BACKUP_API_KEY → LLM_API_KEY
 AI 失败（配额/网络/输出不合规重试后）返回 502，UI 提示切回本地——AI 挂不拖累本地路线。
 
 ```bash
-node personal-agent/server.ts     # → http://127.0.0.1:8798
-node personal-agent/probe.ts      # 零 token 探针
+node personal-agent/server.ts     # → http://127.0.0.1:8798（对话 + 截图取字两个标签页）
+node personal-agent/probe.ts      # 零 token 探针（OCR + 消息归一/图片省略规则）
 ```
 
 环境变量：`PA_PORT`（默认 8798）、`PA_HOST`（默认 127.0.0.1，只本机）。
