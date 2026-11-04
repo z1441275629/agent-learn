@@ -53,6 +53,11 @@ export interface AgentLoopOptions {
   signal?: AbortSignal
   /** 额外请求参数（思考开关等），原样展开进 create 的 body */
   extraBody?: Record<string, unknown>
+  /**
+   * 写入类工具的确认门：risk:'write' 的工具执行前必须先过这里，true 才真跑。
+   * 没接或抛错一律当拒绝（fail closed）——门是唯一放行通道，dispatch 里没有后门
+   */
+  onConfirm?: (req: { name: string; args: string }) => Promise<boolean>
   onText?: (delta: string) => void
   onToolCall?: (trace: ToolTrace) => void
 }
@@ -110,7 +115,7 @@ export async function runToolLoop(
   messages: any[],
   options: AgentLoopOptions,
 ): Promise<AgentLoopResult> {
-  const { tools, maxRounds = 5, maxResultChars = 1200, signal, extraBody, onText, onToolCall } = options
+  const { tools, maxRounds = 5, maxResultChars = 1200, signal, extraBody, onConfirm, onText, onToolCall } = options
   const toolsParam = tools.map((t) => ({
     type: 'function',
     function: { name: t.name, description: t.description, parameters: t.parameters },
@@ -172,8 +177,26 @@ export async function runToolLoop(
         .map(([_, c]) => ({ id: c.id, type: 'function', function: { name: c.name, arguments: c.args } })),
     })
     for (const [_, call] of [...calls.entries()].sort(([a], [b]) => a - b)) {
+      const def = byName.get(call.name)
       const t0 = Date.now()
-      const result = await dispatch(byName.get(call.name), call.name, call.args, maxResultChars)
+      let result: string
+      if (def?.risk !== 'write') {
+        result = await dispatch(def, call.name, call.args, maxResultChars)
+      } else {
+        // 确认门：write 工具先问人，批准才真跑。没接门/门抛错/拒绝都按拒绝落账（fail closed）；
+        // 拒绝也是一次「已应答的工具调用」——照常喂回模型，它能看到原因并调整说法
+        let allowed = false
+        if (onConfirm) {
+          try {
+            allowed = await onConfirm({ name: call.name, args: call.args })
+          } catch {
+            allowed = false
+          }
+        }
+        result = allowed
+          ? await dispatch(def, call.name, call.args, maxResultChars)
+          : JSON.stringify({ error: onConfirm ? '用户拒绝了这次工具调用' : '写入类工具未接确认门，已自动拒绝' })
+      }
       const item: ToolTrace = { name: call.name, args: call.args, result, ms: Date.now() - t0 }
       trace.push(item)
       onToolCall?.(item)

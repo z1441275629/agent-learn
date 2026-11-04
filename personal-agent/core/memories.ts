@@ -28,6 +28,8 @@ export interface MemoryStore {
   readonly file: string
   list(): Promise<MemoryEntry[]>
   save(entries: MemoryEntry[]): Promise<void>
+  /** 事务式读改写：load → fn → persist 全程串行（抽取钩子与 remember 工具共用同一文件，链在存储里） */
+  mutate(fn: (entries: MemoryEntry[]) => Promise<MemoryEntry[]> | MemoryEntry[]): Promise<MemoryEntry[]>
   remove(id: string): Promise<boolean>
   clear(): Promise<void>
 }
@@ -44,6 +46,20 @@ export function createMemoryStore(dataDir: string): MemoryStore {
     }
     return { version: 1, entries: [] }
   }
+  const persist = async (entries: MemoryEntry[]): Promise<void> => {
+    await fs.mkdir(path.dirname(file), { recursive: true })
+    const tmp = file + '.tmp'
+    await fs.writeFile(tmp, JSON.stringify({ version: 1, entries }, null, '\t'))
+    await fs.rename(tmp, file)
+  }
+
+  // 读写串行链：所有落盘操作排成一队，先 list 再 save 的窗口里不会插进别的写者（丢更新）
+  let chain: Promise<unknown> = Promise.resolve()
+  const runSerialized = <T>(fn: () => Promise<T>): Promise<T> => {
+    const run = chain.then(fn)
+    chain = run.catch(() => undefined) // 链上吞错：一个失败不许堵死后面的写（错误由调用方自己处理）
+    return run
+  }
 
   return {
     file,
@@ -52,23 +68,30 @@ export function createMemoryStore(dataDir: string): MemoryStore {
       return (await loadDoc()).entries
     },
 
-    async save(entries) {
-      await fs.mkdir(path.dirname(file), { recursive: true })
-      const tmp = file + '.tmp'
-      await fs.writeFile(tmp, JSON.stringify({ version: 1, entries }, null, '\t'))
-      await fs.rename(tmp, file)
+    save(entries) {
+      return runSerialized(() => persist(entries))
+    },
+
+    async mutate(fn) {
+      return runSerialized(async () => {
+        const next = await fn((await loadDoc()).entries)
+        await persist(next)
+        return next
+      })
     },
 
     async remove(id) {
-      const { entries } = await loadDoc()
-      const next = entries.filter((e) => e.id !== id)
-      if (next.length === entries.length) return false
-      await this.save(next)
-      return true
+      return runSerialized(async () => {
+        const { entries } = await loadDoc()
+        const next = entries.filter((e) => e.id !== id)
+        if (next.length === entries.length) return false
+        await persist(next)
+        return true
+      })
     },
 
-    async clear() {
-      await this.save([])
+    clear() {
+      return runSerialized(() => persist([]))
     },
   }
 }

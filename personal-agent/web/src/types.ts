@@ -24,6 +24,14 @@ export interface ToolTraceInfo {
   ms: number
 }
 
+/** 写入类工具的确认卡：outcome 为空 = 等人点允许/拒绝 */
+export interface ConfirmCard {
+  confirmId: string
+  name: string
+  args: string
+  outcome?: 'approved' | 'denied' | 'timeout'
+}
+
 /** 服务端会话里的消息（图片已是可访问的 URL，不再是 base64） */
 export interface DisplayMessage {
   id: number
@@ -39,6 +47,8 @@ export interface DisplayMessage {
   interrupted?: boolean
   /** 这条回答用过的工具（get_time / search_kb …） */
   tools?: ToolTraceInfo[]
+  /** 这条回答里出现过的写入工具确认卡（界面即时交互用，审计以 tools 痕迹为准） */
+  confirms?: ConfirmCard[]
   /** 仅前端：正在流式接收 */
   streaming?: boolean
 }
@@ -132,7 +142,7 @@ export interface ChatRequest {
 }
 
 export interface ChatChunk {
-  type: 'session' | 'delta' | 'tool' | 'done' | 'error'
+  type: 'session' | 'delta' | 'tool' | 'confirm' | 'done' | 'error'
   sessionId?: string
   title?: string
   text?: string
@@ -147,4 +157,7 @@ export interface ChatChunk {
   args?: string
   result?: string
   ms?: number
+  /** type:'confirm'：有 outcome = 卡片定格；无 = 新的确认请求 */
+  confirmId?: string
+  outcome?: 'approved' | 'denied' | 'timeout'
 }

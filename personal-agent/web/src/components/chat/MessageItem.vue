@@ -1,13 +1,26 @@
 <script setup lang="ts">
 import { ref } from 'vue'
-import type { DisplayMessage } from '../../types'
+import type { ConfirmCard, DisplayMessage } from '../../types'
 import MarkdownView from '../common/MarkdownView.vue'
 import UsageMeta from '../common/UsageMeta.vue'
 
-defineProps<{ message: DisplayMessage }>()
+defineProps<{
+  message: DisplayMessage
+  /** 确认卡上的允许/拒绝（穿自 useChat.answerConfirm） */
+  onConfirm?: (card: ConfirmCard, approve: boolean) => void
+}>()
 
 // 工具痕迹默认收起：要点开才看参数/结果——痕迹是审计用的，不该淹没正文
 const openTool = ref<number | null>(null)
+
+// 确认卡参数展示：尽量美化成可读 JSON，失败就原样
+function prettyArgs(args: string): string {
+  try {
+    return JSON.stringify(JSON.parse(args), null, 2)
+  } catch {
+    return args
+  }
+}
 </script>
 
 <template>
@@ -22,6 +35,19 @@ const openTool = ref<number | null>(null)
       </template>
 
       <template v-else>
+        <!-- 写入工具确认卡：批准前工具不跑；args 原文全量展示，人批的才是账上的 -->
+        <div v-for="card in message.confirms" :key="card.confirmId" class="confirm-card" :class="card.outcome">
+          <div class="confirm-head">⚠️ 写入确认 · {{ card.name }}</div>
+          <pre class="confirm-args">{{ prettyArgs(card.args) }}</pre>
+          <div v-if="!card.outcome" class="confirm-actions">
+            <button class="approve" @click="onConfirm?.(card, true)">允许</button>
+            <button class="deny" @click="onConfirm?.(card, false)">拒绝</button>
+          </div>
+          <div v-else class="confirm-outcome">
+            {{ card.outcome === 'approved' ? '✓ 已允许' : card.outcome === 'denied' ? '✗ 已拒绝' : '⏱ 无人应答，已自动拒绝' }}
+          </div>
+        </div>
+
         <div v-if="message.tools?.length" class="tool-trace">
           <button
             v-for="(t, i) in message.tools"
@@ -178,5 +204,71 @@ const openTool = ref<number | null>(null)
   font-family: ui-monospace, Consolas, monospace;
   white-space: pre-wrap;
   word-break: break-all;
+}
+
+.confirm-card {
+  border: 1px solid #fde68a;
+  background: #fffbeb;
+  border-radius: 10px;
+  padding: 8px 12px;
+  margin-bottom: 8px;
+  font-size: 13px;
+}
+
+.confirm-card.approved {
+  border-color: #bbf7d0;
+  background: #f0fdf4;
+}
+
+.confirm-card.denied,
+.confirm-card.timeout {
+  border-color: #fecaca;
+  background: #fef2f2;
+}
+
+.confirm-head {
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.confirm-args {
+  margin: 4px 0 8px;
+  padding: 6px 8px;
+  background: rgb(0 0 0 / 4%);
+  border-radius: 6px;
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.confirm-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.confirm-actions button {
+  font: inherit;
+  font-size: 13px;
+  border-radius: 8px;
+  padding: 4px 14px;
+  cursor: pointer;
+  border: 1px solid var(--line);
+  background: #fff;
+}
+
+.confirm-actions .approve {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.confirm-actions .deny {
+  color: var(--danger);
+}
+
+.confirm-outcome {
+  color: var(--muted);
+  font-size: 12px;
 }
 </style>

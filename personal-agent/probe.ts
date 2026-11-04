@@ -40,6 +40,7 @@ import {
   summarizeConversation,
 } from './core/context.ts'
 import { runToolLoop, truncateToolResult, type ToolDef } from './core/agent.ts'
+import { builtinTools } from './tools.ts'
 
 let pass = 0
 let fail = 0
@@ -672,6 +673,138 @@ console.log('Q10 工具循环（假流式客户端：分片累积/喂回/usage �
   const cut = truncateToolResult('x'.repeat(5000), 1200)
   check('超长结果截断且带标记', cut.length <= 1200 && cut.includes('结果过长已截断'))
   check('短结果原样通过', truncateToolResult('ok', 1200) === 'ok')
+}
+
+console.log('Q11 确认门与写入工具（write 无门不放行 / 拒绝也喂回 / 记忆事务不丢更新）')
+{
+  // —— 最小假客户端：第一轮回单个 tool_call，第二轮回文本 ——
+  const callChunk = (name: string) => [
+    {
+      choices: [
+        { delta: { tool_calls: [{ index: 0, id: 'c1', type: 'function', function: { name, arguments: '{}' } }] } },
+      ],
+    },
+  ]
+  const textChunk = (t: string) => [{ choices: [{ delta: { content: t } }] }]
+  function fakeClient(script: any[][]) {
+    const calls: any[] = []
+    let i = 0
+    return {
+      calls,
+      chat: {
+        completions: {
+          create: async () => {
+            calls.push(i)
+            const chunks = script[Math.min(i, script.length - 1)]
+            i++
+            return (async function* () {
+              for (const c of chunks) yield c
+            })()
+          },
+        },
+      },
+    } as any
+  }
+  const makeWriter = (spy: { ran: number }): ToolDef => ({
+    name: 'writer',
+    description: '',
+    parameters: { type: 'object', properties: {} },
+    risk: 'write',
+    run: async () => {
+      spy.ran++
+      return 'WROTE'
+    },
+  })
+  const reader: ToolDef = {
+    name: 'reader',
+    description: '',
+    parameters: { type: 'object', properties: {} },
+    risk: 'read',
+    run: async () => 'READ',
+  }
+
+  // ① 批准 → write 真跑，结果照常喂回
+  {
+    const spy = { ran: 0 }
+    const client = fakeClient([callChunk('writer'), textChunk('done')])
+    const r = await runToolLoop(client, 'm', [{ role: 'user', content: 'q' }], {
+      tools: [makeWriter(spy)],
+      onConfirm: async () => true,
+    })
+    check('批准后 write 真的执行', spy.ran === 1)
+    check('批准路径结果照常喂回', r.trace[0].result === 'WROTE')
+  }
+
+  // ② 拒绝 → 不执行，拒绝理由作为工具结果喂回，循环继续
+  {
+    const spy = { ran: 0 }
+    const client = fakeClient([callChunk('writer'), textChunk('done')])
+    const r = await runToolLoop(client, 'm', [{ role: 'user', content: 'q' }], {
+      tools: [makeWriter(spy)],
+      onConfirm: async () => false,
+    })
+    check('拒绝后 write 不执行', spy.ran === 0)
+    check('拒绝理由喂回模型', JSON.parse(r.trace[0].result).error === '用户拒绝了这次工具调用')
+    check('被拒的调用也进第二轮消息（tool_call 必须有应答）', client.calls.length === 2 && r.text === 'done')
+  }
+
+  // ③ 没接确认门 → fail closed（write 永不无门放行）
+  {
+    const spy = { ran: 0 }
+    const client = fakeClient([callChunk('writer'), textChunk('done')])
+    const r = await runToolLoop(client, 'm', [{ role: 'user', content: 'q' }], { tools: [makeWriter(spy)] })
+    check('无门自动拒绝且不执行', spy.ran === 0 && JSON.parse(r.trace[0].result).error?.includes('未接确认门'))
+  }
+
+  // ④ 门抛错 → 按拒绝（门坏了不能变成放行）
+  {
+    const spy = { ran: 0 }
+    const client = fakeClient([callChunk('writer'), textChunk('done')])
+    const r = await runToolLoop(client, 'm', [{ role: 'user', content: 'q' }], {
+      tools: [makeWriter(spy)],
+      onConfirm: async () => {
+        throw new Error('门坏了')
+      },
+    })
+    check('门抛错按拒绝', spy.ran === 0 && JSON.parse(r.trace[0].result).error?.includes('用户拒绝'))
+  }
+
+  // ⑤ read 工具不过门
+  {
+    let gated = 0
+    const client = fakeClient([callChunk('reader'), textChunk('done')])
+    const r = await runToolLoop(client, 'm', [{ role: 'user', content: 'q' }], {
+      tools: [reader],
+      onConfirm: async () => {
+        gated++
+        return false
+      },
+    })
+    check('read 不触发确认门', gated === 0 && r.trace[0].result === 'READ')
+  }
+
+  // ⑥ 记忆事务：mutate 串行化 + remember 工具行为
+  {
+    const tmp = path.join(os.tmpdir(), `pa-probe-memtx-${Date.now()}`)
+    const mem = createMemoryStore(tmp)
+    await mem.mutate((es) => [...es, { id: 'm1', text: '喜欢乌龙茶', createdAt: 't', updatedAt: 't' }])
+    // 并发两个 mutate：串行链保证都生效（先 list 后 save 的窗口里不丢更新）
+    await Promise.all([
+      mem.mutate((es) => [...es, { id: 'm2', text: 'B', createdAt: 't', updatedAt: 't' }]),
+      mem.mutate((es) => [...es, { id: 'm3', text: 'C', createdAt: 't', updatedAt: 't' }]),
+    ])
+    check('并发 mutate 不丢更新', (await mem.list()).length === 3, String((await mem.list()).length))
+
+    const bt = builtinTools({ kb: createKbStore(tmp), memories: mem })
+    const remember = bt.find((t) => t.name === 'remember')!
+    check('remember 注册为 write 风险', remember.risk === 'write')
+    check('remember 写入成功', (await remember.run({ text: '喜欢爬山' })).includes('已记住'))
+    check('重复 remember 幂等', (await remember.run({ text: '喜欢爬山' })).includes('已经存在'))
+    check('空文本拒绝', (await remember.run({ text: '' })).includes('error'))
+    check('超长文本拒绝', (await remember.run({ text: '长'.repeat(301) })).includes('error'))
+    check('库里有且仅有一条爬山', (await mem.list()).filter((e) => e.text === '喜欢爬山').length === 1)
+    await fs.rm(tmp, { recursive: true, force: true })
+  }
 }
 
 await terminateOcr()

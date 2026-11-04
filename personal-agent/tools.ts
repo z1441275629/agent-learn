@@ -1,15 +1,18 @@
 // 工作台的具体工具面（注册表）。通用循环在 core/agent.ts；这里只定义「这个产品有哪些工具」。
 //
-// v1 只注册只读工具（risk:'read'，自动放行）：
+// 只读工具（risk:'read'，自动放行）：
 //   - get_time：回答「今天/现在」类问题的锚点——模型对当前时间永远是无知的，别让它猜
 //   - search_kb：模型自主检索知识库——比固定自动注入强在可以换关键词多查几次（多跳问题），
 //     且「要不要查」由模型判断；工具模式下自动注入关闭，避免同一内容双份进上下文
-// 写入类工具（如 remember）+ 确认门是下一层：risk:'write' 的工具循环层已预留，先不注册。
+// 写入工具（risk:'write'，循环层确认门批准才跑）：
+//   - remember：把用户明确要记的事实写进长期记忆（课程 07 的 A 路线）——参数原文
+//     会出现在确认卡上，人批准的才是账上的（PITFALLS #39：派生内容不得未经批准长命于源头）
 
+import { newId, type MemoryStore } from './core/memories.ts'
 import type { ToolDef } from './core/agent.ts'
 import type { KbStore } from './core/rag.ts'
 
-export function builtinTools(deps: { kb: KbStore }): ToolDef[] {
+export function builtinTools(deps: { kb: KbStore; memories: MemoryStore }): ToolDef[] {
   return [
     {
       name: 'get_time',
@@ -38,6 +41,31 @@ export function builtinTools(deps: { kb: KbStore }): ToolDef[] {
         const hits = await deps.kb.search(query, 3)
         if (!hits.length) return '知识库中没有检索到相关内容。'
         return hits.map((h, i) => `[${i + 1}]《${h.docName}》（相关度 ${h.score.toFixed(2)}）\n${h.text}`).join('\n\n')
+      },
+    },
+    {
+      name: 'remember',
+      description:
+        '把一条关于用户的持久事实写入长期记忆（跨会话生效）。只在用户明确表达「记住这个」时调用；text 用一句话陈述事实本身，不要夹带解释。',
+      parameters: {
+        type: 'object',
+        properties: { text: { type: 'string', description: '要记住的事实，一句话' } },
+        required: ['text'],
+      },
+      risk: 'write',
+      run: async (args) => {
+        const text = String(args?.text ?? '').trim()
+        if (!text) return JSON.stringify({ error: 'text 不能为空' })
+        if (text.length > 300) return JSON.stringify({ error: '单条记忆太长（>300 字），拆成更短的事实' })
+        let existed = false
+        // mutate：读改写全程串行——与后台抽取钩子共用 memories.json，不许在窗口里互相覆盖
+        await deps.memories.mutate((entries) => {
+          existed = entries.some((e) => e.text === text)
+          if (existed) return entries
+          const iso = new Date().toISOString()
+          return [...entries, { id: newId(), text, createdAt: iso, updatedAt: iso }]
+        })
+        return existed ? '这条记忆已经存在，无需重复记录。' : `已记住：${text}`
       },
     },
   ]

@@ -105,6 +105,16 @@ export async function deleteMemory(id: string): Promise<void> {
   if (!res.ok) throw new Error(await readError(res))
 }
 
+/** 应答写入工具的确认卡（允许/拒绝）。404 = 已处理或已超时，静默即可 */
+export async function confirmToolCall(confirmId: string, approve: boolean): Promise<void> {
+  const res = await fetch('/api/chat/confirm', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ confirmId, approve }),
+  })
+  if (!res.ok) throw new Error(await readError(res))
+}
+
 export async function clearMemories(): Promise<void> {
   const res = await fetch('/api/memories', { method: 'DELETE' })
   if (!res.ok) throw new Error(await readError(res))

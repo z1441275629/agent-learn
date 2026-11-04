@@ -6,8 +6,8 @@
 //   - 失败的消息留在界面，但服务端构建上下文时会排除（规则在 chat.ts）
 
 import { reactive, ref } from 'vue'
-import { fetchModels, getSession, listSessions, streamChat } from '../api'
-import type { DisplayMessage, ModelEntry, PendingAttachment, SessionSummary } from '../types'
+import { confirmToolCall, fetchModels, getSession, listSessions, streamChat } from '../api'
+import type { ConfirmCard, DisplayMessage, ModelEntry, PendingAttachment, SessionSummary } from '../types'
 import { toast } from '../utils/toast'
 
 const MAX_DOC_BYTES = 100 * 1024
@@ -185,7 +185,21 @@ export function useChat() {
             placeholder.content = acc
           } else if (chunk.type === 'tool') {
             // 工具跑完才发这帧：参数/结果/耗时一次到位，界面收到的都是已发生的事实
-            placeholder.tools = [...(placeholder.tools ?? []), { name: chunk.name ?? '', args: chunk.args ?? '', result: chunk.result ?? '', ms: chunk.ms ?? 0 }]
+            placeholder.tools = [
+              ...(placeholder.tools ?? []),
+              { name: chunk.name ?? '', args: chunk.args ?? '', result: chunk.result ?? '', ms: chunk.ms ?? 0 },
+            ]
+          } else if (chunk.type === 'confirm') {
+            // 写入工具的确认卡：带 outcome = 定格既有卡片；不带 = 新请求等人点
+            if (chunk.outcome) {
+              const card = placeholder.confirms?.find((c) => c.confirmId === chunk.confirmId)
+              if (card) card.outcome = chunk.outcome
+            } else {
+              placeholder.confirms = [
+                ...(placeholder.confirms ?? []),
+                { confirmId: chunk.confirmId ?? '', name: chunk.name ?? '', args: chunk.args ?? '' },
+              ]
+            }
           } else if (chunk.type === 'done') {
             placeholder.content = chunk.text || acc
             placeholder.usage = chunk.usage
@@ -220,6 +234,18 @@ export function useChat() {
     controller?.abort()
   }
 
+  /** 确认卡上的允许/拒绝：先本地定格（即时反馈），服务端的 outcome 帧随后一锤定音 */
+  async function answerConfirm(card: ConfirmCard, approve: boolean): Promise<void> {
+    card.outcome = approve ? 'approved' : 'denied'
+    try {
+      await confirmToolCall(card.confirmId, approve)
+    } catch (e: any) {
+      // 没送到（多半是已超时/已断流被服务端收掉了）——卡片交还给 outcome 帧 / 恢复可点
+      toast('确认没送到：' + (e?.message ?? e))
+      card.outcome = undefined
+    }
+  }
+
   return {
     models,
     modelId,
@@ -241,5 +267,6 @@ export function useChat() {
     removePending,
     send,
     stop,
+    answerConfirm,
   }
 }

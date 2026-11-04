@@ -52,7 +52,7 @@ const config = loadConfig()
 const store = createSessionStore(config.dataDir)
 const memories = createMemoryStore(config.dataDir)
 const kb = createKbStore(config.dataDir)
-const tools = builtinTools({ kb })
+const tools = builtinTools({ kb, memories })
 /** 同一会话同时只跑一轮：多标签页/重复点击时，后来的请求 409，避免账本写乱 */
 const runningSessions = new Set<string>()
 
@@ -286,6 +286,17 @@ function runMemoryExtraction(sid: string, userText: string): void {
     .catch((err: any) => console.error(`[pa] 记忆抽取失败（本轮跳过，记忆保持原样）：${err?.message ?? err}`))
 }
 
+// ---------- 写入工具确认门：SSE 出卡 → 人点允许/拒绝 → 循环继续 ----------
+// 门在服务端持有：循环层只拿到一个 Promise<boolean>；没人应答（超时/断流）按拒绝收尾，
+// 永不无限挂着等——「人没说话」对工具而言就是「不行」
+const CONFIRM_TIMEOUT_MS = Number(process.env.PA_CONFIRM_TIMEOUT_MS || 120_000)
+type ConfirmOutcome = 'approved' | 'denied' | 'timeout'
+interface PendingConfirm {
+  sid: string
+  settle: (approve: boolean, outcome: ConfirmOutcome) => void
+}
+const pendingConfirms = new Map<string, PendingConfirm>()
+
 // ---------- 对话：服务端持有账本，客户端只发新消息；流式 SSE ----------
 interface ChatBody {
   sessionId?: string | null
@@ -343,8 +354,8 @@ async function handleChat(req: http.IncomingMessage, res: http.ServerResponse) {
       },
     )
 
-    // 工具模式（默认开）：模型可调只读工具（get_time / search_kb）；知识库此时走工具检索，
-    // 自动注入只在工具关闭时做（同一内容不双份进上下文）
+    // 工具模式（默认开）：模型可调工具——只读的直接跑，写入的（remember）先过确认门；
+    // 知识库此时走工具检索，自动注入只在工具关闭时做（同一内容不双份进上下文）
     const toolsOn = body.tools !== false
     const kbBlock = !toolsOn && body.kbSearch !== false ? await kbContextFor(doc) : null
     const messages = await prepareContext(doc, entry, body.imageElision !== false, kbBlock, toolsOn)
@@ -361,10 +372,30 @@ async function handleChat(req: http.IncomingMessage, res: http.ServerResponse) {
     // 第一帧就告诉前端会话 id/标题：新会话由服务端创建，前端据此刷新列表
     send({ type: 'session', sessionId: sid, title: doc.title })
 
-    // 客户端断开/点停止 → abort 上游，别让没人看的长回答继续烧 token；半截回答仍要落盘
+    /** 出确认卡等人点：批准/拒绝/超时都给循环一个明确答复（超时也发 outcome 帧让卡片定格） */
+    const askConfirm = (req: { name: string; args: string }) =>
+      new Promise<boolean>((resolve) => {
+        const confirmId = `cf_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`
+        const settle = (approve: boolean, outcome: ConfirmOutcome) => {
+          clearTimeout(timer)
+          pendingConfirms.delete(confirmId)
+          send({ type: 'confirm', confirmId, outcome })
+          resolve(approve)
+        }
+        const timer = setTimeout(() => settle(false, 'timeout'), CONFIRM_TIMEOUT_MS)
+        pendingConfirms.set(confirmId, { sid, settle })
+        send({ type: 'confirm', confirmId, name: req.name, args: req.args })
+        console.log(`[pa] 等待确认 ${req.name} ${req.args.slice(0, 80)} · session ${sid}`)
+      })
+
+    // 客户端断开/点停止 → abort 上游，别让没人看的长回答继续烧 token；半截回答仍要落盘；
+    // 还没应答的确认卡按拒绝收尾（门不能比流活得久）
     const ac = new AbortController()
     res.on('close', () => {
-      if (!res.writableEnded) ac.abort()
+      if (!res.writableEnded) {
+        ac.abort()
+        for (const p of pendingConfirms.values()) if (p.sid === sid) p.settle(false, 'denied')
+      }
     })
     const t0 = Date.now()
     // 服务端自己留一份已流出文本：runToolLoop 抛错（网络等）时半截内容还在手里，能落盘
@@ -389,6 +420,7 @@ async function handleChat(req: http.IncomingMessage, res: http.ServerResponse) {
         signal: ac.signal,
         maxRounds: 5,
         extraBody: thinkingParams(body.thinking ?? 'off'),
+        onConfirm: askConfirm,
         onText: (delta) => {
           streamedText += delta
           send({ type: 'delta', text: delta })
@@ -538,6 +570,15 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse) {
     if (kbMatch && req.method === 'DELETE') {
       const ok = await kb.remove(decodeURIComponent(kbMatch[1]))
       if (!ok) return json(res, 404, { error: '没有这个文档' })
+      return json(res, 200, { ok: true })
+    }
+
+    // 确认门应答（确认卡上的允许/拒绝按钮）：找不到 = 已处理/已超时/已断流
+    if (req.method === 'POST' && url.pathname === '/api/chat/confirm') {
+      const body = JSON.parse(await readBody(req)) as { confirmId?: string; approve?: boolean }
+      const pending = pendingConfirms.get(String(body.confirmId ?? ''))
+      if (!pending) return json(res, 404, { error: '确认请求不存在或已处理' })
+      pending.settle(body.approve === true, body.approve === true ? 'approved' : 'denied')
       return json(res, 200, { ok: true })
     }
 

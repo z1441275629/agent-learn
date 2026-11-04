@@ -32,6 +32,7 @@ const {
   removePending,
   send,
   stop,
+  answerConfirm,
 } = useChat()
 
 const {
@@ -71,7 +72,7 @@ watch(streaming, (now, was) => {
       />
       <MemoryPanel v-if="memoryOpen" :items="memoryItems" @close="memoryOpen = false" @remove="removeMemory" />
       <KbPanel v-if="kbOpen" :docs="kbDocs" @close="kbOpen = false" @upload="uploadKb" @remove="removeKb" />
-      <MessageList :messages="messages" />
+      <MessageList :messages="messages" :on-confirm="answerConfirm" />
       <ChatComposer
         :pending="pending"
         :streaming="streaming"
