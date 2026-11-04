@@ -53,10 +53,37 @@ LLM_VISION_API_KEY=...    # 缺省 LLM_BACKUP_API_KEY → LLM_API_KEY
 
 AI 失败（配额/网络/输出不合规重试后）返回 502，UI 提示切回本地——AI 挂不拖累本地路线。
 
+### 前端（Vue 3 + Vite）
+
+源码在 `personal-agent/web/`，按职责拆开——网络形状只改 `api.ts`，状态与流程在 `composables/`，
+组件只负责渲染：
+
+```text
+web/
+├── index.html
+├── vite.config.ts          # 开发端口 5173 + /api 代理到 8798；构建输出到 ../public
+└── src/
+    ├── main.ts / App.vue / styles.css
+    ├── types.ts            # 与 Node 服务端对齐的数据形状
+    ├── api.ts              # 所有 fetch / SSE 解析都在这里
+    ├── composables/        # useChat（对话状态 + 流式）、useOcr（识别状态）
+    ├── components/
+    │   ├── common/         # AppHeader / ToastHost / MarkdownView / UsageMeta
+    │   ├── chat/           # ChatPane / ChatToolbar / MessageList / MessageItem / ChatComposer / AttachmentChip
+    │   └── ocr/            # OcrPane / OcrDropZone / OcrToolbar / OcrLineList / OcrLineItem
+    └── utils/              # markdown / usage / clipboard / toast
+```
+
 ```bash
+npm run pa:web                    # 开发：Vite 5173（热更新，另开 8798 的 Node 服务）
+npm run pa:build                  # 构建到 personal-agent/public（server 直接托管）
+npm run pa:check                  # 前端 .ts 类型检查
+
 node personal-agent/server.ts     # → http://127.0.0.1:8798（对话 + 截图取字两个标签页）
 node personal-agent/probe.ts      # 零 token 探针（OCR + 消息归一/图片省略规则）
 ```
+
+`personal-agent/public/` 是构建产物（文件名固定，便于 git diff），不要手改；改 UI 请改 `web/src/`。
 
 环境变量：`PA_PORT`（默认 8798）、`PA_HOST`（默认 127.0.0.1，只本机）。
 

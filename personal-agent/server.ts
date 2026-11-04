@@ -8,6 +8,10 @@
 //   /api/chat   —— 常规 agent 对话：文本+图片+文本附件，流式 SSE，模型/思考强度可选
 //   /api/ocr    —— 截图取字：本地 tesseract 或视觉 LLM 两条路线
 //
+// 前端是 Vue 3 + Vite（源码 personal-agent/web/），构建产物在 personal-agent/public/：
+//   npm run pa:build   # 一次性构建，server 直接托管
+//   npm run pa:web     # 或者起 Vite 开发服务器（5173，/api 代理到 8798）
+//
 // 跑法：node personal-agent/server.ts   →  http://127.0.0.1:8798
 import http from 'node:http'
 import fs from 'node:fs/promises'
@@ -19,9 +23,46 @@ import { MODELS, DEFAULT_MODEL_ID, THINKING_LEVELS, thinkingParams } from './mod
 import { normalizeMessages, lastUserHasImages, type ChatMessage, type ChatUsage } from './chat.ts'
 
 const DIR = import.meta.dirname
+const PUBLIC_DIR = path.join(DIR, 'public')
 const PORT = Number(process.env.PA_PORT || 8798)
 const HOST = process.env.PA_HOST || '127.0.0.1'
 const MAX_BODY = 25 * 1024 * 1024 // 截图/图片附件一般在几 MB；25MB 上限防误打爆
+
+const STATIC_MIME: Record<string, string> = {
+	'.html': 'text/html; charset=utf-8',
+	'.js': 'text/javascript; charset=utf-8',
+	'.css': 'text/css; charset=utf-8',
+	'.svg': 'image/svg+xml',
+	'.png': 'image/png',
+	'.jpg': 'image/jpeg',
+	'.ico': 'image/x-icon',
+	'.json': 'application/json; charset=utf-8',
+	'.woff2': 'font/woff2',
+}
+
+/** 托管 Vue 构建产物（frontend 源码在 web/，构建输出到 public/）。返回 false = 没这个文件 */
+async function serveStatic(pathname: string, res: http.ServerResponse): Promise<boolean> {
+	let rel: string
+	try {
+		rel = pathname === '/' ? 'index.html' : decodeURIComponent(pathname).replace(/^\/+/, '')
+	} catch {
+		return false
+	}
+	const file = path.resolve(PUBLIC_DIR, rel)
+	if (!file.startsWith(PUBLIC_DIR + path.sep)) return false // 防 ../ 目录穿越
+	try {
+		const data = await fs.readFile(file)
+		res.writeHead(200, {
+			'Content-Type': STATIC_MIME[path.extname(file).toLowerCase()] ?? 'application/octet-stream',
+			// 产物文件名固定（方便 git diff），所以不能长缓存——每次协商，避免换版后拿旧 JS
+			'Cache-Control': 'no-cache',
+		})
+		res.end(data)
+		return true
+	} catch {
+		return false
+	}
+}
 
 const json = (res: http.ServerResponse, code: number, data: unknown) => {
 	res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8' })
@@ -109,10 +150,12 @@ async function handleChat(req: http.IncomingMessage, res: http.ServerResponse) {
 async function handle(req: http.IncomingMessage, res: http.ServerResponse) {
 	const url = new URL(req.url ?? '/', `http://${req.headers.host}`)
 	try {
-		if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/index.html')) {
-			const html = await fs.readFile(path.join(DIR, 'public', 'index.html'))
-			res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' })
-			return res.end(html)
+		// 前端静态资源（Vue 构建产物）；/api/* 走下面的接口
+		if (req.method === 'GET' && !url.pathname.startsWith('/api')) {
+			if (await serveStatic(url.pathname, res)) return
+			return json(res, 404, {
+				error: `没这个文件：${url.pathname}${url.pathname === '/' ? '（先跑 npm run pa:build 生成 frontend）' : ''}`,
+			})
 		}
 
 		// 模型目录 + 思考档位（UI 下拉框数据源）

@@ -23,6 +23,9 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "pa": "node personal-agent/server.ts",
+    "pa:web": "vite personal-agent/web",
+    "pa:build": "vite build personal-agent/web",
+    "pa:check": "tsc --noEmit -p personal-agent/web/tsconfig.json",
     "pa:probe": "node personal-agent/probe.ts"
   },
   "dependencies": {
@@ -42,12 +45,15 @@
     "fast-xml-parser": "^5.11.2",
     "openai": "^7.23.0",
     "tesseract.js": "^7.0.0",
+    "vue": "^3.5.44",
     "zod": "^4.6.5"
   },
   "devDependencies": {
     "@types/node": "^26.6.5",
+    "@vitejs/plugin-vue": "^6.0.10",
     "prettier": "^3.9.10",
-    "typescript": "^7.0.2"
+    "typescript": "^7.0.2",
+    "vite": "^8.3.5"
   },
   "overrides": {
     "@opentelemetry/api": "1.10.0",

@@ -19,5 +19,11 @@
 		"forceConsistentCasingInFileNames": true
 	},
 	"include": ["**/*.ts"],
-	"exclude": ["node_modules", "11-production/traces", "12-capstone/daily-brief/app", "12-capstone/daily-brief-v2/app"]
+	"exclude": [
+		"node_modules",
+		"11-production/traces",
+		"12-capstone/daily-brief/app",
+		"12-capstone/daily-brief-v2/app",
+		"personal-agent/web"
+	]
 }
