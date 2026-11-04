@@ -2,6 +2,7 @@
 import { onBeforeUnmount, onMounted, ref } from 'vue'
 import type { PendingAttachment } from '../../types'
 import { toast } from '../../utils/toast'
+import { useVoiceInput } from '../../composables/useVoiceInput'
 import AttachmentChip from './AttachmentChip.vue'
 
 const props = defineProps<{
@@ -24,6 +25,9 @@ const textarea = ref<HTMLTextAreaElement | null>(null)
 const imageInput = ref<HTMLInputElement | null>(null)
 const docInput = ref<HTMLInputElement | null>(null)
 
+// 语音输入：浏览器原生识别，识别文本实时写进 draft（不支持该 API 的浏览器藏按钮）
+const { supported: voiceSupported, listening, toggle: toggleVoice, finalize: finalizeVoice } = useVoiceInput(draft)
+
 function resize(): void {
   const el = textarea.value
   if (!el) return
@@ -33,6 +37,7 @@ function resize(): void {
 
 function submit(): void {
   if (props.streaming) return
+  if (listening.value) finalizeVoice() // 边说边发：先定格（撤掉未定段的转写），再取文本
   const text = draft.value.trim()
   if (!text && props.pending.length === 0) return
   emit('send', text)
@@ -92,13 +97,22 @@ onBeforeUnmount(() => document.removeEventListener('paste', onPaste))
         ref="textarea"
         v-model="draft"
         rows="1"
-        placeholder="输入消息，Enter 发送，Shift+Enter 换行"
+        :readonly="listening"
+        :placeholder="listening ? '正在听你说…（点 ⏹ 或发送结束）' : '输入消息，Enter 发送，Shift+Enter 换行'"
         @keydown="onKeydown"
         @input="resize"
       ></textarea>
       <button class="icon" title="上传图片" @click="imageInput?.click()">🖼</button>
       <button class="icon" title="上传文本附件" @click="docInput?.click()">📎</button>
-      <button class="icon" title="语音输入（下一版接入）" @click="toast('语音输入下一版接入')">🎤</button>
+      <button
+        v-if="voiceSupported"
+        class="icon mic"
+        :class="{ rec: listening }"
+        :title="listening ? '停止录音（60 秒自动停）' : '语音输入：说话转文字（浏览器识别，需麦克风权限）'"
+        @click="toggleVoice"
+      >
+        {{ listening ? '⏹' : '🎤' }}
+      </button>
       <button class="primary" @click="streaming ? emit('stop') : submit()">
         {{ streaming ? '停止' : '发送' }}
       </button>
@@ -112,7 +126,9 @@ onBeforeUnmount(() => document.removeEventListener('paste', onPaste))
       hidden
       @change="pickDocs"
     />
-    <div class="hint">图片发送给视觉模型；文本附件读入正文（单文件 ≤100KB）。语音输入下一版接入。</div>
+    <div class="hint">
+      图片发送给视觉模型；文本附件读入正文（单文件 ≤100KB）{{ voiceSupported ? '；🎤 说话转文字（浏览器识别）' : '' }}
+    </div>
   </footer>
 </template>
 
@@ -163,6 +179,23 @@ textarea:focus {
   background: #fff;
   cursor: pointer;
   font-size: 16px;
+}
+
+.icon.mic.rec {
+  border-color: #e11d48;
+  background: #e11d48;
+  color: #fff;
+  animation: mic-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes mic-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgb(225 29 72 / 35%);
+  }
+  50% {
+    box-shadow: 0 0 0 6px rgb(225 29 72 / 0%);
+  }
 }
 
 .primary {

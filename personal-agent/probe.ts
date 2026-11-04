@@ -41,6 +41,7 @@ import {
 } from './core/context.ts'
 import { runToolLoop, truncateToolResult, type ToolDef } from './core/agent.ts'
 import { builtinTools } from './tools.ts'
+import { mergeVoiceResults, voiceErrorMessage, type VoiceResultItem } from './web/src/utils/voice.ts'
 
 let pass = 0
 let fail = 0
@@ -846,6 +847,39 @@ console.log('Q12 记忆写侧对偶（forget 精确删 / add_note 入库即检�
   check('缺标题自动补日期', (await addNote.run({ text: '无标题笔记内容' })).includes('对话笔记'), '')
 
   await fs.rm(tmp, { recursive: true, force: true })
+}
+
+console.log('Q13 语音输入纯逻辑（累积结果全量重建 / 错误码给人话）')
+{
+  // 浏览器 onresult 的 results 是累积列表：interim 段会在后续事件里变成 final
+  const item = (text: string, isFinal: boolean): VoiceResultItem => ({ isFinal, length: 1, 0: text })
+  check(
+    'interim 不进 final',
+    mergeVoiceResults([item('今天', false)]).finalText === '' &&
+      mergeVoiceResults([item('今天', false)]).interimText === '今天',
+  )
+  const evolving = [item('今天天气', true), item('怎么样', false)]
+  check(
+    'final 与 interim 分开拼接',
+    (() => {
+      const r = mergeVoiceResults(evolving)
+      return r.finalText === '今天天气' && r.interimText === '怎么样'
+    })(),
+  )
+  const settled = [item('今天天气', true), item('怎么样', true)]
+  check(
+    'interim 变 final 后不重复（全量重建）',
+    mergeVoiceResults(settled).finalText === '今天天气怎么样' && mergeVoiceResults(settled).interimText === '',
+  )
+  check(
+    '多候选只取最优 [0]',
+    mergeVoiceResults([{ isFinal: true, length: 2, 0: '最优', 1: '备选' }]).finalText === '最优',
+  )
+  check('空列表全空', mergeVoiceResults([]).finalText === '' && mergeVoiceResults([]).interimText === '')
+  check('权限错误给人话', voiceErrorMessage({ error: 'not-allowed' }).includes('麦克风'))
+  check('无声可静默处理', voiceErrorMessage({ error: 'no-speech' }).includes('没听到'))
+  check('aborted 静默（正常停止路径）', voiceErrorMessage({ error: 'aborted' }) === '')
+  check('未知错误也有一句话', voiceErrorMessage({ error: 'strange' }).includes('strange'))
 }
 
 await terminateOcr()
