@@ -6,13 +6,15 @@ defineProps<{
   sessions: SessionSummary[]
   sessionId: string | null
   memoryCount: number
+  kbCount: number
 }>()
-const emit = defineEmits<{ open: [id: string]; newChat: []; toggleMemory: [] }>()
+const emit = defineEmits<{ open: [id: string]; newChat: []; toggleMemory: []; toggleKb: [] }>()
 
 // Vue 3.4+ 的 defineModel：子组件里像普通 ref 一样用，父组件用 v-model:model-id 绑定
 const modelId = defineModel<string>('modelId', { required: true })
 const thinking = defineModel<string>('thinking', { required: true })
 const elide = defineModel<boolean>('elide', { required: true })
+const kbSearch = defineModel<boolean>('kbSearch', { required: true })
 
 function openSession(event: Event): void {
   const id = (event.target as HTMLSelectElement).value
@@ -29,6 +31,9 @@ function openSession(event: Event): void {
     <button class="ghost" @click="emit('newChat')">新对话</button>
     <button class="ghost" title="跨会话长期记忆（自动抽取，可查看/删除）" @click="emit('toggleMemory')">
       记忆 {{ memoryCount }}
+    </button>
+    <button class="ghost" title="个人笔记知识库（上传切块索引，对话时关键词检索注入）" @click="emit('toggleKb')">
+      知识库 {{ kbCount }}
     </button>
 
     <span class="divider"></span>
@@ -47,6 +52,10 @@ function openSession(event: Event): void {
     <label class="toggle" title="聊天 API 无状态：历史图片每轮都会重新计费。开启后旧图替换成文字占位">
       <input v-model="elide" type="checkbox" />
       图片仅最近一轮
+    </label>
+    <label class="toggle" title="提问时按关键词检索知识库，命中的笔记片段作为参考注入（本地 BM25，零 API 成本）">
+      <input v-model="kbSearch" type="checkbox" />
+      知识库检索
     </label>
   </div>
 </template>

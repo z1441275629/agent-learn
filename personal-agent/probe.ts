@@ -18,6 +18,16 @@ import {
   shouldAcceptExtraction,
 } from './core/memories.ts'
 import {
+  bm25Search,
+  chunkText,
+  createKbStore,
+  renderKbBlock,
+  tokenize,
+  withKbContext,
+  worthSearching,
+  type KbDocRecord,
+} from './core/rag.ts'
+import {
   IMAGE_TOKEN_ESTIMATE,
   applyWindow,
   contentTokens,
@@ -403,6 +413,110 @@ console.log('Q8 长期记忆（抽取输出守门 / 完整列表重放 / 存储�
     check('删除不存在的 id 返回 false', (await memStore.remove('nope')) === false)
     await memStore.clear()
     check('清空后为空', (await memStore.list()).length === 0)
+    await fs.rm(tmp, { recursive: true, force: true })
+  }
+}
+
+console.log('Q9 知识库检索（BM25 本地检索：分词/切块/打分/注入）')
+{
+  check(
+    '分词：CJK 二元组 + 英数连串',
+    tokenize('妻子李露露用999皮炎平').join(',') === '妻子,子李,李露,露露,露用,999,皮炎,炎平',
+  )
+  check('分词：单字中文串保留本身', tokenize('好').join() === '好')
+
+  {
+    const chunks = chunkText(['第一行', '', '第二行', ' '.repeat(10), '第三行'].join('\n'))
+    check(
+      '切块：空行/空白行被剔除后打包',
+      chunks.length === 1 && chunks[0] === '第一行\n第二行\n第三行',
+      JSON.stringify(chunks),
+    )
+    const packed = chunkText(Array.from({ length: 5 }, (_, i) => `行${i + 1}`).join('\n'), 10)
+    check(
+      '切块：超过上限开新块',
+      packed.length === 2 && packed[0] === '行1\n行2\n行3' && packed[1] === '行4\n行5',
+      JSON.stringify(packed),
+    )
+    const long = chunkText('长'.repeat(25), 10)
+    check(
+      '切块：超长单行按字符硬切',
+      long.length === 3 && long.every((c) => c.length <= 10) && long.join('').length === 25,
+    )
+    check('切块：CRLF 归一', chunkText('a\r\nb').join() === 'a\nb')
+  }
+
+  {
+    const docs: KbDocRecord[] = [
+      { id: 'd1', name: '养老保险笔记', createdAt: '', chunks: ['养老保险要交满 15 年，退休后按月领取基本养老金'] },
+      { id: 'd2', name: '买菜清单', createdAt: '', chunks: ['牛奶两盒，鸡蛋一打，下周三之前买'] },
+    ]
+    const hits = bm25Search('养老保险要交多少年', docs)
+    check('命中正确文档', hits.length === 1 && hits[0].docId === 'd1' && hits[0].docName === '养老保险笔记')
+    check('零分文档不进排名', !hits.some((h) => h.docId === 'd2'))
+    check('空库返回空', bm25Search('随便', []).length === 0)
+    check('topK 生效', bm25Search('养老保险 牛奶 鸡蛋', docs, 1).length === 1)
+    const block = renderKbBlock(hits)
+    check(
+      '注入块带文档名与免责说明',
+      block.includes('《养老保险笔记》') && block.includes('可能相关也可能无关') && block.includes('15 年'),
+    )
+  }
+
+  {
+    check('寒暄不值得检索（单 token）', worthSearching('继续') === false && worthSearching('好的') === false)
+    check('两个不同 token 才检索', worthSearching('养老保险') === true && worthSearching('abc def') === true)
+  }
+
+  {
+    const msgs = [
+      { role: 'user', content: '旧问题' },
+      { role: 'assistant', content: '旧回答' },
+      { role: 'user', content: '新问题' },
+    ]
+    const out = withKbContext(msgs as any, '【知识库参考】X')
+    check(
+      '注入只动最后一条 user（文本拼接）',
+      out[0].content === '旧问题' && out[2].content === '【知识库参考】X\n\n新问题',
+    )
+    check('注入不改入参（纯函数）', msgs[2].content === '新问题')
+    const multi = withKbContext(
+      [{ role: 'user', content: [{ type: 'text', text: '看图' }, { type: 'image_url' }] } as any],
+      '块',
+    )
+    check(
+      '多模态消息：text part 插到最前，图片不动',
+      Array.isArray(multi[0].content) && multi[0].content[0].text === '块' && multi[0].content[2].type === 'image_url',
+    )
+    check('无命中时原样返回', withKbContext(msgs as any, null) === msgs)
+  }
+
+  {
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'pa-kb-'))
+    const kbStore = createKbStore(tmp)
+    check('空库列表为空', (await kbStore.list()).length === 0)
+    const doc1 = await kbStore.add('笔记一', '养老保险要交满 15 年，退休后按月领取基本养老金')
+    check('入库返回块数', doc1.chunkCount === 1)
+    await kbStore.add('笔记二', '牛奶两盒，鸡蛋一打')
+    check('列表含两个文档', (await kbStore.list()).length === 2)
+    check('入库后可检索', (await kbStore.search('养老保险')).length === 1)
+    check('寒暄查询不检索', (await kbStore.search('继续')).length === 0)
+    check('删除存在的 id', (await kbStore.remove(doc1.id)) === true)
+    check('删除后检索不到', (await kbStore.search('养老保险')).length === 0)
+    let rejected = false
+    try {
+      await kbStore.add('空的', '   ')
+    } catch {
+      rejected = true
+    }
+    check('空文档拒绝入库', rejected)
+    let tooBig = false
+    try {
+      await kbStore.add('超大', 'x'.repeat(1_000_001))
+    } catch (err: any) {
+      tooBig = err?.code === 413
+    }
+    check('超限文档 413 拒绝', tooBig)
     await fs.rm(tmp, { recursive: true, force: true })
   }
 }

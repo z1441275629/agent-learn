@@ -32,6 +32,7 @@ import {
   mergeMemoryList,
   shouldAcceptExtraction,
 } from './core/memories.ts'
+import { createKbStore, renderKbBlock, withKbContext } from './core/rag.ts'
 import {
   applyWindow,
   messagesTokens,
@@ -48,6 +49,7 @@ const MAX_BODY = 25 * 1024 * 1024 // 截图/图片附件一般在几 MB；25MB �
 const config = loadConfig()
 const store = createSessionStore(config.dataDir)
 const memories = createMemoryStore(config.dataDir)
+const kb = createKbStore(config.dataDir)
 /** 同一会话同时只跑一轮：多标签页/重复点击时，后来的请求 409，避免账本写乱 */
 const runningSessions = new Set<string>()
 
@@ -161,13 +163,23 @@ async function safeAppend(
  *
  * 摘要用 light 档并关思考：压缩是确定性的信息整理，不值得付主模型的价和推理预算。
  */
-async function prepareContext(doc: SessionDoc, entry: (typeof MODELS)[number], elideOldImages: boolean) {
+async function prepareContext(
+  doc: SessionDoc,
+  entry: (typeof MODELS)[number],
+  elideOldImages: boolean,
+  kbBlock: string | null,
+) {
   const memoryEntries = config.memoryEnabled ? await memories.list() : []
   const buildView = async (messages: SessionDoc['messages'], summary: string | undefined) => {
-    const api = await buildApiMessages(messages, {
-      elideOldImages,
-      loadImage: (file) => store.readImage(doc.id, file),
-    })
+    // 知识库块塞进最后一条 user 消息（只进发送视图不落账本）；token 计量在注入之后，
+    // 预算决策看到的是真实发送大小
+    const api = withKbContext(
+      await buildApiMessages(messages, {
+        elideOldImages,
+        loadImage: (file) => store.readImage(doc.id, file),
+      }),
+      kbBlock,
+    )
     return [
       // 记忆是 system 前缀、摘要是 user 前缀——开窗时这两个前缀都要保住（prefixCount 见下）
       ...(memoryEntries.length ? [{ role: 'system', content: memorySystemContent(memoryEntries) }] : []),
@@ -227,7 +239,7 @@ async function prepareContext(doc: SessionDoc, entry: (typeof MODELS)[number], e
 //   - 两个会话同时抽取 = 同一文件的读改写竞态——串行化（链式 promise）
 //   - 输出不合法/清空式输出 = 守门拒绝、大声报错，记忆保持原样（静默丢记忆比崩溃更糟）
 let memoryChain: Promise<void> = Promise.resolve()
-function runMemoryExtraction(sid: string, turn: { userText: string; assistantText: string }): void {
+function runMemoryExtraction(sid: string, userText: string): void {
   memoryChain = memoryChain
     .then(async () => {
       if (!config.memoryEnabled) return
@@ -237,10 +249,9 @@ function runMemoryExtraction(sid: string, turn: { userText: string; assistantTex
         extractor.client,
         extractor.model,
         existing.map((e) => e.text),
-        [
-          { role: 'user', text: turn.userText },
-          { role: 'assistant', text: turn.assistantText },
-        ],
+        // 只喂用户发言：助手的回答是派生内容（检索/生成，甚至幻觉），进记忆等于把
+        // 它固化——知识库删了、模型改口了，记忆里的旧答案还在（实测踩过）
+        [{ role: 'user', text: userText }],
         { thinkingParams: thinkingParams('off') },
       )
       if (!shouldAcceptExtraction(result.texts, existing.length)) {
@@ -267,6 +278,16 @@ interface ChatBody {
   modelId?: string
   thinking?: string
   imageElision?: boolean
+  kbSearch?: boolean
+}
+
+/** 用最新一条 user 文本检索知识库；命中才注入。寒暄级短查询不值得打扰索引（worthSearching） */
+async function kbContextFor(doc: SessionDoc): Promise<string | null> {
+  const query = [...doc.messages].reverse().find((m) => m.role === 'user')?.text ?? ''
+  const hits = await kb.search(query)
+  if (!hits.length) return null
+  console.log(`[pa] 知识库检索：${hits.length} 命中（top ${hits[0].score.toFixed(2)} 分《${hits[0].docName}》）`)
+  return renderKbBlock(hits)
 }
 
 async function handleChat(req: http.IncomingMessage, res: http.ServerResponse) {
@@ -305,7 +326,12 @@ async function handleChat(req: http.IncomingMessage, res: http.ServerResponse) {
       },
     )
 
-    const messages = await prepareContext(doc, entry, body.imageElision !== false)
+    const messages = await prepareContext(
+      doc,
+      entry,
+      body.imageElision !== false,
+      body.kbSearch === false ? null : await kbContextFor(doc),
+    )
 
     res.writeHead(200, {
       'Content-Type': 'text/event-stream; charset=utf-8',
@@ -384,7 +410,7 @@ async function handleChat(req: http.IncomingMessage, res: http.ServerResponse) {
           `[pa] chat ${entry.id}(${entry.model}) · ${textOut.length} 字 · ${usage?.total_tokens ?? '?'} tokens · ${elapsedMs}ms · session ${sid}`,
         )
         // 回答完整落盘后才抽记忆：半截/出错的回答不抽（对话可能还没说完）
-        runMemoryExtraction(sid, { userText: text, assistantText: textOut })
+        runMemoryExtraction(sid, text)
       }
     } catch (err: any) {
       const elapsedMs = Date.now() - t0
@@ -468,6 +494,23 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse) {
     if (memoryMatch && req.method === 'DELETE') {
       const ok = await memories.remove(decodeURIComponent(memoryMatch[1]))
       if (!ok) return json(res, 404, { error: '没有这条记忆' })
+      return json(res, 200, { ok: true })
+    }
+
+    // 知识库（个人笔记：上传 → 切块索引 → 对话时 BM25 检索注入）
+    if (req.method === 'GET' && url.pathname === '/api/kb') {
+      return json(res, 200, { docs: await kb.list() })
+    }
+    if (req.method === 'POST' && url.pathname === '/api/kb') {
+      const body = JSON.parse(await readBody(req)) as { name?: string; text?: string }
+      const doc = await kb.add(String(body.name ?? ''), String(body.text ?? ''))
+      console.log(`[pa] 知识库 +《${doc.name}》（${doc.chunkCount} 块）`)
+      return json(res, 200, { doc })
+    }
+    const kbMatch = /^\/api\/kb\/([^/]+)$/.exec(url.pathname)
+    if (kbMatch && req.method === 'DELETE') {
+      const ok = await kb.remove(decodeURIComponent(kbMatch[1]))
+      if (!ok) return json(res, 404, { error: '没有这个文档' })
       return json(res, 200, { ok: true })
     }
 

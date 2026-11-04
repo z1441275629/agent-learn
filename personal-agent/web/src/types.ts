@@ -48,6 +48,14 @@ export interface MemoryItem {
   updatedAt: string
 }
 
+/** 知识库文档（上传后切块索引，对话时 BM25 检索注入） */
+export interface KbDoc {
+  id: string
+  name: string
+  createdAt: string
+  chunkCount: number
+}
+
 export interface SessionDetail {
   id: string
   title: string
@@ -107,6 +115,8 @@ export interface ChatRequest {
   modelId: string
   thinking: string
   imageElision: boolean
+  /** false = 本轮不做知识库检索（默认做） */
+  kbSearch: boolean
 }
 
 export interface ChatChunk {

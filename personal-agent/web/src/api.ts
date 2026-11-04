@@ -3,6 +3,7 @@
 import type {
   ChatChunk,
   ChatRequest,
+  KbDoc,
   MemoryItem,
   ModelsPayload,
   OcrRequest,
@@ -106,5 +107,30 @@ export async function deleteMemory(id: string): Promise<void> {
 
 export async function clearMemories(): Promise<void> {
   const res = await fetch('/api/memories', { method: 'DELETE' })
+  if (!res.ok) throw new Error(await readError(res))
+}
+
+// ---------- 知识库（个人笔记：上传切块索引，对话时 BM25 检索注入） ----------
+
+export async function listKb(): Promise<KbDoc[]> {
+  const res = await fetch('/api/kb')
+  if (!res.ok) throw new Error(await readError(res))
+  const j = await res.json()
+  return j.docs as KbDoc[]
+}
+
+export async function addKb(name: string, text: string): Promise<KbDoc> {
+  const res = await fetch('/api/kb', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, text }),
+  })
+  if (!res.ok) throw new Error(await readError(res))
+  const j = await res.json()
+  return j.doc as KbDoc
+}
+
+export async function deleteKb(id: string): Promise<void> {
+  const res = await fetch(`/api/kb/${encodeURIComponent(id)}`, { method: 'DELETE' })
   if (!res.ok) throw new Error(await readError(res))
 }

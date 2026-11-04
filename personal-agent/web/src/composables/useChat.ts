@@ -7,12 +7,7 @@
 
 import { reactive, ref } from 'vue'
 import { fetchModels, getSession, listSessions, streamChat } from '../api'
-import type {
-  DisplayMessage,
-  ModelEntry,
-  PendingAttachment,
-  SessionSummary,
-} from '../types'
+import type { DisplayMessage, ModelEntry, PendingAttachment, SessionSummary } from '../types'
 import { toast } from '../utils/toast'
 
 const MAX_DOC_BYTES = 100 * 1024
@@ -25,6 +20,7 @@ export function useChat() {
   const modelId = ref('')
   const thinking = ref('off')
   const elideImages = ref(true)
+  const kbSearch = ref(true)
 
   const sessions = ref<SessionSummary[]>([])
   const sessionId = ref<string | null>(null)
@@ -140,9 +136,7 @@ export function useChat() {
     const trimmed = text.trim()
     if (!trimmed && pending.value.length === 0) return
 
-    const images = pending.value.filter(
-      (p): p is Extract<PendingAttachment, { kind: 'image' }> => p.kind === 'image',
-    )
+    const images = pending.value.filter((p): p is Extract<PendingAttachment, { kind: 'image' }> => p.kind === 'image')
     let content = trimmed
     for (const p of pending.value) {
       if (p.kind !== 'text') continue
@@ -178,6 +172,7 @@ export function useChat() {
           modelId: modelId.value,
           thinking: thinking.value,
           imageElision: elideImages.value,
+          kbSearch: kbSearch.value,
         },
         (chunk) => {
           if (chunk.type === 'session') {
@@ -224,6 +219,7 @@ export function useChat() {
     modelId,
     thinking,
     elideImages,
+    kbSearch,
     sessions,
     sessionId,
     messages,
