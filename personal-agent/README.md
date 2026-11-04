@@ -18,10 +18,34 @@
 - **文本附件**：≤100KB 直接读入正文（PDF 暂不支持，提示先转图/文本）
 - **完整 usage**：每条回复底部展示服务商原始 usage 的明细——prompt / completion / total /
   缓存命中 `cached_tokens` / 推理 `reasoning_tokens` / 耗时，不压成一个数
+- **历史会话**：会话在服务端（`core/sessions.ts`），刷新/重启后可恢复；工具栏下拉切换历史，
+  「新对话」开新账本
+- **停止后继续**：流式过程中按钮变「停止」，点它 abort 上游并把已生成的部分落盘（标 `interrupted`），
+  下一轮上下文接着用
 - **语音输入**：按钮已占位，下一版接
 
-服务端 `POST /api/chat`：`stream:true` + `stream_options.include_usage`；客户端断开即 abort
-上游，防止没人看的长回答继续烧 token。
+服务端 `POST /api/chat`：客户端只发**新消息**（历史在服务端账本里），`stream:true` +
+`stream_options.include_usage`；客户端断开即 abort 上游，防止没人看的长回答继续烧 token。
+
+会话接口：
+
+```text
+GET    /api/sessions              列表（标题/更新时间/消息数）
+GET    /api/sessions/:id          详情（消息 + 图片 URL）
+DELETE /api/sessions/:id          删除
+GET    /api/sessions/:id/images/* 会话图片（字节落盘，不塞 JSON）
+```
+
+### 产品核心（personal-agent/core/）
+
+长期维护的部分放这里，课程模块保持「教学快照」不追改。目前：
+
+- `core/config.ts`：数据根配置。`PA_DATA_DIR` 可改（相对 cwd 或绝对路径），
+  缺省 `personal-agent/data/`（已 gitignore）
+- `core/sessions.ts`：会话账本。一个会话 = `sessions/<id>.json` + 同名图片目录；
+  原子写（tmp → rename）、id/文件名白名单防目录穿越；存储根由构造参数注入，不写死
+
+消息如何变成 API 形状（图片省略、失败消息排除）在 `chat.ts`，纯函数由探针覆盖。
 
 ### 截图取字（模块 13 · 多模态第一件）
 
@@ -80,12 +104,21 @@ npm run pa:build                  # 构建到 personal-agent/public（server 直
 npm run pa:check                  # 前端 .ts 类型检查
 
 node personal-agent/server.ts     # → http://127.0.0.1:8798（对话 + 截图取字两个标签页）
-node personal-agent/probe.ts      # 零 token 探针（OCR + 消息归一/图片省略规则）
+node personal-agent/probe.ts      # 零 token 探针（OCR / 消息构建 / 会话存储）
 ```
 
 `personal-agent/public/` 是构建产物（文件名固定，便于 git diff），不要手改；改 UI 请改 `web/src/`。
 
-环境变量：`PA_PORT`（默认 8798）、`PA_HOST`（默认 127.0.0.1，只本机）。
+运行数据默认在 `personal-agent/data/`（gitignored）；要换位置：
+
+```bash
+PA_DATA_DIR=D:/pa-data node personal-agent/server.ts
+```
+
+环境变量：`PA_PORT`（默认 8798）、`PA_HOST`（默认 127.0.0.1，只本机）、
+`PA_DATA_DIR`（默认 `personal-agent/data`）。
+
+> `PA_HOST=0.0.0.0` 会把**全部会话内容和图片**暴露给局域网，且目前没有鉴权——只在可信网络临时用。
 
 > 选型记录：视觉 LLM（火山 Coding Plan / GLM）2026-11-03 实测均不可用或撞配额；
 > 且 OCR 是确定性任务，本地引擎比 LLM 更准更省——LLM 只做它擅长的翻译。

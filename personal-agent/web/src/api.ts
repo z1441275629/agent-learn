@@ -1,6 +1,14 @@
 // 与 Node 服务通信的唯一入口（组件不直接碰 fetch，网络形状只在这里维护）
 
-import type { ChatChunk, ChatRequest, ModelsPayload, OcrRequest, OcrResponse } from './types'
+import type {
+  ChatChunk,
+  ChatRequest,
+  ModelsPayload,
+  OcrRequest,
+  OcrResponse,
+  SessionDetail,
+  SessionSummary,
+} from './types'
 
 async function readError(res: Response): Promise<string> {
   try {
@@ -15,6 +23,19 @@ export async function fetchModels(): Promise<ModelsPayload> {
   const res = await fetch('/api/models')
   if (!res.ok) throw new Error(await readError(res))
   return res.json()
+}
+
+export async function listSessions(): Promise<{ sessions: SessionSummary[] }> {
+  const res = await fetch('/api/sessions')
+  if (!res.ok) throw new Error(await readError(res))
+  return res.json()
+}
+
+export async function getSession(id: string): Promise<SessionDetail> {
+  const res = await fetch(`/api/sessions/${encodeURIComponent(id)}`)
+  if (!res.ok) throw new Error(await readError(res))
+  const j = await res.json()
+  return j.session as SessionDetail
 }
 
 /**

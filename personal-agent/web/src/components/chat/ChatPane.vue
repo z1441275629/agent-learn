@@ -11,18 +11,22 @@ const {
   modelId,
   thinking,
   elideImages,
+  sessions,
+  sessionId,
   messages,
   pending,
   streaming,
-  loadModels,
+  init,
+  openSession,
+  newChat,
   addImages,
   addDocs,
   removePending,
   send,
-  clearChat,
+  stop,
 } = useChat()
 
-loadModels()
+void init()
 </script>
 
 <template>
@@ -32,7 +36,10 @@ loadModels()
       v-model:thinking="thinking"
       v-model:elide="elideImages"
       :models="models"
-      @clear="clearChat"
+      :sessions="sessions"
+      :session-id="sessionId"
+      @open="openSession"
+      @new-chat="newChat"
     />
     <MessageList :messages="messages" />
     <ChatComposer
@@ -40,6 +47,7 @@ loadModels()
       :streaming="streaming"
       :active="active"
       @send="send"
+      @stop="stop"
       @add-images="addImages"
       @add-docs="addDocs"
       @remove="removePending"

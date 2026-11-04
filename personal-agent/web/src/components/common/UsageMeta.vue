@@ -7,10 +7,16 @@ const props = defineProps<{
   usage?: ChatUsage
   model?: string
   elapsedMs?: number
+  interrupted?: boolean
 }>()
 
 const line = computed(() =>
-  [props.model, formatUsage(props.usage), props.elapsedMs != null ? `${(props.elapsedMs / 1000).toFixed(1)}s` : '']
+  [
+    props.model,
+    formatUsage(props.usage),
+    props.elapsedMs != null ? `${(props.elapsedMs / 1000).toFixed(1)}s` : '',
+    props.interrupted ? '已停止' : '',
+  ]
     .filter(Boolean)
     .join(' · '),
 )

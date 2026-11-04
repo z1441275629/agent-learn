@@ -1,11 +1,13 @@
 // 个人 Agent 工作台 · 模块 13 探针：零 token（OCR 全本地，不调任何 LLM）
 // 跑法：node personal-agent/probe.ts
 import fs from 'node:fs/promises'
+import os from 'node:os'
 import path from 'node:path'
 import { recognize, normalizeCjk, terminateOcr } from './ocr.ts'
 import { needsTranslation } from './translate.ts'
 import { parseVisionLines } from './vision-ocr.ts'
-import { normalizeMessages, lastUserHasImages } from './chat.ts'
+import { buildApiMessages, deriveTitle, type StoredMessageLike } from './chat.ts'
+import { createSessionStore, parseImageDataUrl } from './core/sessions.ts'
 
 let pass = 0
 let fail = 0
@@ -50,34 +52,74 @@ check('空行被过滤', parseVisionLines('{"lines":[{"text":"a"},{"text":"  "}]
 	check('非 JSON 明确报错（触发重试，不静默返回空）', threw)
 }
 
-console.log('Q5 对话消息归一（图片只随最近一条 user 消息发送：历史图片每轮都重新计费）')
-const PNG = 'data:image/png;base64,iVBORw0KGgo='
+console.log('Q5 消息构建（图片只随最近一条 user 消息发送：历史图片每轮都重新计费）')
 {
-	const msgs = [
-		{ role: 'user' as const, content: [{ type: 'text' as const, text: '看图' }, { type: 'image' as const, dataUrl: PNG, name: 'a.png' }] },
-		{ role: 'assistant' as const, content: '收到' },
-		{ role: 'user' as const, content: [{ type: 'image' as const, dataUrl: PNG, name: 'b.png' }, { type: 'text' as const, text: '这张呢' }] },
+	const PNG_BYTES = Buffer.from(
+		'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=',
+		'base64',
+	)
+	const messages: StoredMessageLike[] = [
+		{ role: 'user', text: '看图', images: [{ file: 'a.png', name: 'a.png' }] },
+		{ role: 'assistant', text: '收到', images: [] },
+		{ role: 'user', text: '这张呢', images: [{ file: 'b.png', name: 'b.png' }] },
 	]
-	const out = normalizeMessages(msgs)
-	const firstUser = out[0].content as any[]
-	const lastUser = out[2].content as any[]
-	check('最近一条 user 的图片保留为 image_url', lastUser.some((p) => p.type === 'image_url' && p.image_url.url === PNG))
-	check('历史图片降级成文字占位（不再付图 token）', firstUser.some((p) => p.type === 'text' && p.text.includes('a.png') && p.text.includes('已省略')))
-	check('历史图片不再有 image_url', !firstUser.some((p) => p.type === 'image_url'))
-	check('字符串消息原样透传', out[1].content === '收到')
-	check('关闭省略开关时历史图片保留', (normalizeMessages(msgs, false)[0].content as any[]).some((p) => p.type === 'image_url'))
-	check('lastUserHasImages 认出最近一轮有图', lastUserHasImages(msgs))
-	check('只有文本时 lastUserHasImages=false', lastUserHasImages([{ role: 'user', content: 'hi' }]) === false)
+	const loaded: string[] = []
+	const loadImage = async (file: string) => {
+		loaded.push(file)
+		return { mime: 'image/png', data: PNG_BYTES }
+	}
+	const out = await buildApiMessages(messages, { loadImage })
+	const first = out[0].content as any[]
+	const last = out[2].content as any[]
+	check('最近一条 user 的图片保留为 image_url', last.some((p) => p.type === 'image_url' && p.image_url.url.startsWith('data:image/png;base64,')))
+	check('历史图片降级成文字占位', first.some((p) => p.type === 'text' && p.text.includes('a.png') && p.text.includes('已省略')))
+	check('历史图片不再有 image_url', !first.some((p) => p.type === 'image_url'))
+	check('省略的图片零 I/O（只读了最近一张）', loaded.length === 1 && loaded[0] === 'b.png', loaded.join(','))
+	check('assistant 文本原样透传', out[1].content === '收到')
 	{
-		let threw = false
-		try { normalizeMessages([{ role: 'user', content: [{ type: 'image', dataUrl: 'https://example.com/a.png' }] }]) } catch { threw = true }
-		check('拒绝 http URL 图片（只收 dataURL 内联）', threw)
+		const all = await buildApiMessages(messages, { elideOldImages: false, loadImage })
+		check('关闭省略开关时历史图片也读盘/保留', loaded.includes('a.png') && (all[0].content as any[]).some((p) => p.type === 'image_url'))
 	}
 	{
-		let threw = false
-		try { normalizeMessages([]) } catch { threw = true }
-		check('空 messages 明确报错', threw)
+		const withError: StoredMessageLike[] = [...messages, { role: 'assistant', text: '', images: [], error: 'boom' }]
+		const api = await buildApiMessages(withError, { loadImage })
+		check('失败消息不进上下文', api.length === 3)
 	}
+	{
+		const missing = await buildApiMessages(messages, { loadImage: async () => null })
+		check('图片文件缺失时跳过该图、不炸整轮', Array.isArray(missing) && missing.length === 3)
+	}
+	check('标题取第一条可读文本', deriveTitle('  你好呀\n第二行', false) === '你好呀')
+	check('纯图片会话有兜底标题', deriveTitle('', true) === '图片对话')
+	check('附件行不作为标题', deriveTitle('附件 a.txt：\n```\n正文\n```', false) !== '附件 a.txt：')
+}
+
+console.log('Q6 会话存储（根目录可配置、原子写、图片与 JSON 分离）')
+{
+	const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'pa-probe-'))
+	const store = createSessionStore(tmp)
+	const doc = await store.create()
+	check('新会话 id 合法且标题默认', /^[A-Za-z0-9_-]+$/.test(doc.id) && doc.title === '新对话')
+	check('空会话列表包含它', (await store.list()).some((s) => s.id === doc.id))
+
+	const PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII='
+	const image = await store.saveImage(doc.id, PNG, '截图.png')
+	check('图片落盘为独立文件（JSON 里不存 base64）', image.file.endsWith('.png') && image.mime === 'image/png')
+	const back = await store.readImage(doc.id, image.file)
+	check('读回的图片字节一致', !!back && back.mime === 'image/png' && back.data.length > 0)
+	check('拒绝 http URL 图片', parseImageDataUrl('https://example.com/a.png') === null)
+
+	await store.append(doc.id, { role: 'user', text: '你好', images: [image] }, { title: '第一条标题' })
+	await store.append(doc.id, { role: 'assistant', text: '收到', images: [], model: 'm', elapsedMs: 12 })
+	const loadedDoc = await store.load(doc.id)
+	check('追加后消息成对且带自增 id', loadedDoc?.messages.length === 2 && loadedDoc.messages[1].id === 2)
+	check('标题只由第一条 user 消息设定', loadedDoc?.title === '第一条标题')
+	const summary = (await store.list()).find((s) => s.id === doc.id)
+	check('列表返回标题与消息数', summary?.title === '第一条标题' && summary.messageCount === 2)
+
+	await store.remove(doc.id)
+	check('删除后列表不再包含它', !(await store.list()).some((s) => s.id === doc.id))
+	await fs.rm(tmp, { recursive: true, force: true })
 }
 
 await terminateOcr()

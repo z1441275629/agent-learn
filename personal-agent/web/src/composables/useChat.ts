@@ -1,13 +1,18 @@
 // 对话状态与流程（组件只负责渲染，逻辑都在这里，便于单独读/测）
 //
-// 关键规则：
-//   ① history 只包含成功的消息——失败的气泡留在界面上给人看，但不进入下一轮上下文
-//   ② 图片只随最近一条 user 消息发（省略由服务端 normalizeMessages 做，这里只负责传对形状）
-//   ③ 流式增量更新的是 messages 里的同一个对象（通过 reactive 代理写入，才能触发重渲染）
+// 会话现在在服务端：客户端只发「新消息」，历史由 /api/sessions 的账本维护。
+//   - 刷新页面 / 重启服务后，最近的会话能恢复
+//   - 点停止后，服务端把半截回答落盘，下一轮可以接着聊
+//   - 失败的消息留在界面，但服务端构建上下文时会排除（规则在 chat.ts）
 
 import { reactive, ref } from 'vue'
-import { fetchModels, streamChat } from '../api'
-import type { ApiMessage, ContentPart, DisplayMessage, ModelEntry, PendingAttachment } from '../types'
+import { fetchModels, getSession, listSessions, streamChat } from '../api'
+import type {
+  DisplayMessage,
+  ModelEntry,
+  PendingAttachment,
+  SessionSummary,
+} from '../types'
 import { toast } from '../utils/toast'
 
 const MAX_DOC_BYTES = 100 * 1024
@@ -21,17 +26,74 @@ export function useChat() {
   const thinking = ref('off')
   const elideImages = ref(true)
 
+  const sessions = ref<SessionSummary[]>([])
+  const sessionId = ref<string | null>(null)
   const messages = ref<DisplayMessage[]>([])
   const pending = ref<PendingAttachment[]>([])
   const streaming = ref(false)
+
+  let controller: AbortController | null = null
 
   async function loadModels(): Promise<void> {
     try {
       const payload = await fetchModels()
       models.value = payload.models
-      modelId.value = payload.defaultModelId || payload.models[0]?.id || 'main'
+      const ids = new Set(payload.models.map((m) => m.id))
+      if (!modelId.value || !ids.has(modelId.value)) {
+        modelId.value = payload.defaultModelId || payload.models[0]?.id || 'main'
+      }
     } catch (e: any) {
       toast('模型目录加载失败：' + (e?.message ?? e))
+    }
+  }
+
+  async function refreshSessions(): Promise<void> {
+    try {
+      const payload = await listSessions()
+      sessions.value = payload.sessions
+    } catch (e: any) {
+      toast('会话列表加载失败：' + (e?.message ?? e))
+    }
+  }
+
+  async function openSession(id: string): Promise<void> {
+    if (streaming.value) {
+      toast('等当前回答结束')
+      return
+    }
+    try {
+      const detail = await getSession(id)
+      sessionId.value = detail.id
+      messages.value = detail.messages.map((m) => ({ ...m }))
+      if (detail.modelId && models.value.some((m) => m.id === detail.modelId)) {
+        modelId.value = detail.modelId
+      }
+      if (detail.thinking) thinking.value = detail.thinking
+      pending.value = []
+    } catch (e: any) {
+      toast('打开会话失败：' + (e?.message ?? e))
+    }
+  }
+
+  function newChat(): void {
+    if (streaming.value) {
+      toast('等当前回答结束')
+      return
+    }
+    sessionId.value = null
+    messages.value = []
+    pending.value = []
+  }
+
+  /** 启动：先模型目录，再会话列表；有历史就打开最近一条 */
+  async function init(): Promise<void> {
+    await loadModels()
+    try {
+      const payload = await listSessions()
+      sessions.value = payload.sessions
+      if (payload.sessions.length > 0) await openSession(payload.sessions[0].id)
+    } catch (e: any) {
+      toast('会话列表加载失败：' + (e?.message ?? e))
     }
   }
 
@@ -73,41 +135,29 @@ export function useChat() {
     pending.value = pending.value.filter((p) => p.id !== id)
   }
 
-  /** 界面消息 → API 消息（跳过失败/仍在流式的 assistant 气泡） */
-  function buildHistory(): ApiMessage[] {
-    return messages.value
-      .filter((m) => !m.error && !m.streaming)
-      .map((m): ApiMessage => {
-        if (m.role === 'assistant') return { role: 'assistant', content: m.content }
-        if (m.images.length === 0) return { role: 'user', content: m.content }
-        const parts: ContentPart[] = []
-        if (m.content) parts.push({ type: 'text', text: m.content })
-        for (const image of m.images) parts.push({ type: 'image', dataUrl: image.dataUrl, name: image.name })
-        return { role: 'user', content: parts }
-      })
-  }
-
   async function send(text: string): Promise<void> {
     if (streaming.value) return
     const trimmed = text.trim()
     if (!trimmed && pending.value.length === 0) return
 
-    const images = pending.value.filter((p): p is Extract<PendingAttachment, { kind: 'image' }> => p.kind === 'image')
+    const images = pending.value.filter(
+      (p): p is Extract<PendingAttachment, { kind: 'image' }> => p.kind === 'image',
+    )
     let content = trimmed
     for (const p of pending.value) {
       if (p.kind !== 'text') continue
       content += `${content ? '\n\n' : ''}附件 ${p.name}：\n\`\`\`\n${p.text}\n\`\`\``
     }
+    const sentImages = images.map((i) => ({ dataUrl: i.dataUrl, name: i.name }))
 
     messages.value.push({
       id: nextId(),
       role: 'user',
       content,
-      images: images.map((i) => ({ dataUrl: i.dataUrl, name: i.name })),
+      images: images.map((i) => ({ src: i.dataUrl, name: i.name })),
     })
     pending.value = []
 
-    const history = buildHistory() // 必须在 push assistant 之前取：占位气泡不进上下文
     const placeholder = reactive<DisplayMessage>({
       id: nextId(),
       role: 'assistant',
@@ -118,17 +168,22 @@ export function useChat() {
     messages.value.push(placeholder)
 
     streaming.value = true
+    controller = new AbortController()
     try {
       let acc = ''
       await streamChat(
         {
-          messages: history,
+          sessionId: sessionId.value,
+          message: { text: content, images: sentImages },
           modelId: modelId.value,
           thinking: thinking.value,
           imageElision: elideImages.value,
         },
         (chunk) => {
-          if (chunk.type === 'delta') {
+          if (chunk.type === 'session') {
+            sessionId.value = chunk.sessionId ?? sessionId.value
+            void refreshSessions()
+          } else if (chunk.type === 'delta') {
             acc += chunk.text ?? ''
             placeholder.content = acc
           } else if (chunk.type === 'done') {
@@ -138,23 +193,30 @@ export function useChat() {
             placeholder.model = chunk.model
           }
         },
+        controller.signal,
       )
       if (!placeholder.content) throw new Error('模型没有返回内容')
     } catch (e: any) {
-      placeholder.error = '发送失败：' + (e?.message ?? e)
+      if (controller?.signal.aborted) {
+        // 服务端已把半截回答落盘；本地只是标记一下
+        if (placeholder.content) {
+          placeholder.interrupted = true
+        } else {
+          messages.value = messages.value.filter((m) => m.id !== placeholder.id)
+        }
+      } else {
+        placeholder.error = '发送失败：' + (e?.message ?? e)
+      }
     } finally {
       placeholder.streaming = false
       streaming.value = false
+      controller = null
+      void refreshSessions()
     }
   }
 
-  function clearChat(): void {
-    if (streaming.value) {
-      toast('等当前回答结束')
-      return
-    }
-    messages.value = []
-    pending.value = []
+  function stop(): void {
+    controller?.abort()
   }
 
   return {
@@ -162,14 +224,19 @@ export function useChat() {
     modelId,
     thinking,
     elideImages,
+    sessions,
+    sessionId,
     messages,
     pending,
     streaming,
-    loadModels,
+    init,
+    openSession,
+    newChat,
+    refreshSessions,
     addImages,
     addDocs,
     removePending,
     send,
-    clearChat,
+    stop,
   }
 }

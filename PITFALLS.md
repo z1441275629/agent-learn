@@ -243,3 +243,9 @@
 - 根因：OpenAI 兼容只保证「字段能收下」，不保证语义实现——推理开关各家多套并存（`reasoning_effort` / `thinking` / `enable_thinking` / 无），服务端对不认识的字段不报错
 - 修法：思考开关按平台协议走 .env 声明（本仓 `LLM_THINKING_STYLE` 的 openapi/bool/none 三态）；判断是否真生效看 `usage.completion_tokens_details.reasoning_tokens` 与延迟两个指标，不看调用成功；关思考前先测专名/格式质量——本案例全关后 3 连测专名稳定，但早先一组直测里同样关闭出现过「Agent Lab→代理实验室」，prompt 里必须显式强化「专名不译」规则
 - 原则：**调参类优化必须用 usage 指标证伪**——否则会把没生效的开关当成已优化的结论写进文档；「延迟没变」本身就是最强的证伪信号
+
+### 38. 上游流被 abort 后可能「正常结束」而不是抛错——取消是状态，不是异常 [14]
+- 症状：工作台点「停止」abort 上游后，OpenAI SDK 的 `for await` 没有抛 AbortError，循环安静结束；代码走进成功分支，把半截回答当完整回答落盘，`interrupted` 标记丢失，刷新后界面不显示「已停止」
+- 根因：AbortSignal 的语义是「请求取消」，但 SDK/传输层可以不保证 throw——把异常当作取消的唯一信号，等于依赖实现细节
+- 修法：循环结束后检查 `signal.aborted` 决定「落盘 interrupted」还是「发 done」，catch 里也检查（正常结束与异常两条路径都要覆盖）
+- 原则：**凡是「正常结束 / 异常 / 取消」三态的外部调用，必须显式区分三态**——取消不能被折叠进成功或异常，否则半截结果会被当成完整结果

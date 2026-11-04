@@ -16,28 +16,38 @@ export interface ModelsPayload {
 /** 服务商原始 usage：prompt/completion/total + cached_tokens/reasoning_tokens 等明细，形状随平台而异 */
 export type ChatUsage = any
 
-export type TextPart = { type: 'text'; text: string }
-export type ImagePart = { type: 'image'; dataUrl: string; name?: string }
-export type ContentPart = TextPart | ImagePart
-
-/** 发给 /api/chat 的消息（与 server chat.ts 的 ChatMessage 对齐） */
-export interface ApiMessage {
-  role: 'user' | 'assistant'
-  content: string | ContentPart[]
-}
-
-/** 界面上的消息（比 API 多带展示字段） */
+/** 服务端会话里的消息（图片已是可访问的 URL，不再是 base64） */
 export interface DisplayMessage {
   id: number
   role: 'user' | 'assistant'
   content: string
-  images: { dataUrl: string; name: string }[]
+  images: { src: string; name: string }[]
   usage?: ChatUsage
   elapsedMs?: number
   model?: string
-  /** 非空 = 这条没成功，只展示错误、不进下一轮 history */
+  /** 非空 = 这条没成功（服务端不会把它放进下一轮上下文） */
   error?: string
+  /** 用户点停止/断开时保存的半截回答 */
+  interrupted?: boolean
+  /** 仅前端：正在流式接收 */
   streaming?: boolean
+}
+
+export interface SessionSummary {
+  id: string
+  title: string
+  updatedAt: string
+  messageCount: number
+}
+
+export interface SessionDetail {
+  id: string
+  title: string
+  createdAt: string
+  updatedAt: string
+  modelId?: string
+  thinking?: string
+  messages: DisplayMessage[]
 }
 
 export type PendingAttachment =
@@ -79,15 +89,22 @@ export interface OcrRequest {
   translate: boolean
 }
 
+/** 客户端只发「新消息」；历史在服务端账本里 */
 export interface ChatRequest {
-  messages: ApiMessage[]
+  sessionId: string | null
+  message: {
+    text: string
+    images: { dataUrl: string; name: string }[]
+  }
   modelId: string
   thinking: string
   imageElision: boolean
 }
 
 export interface ChatChunk {
-  type: 'delta' | 'done' | 'error'
+  type: 'session' | 'delta' | 'done' | 'error'
+  sessionId?: string
+  title?: string
   text?: string
   usage?: ChatUsage
   model?: string

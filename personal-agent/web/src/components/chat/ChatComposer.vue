@@ -13,6 +13,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   send: [text: string]
+  stop: []
   'add-images': [files: File[]]
   'add-docs': [files: File[]]
   remove: [id: number]
@@ -98,7 +99,9 @@ onBeforeUnmount(() => document.removeEventListener('paste', onPaste))
       <button class="icon" title="上传图片" @click="imageInput?.click()">🖼</button>
       <button class="icon" title="上传文本附件" @click="docInput?.click()">📎</button>
       <button class="icon" title="语音输入（下一版接入）" @click="toast('语音输入下一版接入')">🎤</button>
-      <button class="primary" :disabled="streaming" @click="submit">发送</button>
+      <button class="primary" @click="streaming ? emit('stop') : submit()">
+        {{ streaming ? '停止' : '发送' }}
+      </button>
     </div>
     <input ref="imageInput" type="file" accept="image/*" multiple hidden @change="pickImages" />
     <input

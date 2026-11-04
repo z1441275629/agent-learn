@@ -50,3 +50,6 @@ node_modules/
 
 # personal-agent：语言包从 npm 包自愈拷贝，不入库
 personal-agent/.tessdata/
+
+# personal-agent 运行数据（会话账本/图片/以后记忆与 RAG 索引——含个人对话，绝不入库）
+personal-agent/data/

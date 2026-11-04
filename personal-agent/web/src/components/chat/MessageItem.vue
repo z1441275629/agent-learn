@@ -14,7 +14,7 @@ defineProps<{ message: DisplayMessage }>()
 
       <template v-else-if="message.role === 'user'">
         <div v-if="message.content" class="user-text">{{ message.content }}</div>
-        <img v-for="(image, i) in message.images" :key="i" :src="image.dataUrl" :alt="image.name" />
+        <img v-for="(image, i) in message.images" :key="i" :src="image.src" :alt="image.name" />
       </template>
 
       <template v-else>
@@ -25,6 +25,7 @@ defineProps<{ message: DisplayMessage }>()
           :usage="message.usage"
           :model="message.model"
           :elapsed-ms="message.elapsedMs"
+          :interrupted="message.interrupted"
         />
       </template>
     </div>
