@@ -27,6 +27,11 @@ export interface ToolDef {
   risk: 'read' | 'write'
   /** 永远返回字符串（喂给模型的内容），实现内部自己消化异常 */
   run: (args: any) => Promise<string>
+  /**
+   * 确认卡内容（可选）：把参数解析成人能看懂的话（如 ref → 「[3] button「登录」」）。
+   * 不提供时卡上显示参数原文 JSON。只在出卡时用，执行路径与此无关
+   */
+  describe?: (args: any) => string
 }
 
 export interface ToolTrace {

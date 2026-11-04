@@ -43,7 +43,16 @@ import { runToolLoop, truncateToolResult, type ToolDef } from './core/agent.ts'
 import { builtinTools } from './tools.ts'
 import { mergeVoiceResults, voiceErrorMessage, type VoiceResultItem } from './web/src/utils/voice.ts'
 import { resolveAsrConfig, validateAsrAudio, parseTranscription } from './asr.ts'
-import { assertNavigableUrl, capText, formatPageForModel, type BrowserReader, type FetchedPage } from './browser.ts'
+import {
+  assertNavigableUrl,
+  capText,
+  formatPageForModel,
+  formatRefSection,
+  validateRefArg,
+  type BrowserReader,
+  type ElementRef,
+  type FetchedPage,
+} from './browser.ts'
 import { encodeWav } from './web/src/utils/wav.ts'
 
 let pass = 0
@@ -1167,7 +1176,7 @@ console.log('Q17 浏览器工具 v1（URL 守门/正文截断/结果整形/工�
   )
 
   // ③ 结果整形：模型看到的字符串形状
-  const shaped = formatPageForModel({ url: 'https://a.com/final', title: '巡检页', text: '正文第一行' })
+  const shaped = formatPageForModel({ url: 'https://a.com/final', title: '巡检页', text: '正文第一行', refs: [] })
   check('整形含标题/最终地址/正文', shaped.includes('《巡检页》') && shaped.includes('https://a.com/final') && shaped.includes('正文第一行'))
 
   // ④ 工具面接线：browser 依赖在 → 注册；不在 → 不注册；守门先于执行器（非法 URL 不叫醒浏览器）
@@ -1175,10 +1184,13 @@ console.log('Q17 浏览器工具 v1（URL 守门/正文截断/结果整形/工�
   const fakeMem = {} as any
   let actuatorCalled = 0
   const fakeBrowser: BrowserReader = {
-    read: async (raw: string): Promise<FetchedPage> => {
+    read: async (raw?: string): Promise<FetchedPage> => {
       actuatorCalled++
-      return { url: raw, title: '假页', text: '假正文' }
+      return { url: raw ?? 'http://current-page', title: '假页', text: '假正文', refs: [] }
     },
+    click: async (ref: number) => ({ url: `http://c/${ref}`, title: 'c' }),
+    type: async (ref: number) => ({ url: `http://t/${ref}`, title: 't' }),
+    describeRef: () => null,
     close: async () => {},
   }
   const withBrowser = builtinTools({ kb: fakeKb, memories: fakeMem, browser: fakeBrowser })
@@ -1187,12 +1199,94 @@ console.log('Q17 浏览器工具 v1（URL 守门/正文截断/结果整形/工�
   check('依赖不在时不注册（PA_BROWSER=0 的形状）', !withoutBrowser.some((t) => t.name === 'browser_read'))
   const def = withBrowser.find((t) => t.name === 'browser_read')!
   check('browser_read 是只读（无确认卡）', def.risk === 'read')
-  const r1 = JSON.parse(await def.run({}))
-  check('缺 url 快失败', r1.error?.includes('不能为空'), JSON.stringify(r1))
+  const r0 = await def.run({})
+  check('不带 url 不报错，交给执行器读当前页', r0.includes('http://current-page') && actuatorCalled === 1, r0.slice(0, 80))
   const r2 = JSON.parse(await def.run({ url: 'file:///C:/secret.txt' }))
-  check('非法 URL 在工具层被拦（不进执行器）', r2.error?.includes('只支持 http/https') && actuatorCalled === 0, JSON.stringify(r2))
+  check('非法 URL 在工具层被拦（不进执行器）', r2.error?.includes('只支持 http/https') && actuatorCalled === 1, JSON.stringify(r2))
   const r3 = await def.run({ url: 'https://ok.example/' })
-  check('正常路径输出整形结果', r3.includes('《假页》') && r3.includes('假正文') && actuatorCalled === 1, r3)
+  check('正常路径输出整形结果', r3.includes('《假页》') && r3.includes('假正文') && actuatorCalled === 2, r3)
+}
+
+console.log('Q18 浏览器操作闭环 v2（ref 校验/元素索引格式化/卡面 describe 解析——纯函数层，真浏览器归 E2E）')
+{
+  const throws = (fn: () => unknown) => {
+    try {
+      fn()
+      return ''
+    } catch (err) {
+      return err instanceof Error ? err.message : String(err)
+    }
+  }
+  // ① ref 校验：模型会给 "3"、3.5、0、-1、超界——门口全拦下说人话
+  check('正整数放行（数字与数字字符串）', validateRefArg(3) === 3 && validateRefArg('5') === 5)
+  check('小数拒绝', throws(() => validateRefArg(3.5)).includes('正整数'))
+  check('0/负数拒绝', throws(() => validateRefArg(0)).includes('正整数') && throws(() => validateRefArg(-2)).includes('正整数'))
+  check('超界拒绝（>MAX_ELEMENTS）', throws(() => validateRefArg(999)).includes('正整数'), String(999))
+  check('null/undefined 拒绝', throws(() => validateRefArg(null)).includes('正整数'))
+
+  // ② 元素索引格式化：一行一个、空列表不出节、上限截断
+  const refs: ElementRef[] = [
+    { ref: 1, role: 'a', label: '去巡检页' },
+    { ref: 2, role: 'input:search', label: '输入关键词' },
+    { ref: 3, role: 'button', label: '' },
+  ]
+  const section = formatRefSection(refs)
+  check('索引含说明头 + 三行元素', section.includes('可操作元素') && section.includes('[1] a「去巡检页」') && section.includes('[2] input:search「输入关键词」'))
+  check('空标签的元素不挂空引号', section.includes('[3] button') && !section.includes('[3] button「'))
+  check('空列表返回空串（不出节）', formatRefSection([]) === '')
+  const many = Array.from({ length: 200 }, (_, i) => ({ ref: i + 1, role: 'a', label: `链接${i}` }))
+  const capped = formatRefSection(many)
+  check('索引上限 80 条', (capped.match(/^\[\d+\]/gm) ?? []).length === 80, String((capped.match(/^\[\d+\]/gm) ?? []).length))
+
+  // ③ 结果整形：带 refs 出索引节，不带不出
+  const withRefs = formatPageForModel({ url: 'https://a.com', title: 'T', text: '正文', refs })
+  check('带 refs 的结果拼上元素索引', withRefs.includes('正文') && withRefs.includes('[1] a「去巡检页」') && withRefs.indexOf('正文') < withRefs.indexOf('可操作元素'))
+  const noRefs = formatPageForModel({ url: 'https://a.com', title: 'T', text: '正文', refs: [] })
+  check('无 refs 不出索引节', !noRefs.includes('可操作元素'))
+
+  // ④ 工具面接线：click/type 是 write 且卡面 describe 把 ref 解析成人话；坏 ref 在工具层快失败
+  const fakeKb = {} as any
+  const fakeMem = {} as any
+  const registry = new Map<number, string>([
+    [3, '[3] button「点我」'],
+    [4, '[4] input:text「搜索词」'],
+  ])
+  let actuator = 0
+  const fakeBrowser: BrowserReader = {
+    read: async (raw?: string): Promise<FetchedPage> => {
+      actuator++
+      return { url: raw ?? 'http://current', title: '假页', text: '假正文', refs: [] }
+    },
+    click: async (ref: number) => {
+      actuator++
+      return { url: `http://after-click/${ref}`, title: '点后' }
+    },
+    type: async (ref: number, text: string) => {
+      actuator++
+      return { url: `http://after-type/${ref}?q=${text}`, title: '填后' }
+    },
+    describeRef: (ref: number) => registry.get(ref) ?? null,
+    close: async () => {},
+  }
+  const withBrowser = builtinTools({ kb: fakeKb, memories: fakeMem, browser: fakeBrowser })
+  const click = withBrowser.find((t) => t.name === 'browser_click')!
+  const type = withBrowser.find((t) => t.name === 'browser_type')!
+  const read = withBrowser.find((t) => t.name === 'browser_read')!
+  check('click/type 都是 write（过确认门）', click.risk === 'write' && type.risk === 'write')
+  check('read 不再要求 url（读当前页模式）', !read.parameters.required.includes('url'))
+  check('卡面把 ref 解析成元素人话', click.describe!({ ref: 3 }) === '点击网页元素 [3] button「点我」', click.describe!({ ref: 3 }))
+  check('卡面未知 ref 明说无法解析', click.describe!({ ref: 99 }).includes('无法解析') && click.describe!({ ref: 99 }).includes('99'))
+  check('type 卡面带填入文本', type.describe!({ ref: 4, text: '青竹' }).includes('[4] input:text「搜索词」') && type.describe!({ ref: 4, text: '青竹' }).includes('青竹'))
+  const badRef = JSON.parse(await click.run({ ref: 0 }))
+  check('坏 ref 工具层快失败（不出卡也不进执行器）', badRef.error?.includes('正整数') && actuator === 0, JSON.stringify(badRef))
+  const r1 = await read.run({})
+  check('read 不带 url 传 undefined 给执行器（读当前页）', r1.includes('http://current') && actuator === 1)
+  const r2 = await click.run({ ref: 3 })
+  check('click 成功结果带新页面地址与再读指引', r2.includes('http://after-click/3') && r2.includes('browser_read'), r2)
+  const r3 = await type.run({ ref: 4, text: '青竹', submit: true })
+  check('type+submit 结果带提交后地址', r3.includes('after-type/4') && r3.includes('回车提交'), r3)
+  const r4 = JSON.parse(await type.run({ ref: 4, text: '' }))
+  check('type 空 text 拒绝', r4.error?.includes('不能为空'))
 }
 
 await terminateOcr()

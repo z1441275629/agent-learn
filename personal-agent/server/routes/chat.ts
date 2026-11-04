@@ -87,6 +87,15 @@ router.post('/api/chat', async (ctx) => {
           console.log(`[pa] ${req.name} 本会话已总允许，自动放行 · session ${sid}`)
           return resolve(true)
         }
+        // 卡面内容：工具提供 describe 就把参数解析成人话（browser_click 的 {"ref":3} →
+        // 「[3] button「登录」」），否则参数原文。解析失败/参数非法都回落原文，卡绝不能因它崩
+        let cardArgs = req.args
+        try {
+          const def = tools.find((t) => t.name === req.name)
+          if (def?.describe) cardArgs = String(def.describe(JSON.parse(req.args || '{}')))
+        } catch {
+          cardArgs = req.args
+        }
         const confirmId = `cf_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`
         const settle = (approve: boolean, outcome: 'approved' | 'denied' | 'timeout') => {
           clearTimeout(timer)
@@ -96,8 +105,8 @@ router.post('/api/chat', async (ctx) => {
         }
         const timer = setTimeout(() => settle(false, 'timeout'), CONFIRM_TIMEOUT_MS)
         pendingConfirms.set(confirmId, { sid, name: req.name, settle })
-        send({ type: 'confirm', confirmId, name: req.name, args: req.args })
-        console.log(`[pa] 等待确认 ${req.name} ${req.args.slice(0, 80)} · session ${sid}`)
+        send({ type: 'confirm', confirmId, name: req.name, args: cardArgs })
+        console.log(`[pa] 等待确认 ${req.name} ${cardArgs.slice(0, 80)} · session ${sid}`)
       })
 
     // 客户端断开/点停止 → abort 上游，别让没人看的长回答继续烧 token；半截回答仍要落盘；
@@ -131,6 +140,9 @@ router.post('/api/chat', async (ctx) => {
         tools: toolsOn ? tools : [],
         signal: ac.signal,
         maxRounds: 5,
+        // 工具结果在循环层的截断兜底：browser_read 自带 6000 字正文 + 元素索引，
+        // 1200 的默认值会把网页结果拦腰砍断（工具内部各自有源头截断，这里只是保险网）
+        maxResultChars: 9000,
         extraBody: thinkingParams(body.thinking ?? 'off'),
         onConfirm: askConfirm,
         onText: (delta) => {

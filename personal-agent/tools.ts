@@ -9,14 +9,23 @@
 //     会出现在确认卡上，人批的才是账上的（PITFALLS #39：派生内容不得未经批准长命于源头）
 //   - forget：删一条记忆——text 必须与系统提示里的记忆原文完全一致，不许模型自由发挥
 //   - add_note：存一条笔记进知识库（search_kb 的写侧对偶）
-// 浏览器（模块 14 computer use，只读 v1）：
-//   - browser_read：无头 Chromium 打开网页读 JS 渲染后的正文——「选择器注入式」路线第一步，
-//     点击/输入（写侧过门）与截图视觉路线是后续层；PA_BROWSER=0 时不注册（deps.browser 为空）
+// 浏览器（模块 14 computer use）：browser_read 读（带元素索引），browser_click / browser_type
+//   操作（写侧，过确认门）——「选择器注入式」路线：read 给可操作元素打 ref，操作按 ref 定位，
+//   页面变了 ref 作废报错重读。PA_BROWSER=0 时整个浏览器工具面不注册（deps.browser 为空）
 
 import { newId, type MemoryStore } from './core/memories.ts'
 import type { ToolDef } from './core/agent.ts'
 import type { KbStore } from './core/rag.ts'
-import { assertNavigableUrl, formatPageForModel, type BrowserReader } from './browser.ts'
+import { assertNavigableUrl, formatPageForModel, validateRefArg, type BrowserReader } from './browser.ts'
+
+/** ref 参数在工具层快失败（守门与执行器同一份 validateRefArg）：坏 ref 不值得出确认卡 */
+function checkedRef(value: unknown): number | string {
+  try {
+    return validateRefArg(value)
+  } catch (err) {
+    return JSON.stringify({ error: err instanceof Error ? err.message : String(err) })
+  }
+}
 
 export function builtinTools(deps: { kb: KbStore; memories: MemoryStore; browser?: BrowserReader }): ToolDef[] {
   const browserTool: ToolDef[] = deps.browser
@@ -24,25 +33,93 @@ export function builtinTools(deps: { kb: KbStore; memories: MemoryStore; browser
         {
           name: 'browser_read',
           description:
-            '用无头浏览器打开一个公开网页，读取 JS 渲染完成后的正文文本。适合查网页内容、文档、公告、版本变更；SPA/动态渲染的页面也能读到。url 必须是 http(s) 完整地址（本工具只读公开网页，读不了本机文件）。返回页面标题、最终地址（重定向后）与正文，超长自动截断。本工具不能点击、输入或提交表单——需要交互时告诉用户做不到，不要编造页面内容。',
+            '用无头浏览器读取网页：带 url 时打开该网页（http/https 完整地址，读不了本机文件），不带 url 时读取当前已打开的页面（点击/输入之后看结果用，不会重新导航）。返回页面标题、最终地址、JS 渲染后的正文，以及「可操作元素」索引——每个可点击/可输入的元素带一个 [编号]，是 browser_click / browser_type 的操作目标。编号只在当前页面状态下有效，页面变化（点击/跳转）后要重新调用本工具拿新编号。',
           parameters: {
             type: 'object',
             properties: {
-              url: { type: 'string', description: '要打开的网页完整地址，如 https://example.com/docs' },
+              url: { type: 'string', description: '要打开的网页完整地址；省略 = 读当前页面' },
             },
-            required: ['url'],
+            required: [],
           },
           risk: 'read',
           run: async (args) => {
             const raw = String(args?.url ?? '').trim()
             // 先在工具层快失败（守门与执行器同一份 assertNavigableUrl）：非法 URL 不值得叫醒浏览器
+            if (raw) {
+              try {
+                assertNavigableUrl(raw)
+              } catch (err) {
+                return JSON.stringify({ error: err instanceof Error ? err.message : String(err) })
+              }
+            }
             try {
-              assertNavigableUrl(raw)
+              return formatPageForModel(await deps.browser!.read(raw || undefined))
             } catch (err) {
               return JSON.stringify({ error: err instanceof Error ? err.message : String(err) })
             }
+          },
+        },
+        {
+          name: 'browser_click',
+          description:
+            '点击当前网页上的一个元素（链接/按钮等）。ref 是 browser_read 返回的可操作元素编号——必须先读过页面拿到编号才能点击。点击后页面可能跳转或变化，旧编号全部作废：要看结果就再 browser_read（不带 url，读当前页）。执行前用户会在确认卡上看到要点的是哪个元素并批准。',
+          parameters: {
+            type: 'object',
+            properties: {
+              ref: { type: 'number', description: 'browser_read 元素索引里的编号，如 3' },
+            },
+            required: ['ref'],
+          },
+          risk: 'write',
+          // 确认卡不能给人看 {"ref":3}——解析成「点的是哪个元素」（最近一次快照的登记表；
+          // 页面变了解析不出就明说，人批卡批的是看得懂的东西）
+          describe: (args) => {
+            const ref = Number(args?.ref)
+            const where = Number.isInteger(ref) ? deps.browser!.describeRef(ref) : null
+            return `点击网页元素 ${where ?? `编号 ${JSON.stringify(args?.ref)}（无法解析对应元素，可能页面已变化）`}`
+          },
+          run: async (args) => {
+            const ref = checkedRef(args?.ref)
+            if (typeof ref !== 'number') return ref
             try {
-              return formatPageForModel(await deps.browser!.read(raw))
+              const r = await deps.browser!.click(ref)
+              return `已点击 [${ref}]。现在页面：《${r.title}》 ${r.url}\n要看新页面的内容，请再调 browser_read（不带 url）。`
+            } catch (err) {
+              return JSON.stringify({ error: err instanceof Error ? err.message : String(err) })
+            }
+          },
+        },
+        {
+          name: 'browser_type',
+          description:
+            '在当前网页的一个输入框里填入文字。ref 是 browser_read 返回的可操作元素编号（要指向输入框）；submit 传 true 时填完按回车提交（可能触发搜索/跳转，跳转后旧编号作废，要再 browser_read 看结果）。执行前用户会在确认卡上看到要往哪个输入框填什么再批准。',
+          parameters: {
+            type: 'object',
+            properties: {
+              ref: { type: 'number', description: 'browser_read 元素索引里输入框的编号' },
+              text: { type: 'string', description: '要填入的文字' },
+              submit: { type: 'boolean', description: '填完后按回车提交（默认 false）' },
+            },
+            required: ['ref', 'text'],
+          },
+          risk: 'write',
+          describe: (args) => {
+            const ref = Number(args?.ref)
+            const where = Number.isInteger(ref) ? deps.browser!.describeRef(ref) : null
+            const text = String(args?.text ?? '')
+            return `往网页输入框 ${where ?? `编号 ${JSON.stringify(args?.ref)}（无法解析对应元素，可能页面已变化）`} 填入：${text.slice(0, 80)}`
+          },
+          run: async (args) => {
+            const ref = checkedRef(args?.ref)
+            if (typeof ref !== 'number') return ref
+            const text = String(args?.text ?? '')
+            if (!text) return JSON.stringify({ error: 'text 不能为空' })
+            const submit = args?.submit === true
+            try {
+              const r = await deps.browser!.type(ref, text, submit)
+              return submit
+                ? `已在 [${ref}] 填入并回车提交。现在页面：《${r.title}》 ${r.url}\n要看结果，请再调 browser_read（不带 url）。`
+                : `已在 [${ref}] 填入（未提交）。`
             } catch (err) {
               return JSON.stringify({ error: err instanceof Error ? err.message : String(err) })
             }
