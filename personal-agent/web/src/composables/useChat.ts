@@ -235,10 +235,10 @@ export function useChat() {
   }
 
   /** 确认卡上的允许/拒绝：先本地定格（即时反馈），服务端的 outcome 帧随后一锤定音 */
-  async function answerConfirm(card: ConfirmCard, approve: boolean): Promise<void> {
+  async function answerConfirm(card: ConfirmCard, approve: boolean, always = false): Promise<void> {
     card.outcome = approve ? 'approved' : 'denied'
     try {
-      await confirmToolCall(card.confirmId, approve)
+      await confirmToolCall(card.confirmId, approve, always)
     } catch (e: any) {
       // 没送到（多半是已超时/已断流被服务端收掉了）——卡片交还给 outcome 帧 / 恢复可点
       toast('确认没送到：' + (e?.message ?? e))

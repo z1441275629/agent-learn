@@ -807,6 +807,47 @@ console.log('Q11 确认门与写入工具（write 无门不放行 / 拒绝也喂
   }
 }
 
+console.log('Q12 记忆写侧对偶（forget 精确删 / add_note 入库即检索得到）')
+{
+  const tmp = path.join(os.tmpdir(), `pa-probe-memtools-${Date.now()}`)
+  const mem = createMemoryStore(tmp)
+  const kbStore = createKbStore(tmp)
+  await mem.mutate((es) => [
+    ...es,
+    { id: 'm1', text: '喜欢爬山', createdAt: 't', updatedAt: 't' },
+    { id: 'm2', text: '喜欢游泳', createdAt: 't', updatedAt: 't' },
+  ])
+  const bt = builtinTools({ kb: kbStore, memories: mem })
+  const remember = bt.find((t) => t.name === 'remember')!
+  const forget = bt.find((t) => t.name === 'forget')!
+  const addNote = bt.find((t) => t.name === 'add_note')!
+
+  check('forget 注册为 write 风险', forget.risk === 'write')
+  check('add_note 注册为 write 风险', addNote.risk === 'write')
+  check('工具面共 5 个', bt.length === 5, bt.map((t) => t.name).join(','))
+
+  // forget：精确文本删除；改写过的文本不许删（防模型自由发挥误删）
+  check('精确文本删除成功', (await forget.run({ text: '喜欢爬山' })).includes('已忘记'))
+  check('库里还剩另一条', (await mem.list()).length === 1 && (await mem.list())[0].text === '喜欢游泳')
+  check('近似文本删不掉', (await forget.run({ text: '喜欢爬山呀' })).includes('没有找到'))
+  check('近似删除后库不变', (await mem.list()).length === 1)
+  check('空文本拒绝', (await forget.run({ text: '' })).includes('error'))
+
+  // add_note：入库后 search_kb 立即检得到（写读闭环）
+  const saved = await addNote.run({ title: '青竹要点', text: '青竹项目验收日期定在 12 月 18 日' })
+  check('add_note 入库成功', saved.includes('已存入') && saved.includes('青竹要点'), saved)
+  const search = bt.find((t) => t.name === 'search_kb')!
+  const hit = await search.run({ query: '青竹项目验收' })
+  check('入库即可检索（写读闭环）', hit.includes('12 月 18 日'), hit.slice(0, 80))
+  // 寒暄闸：自动注入路径挡单 token；模型主动检索（工具路径）不挡——「组会」这种单关键词是精确查询不是寒暄
+  check('默认闸仍挡单 token（自动注入路径）', (await kbStore.search('青竹')).length === 0)
+  check('工具路径单 token 放行', (await search.run({ query: '青竹' })).includes('12 月 18 日'))
+  check('空正文拒绝', (await addNote.run({ text: '' })).includes('error'))
+  check('缺标题自动补日期', (await addNote.run({ text: '无标题笔记内容' })).includes('对话笔记'), '')
+
+  await fs.rm(tmp, { recursive: true, force: true })
+}
+
 await terminateOcr()
 console.log(`\n探针结果: ${pass}/${pass + fail} ${fail === 0 ? '✓ 全过' : '✗ 有失败——看上面归因'}`)
 if (fail > 0) process.exitCode = 1

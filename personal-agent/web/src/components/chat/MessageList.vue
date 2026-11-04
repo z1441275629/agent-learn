@@ -6,7 +6,7 @@ import MessageItem from './MessageItem.vue'
 const props = defineProps<{
   messages: DisplayMessage[]
   /** 确认卡上的允许/拒绝（穿自 useChat.answerConfirm） */
-  onConfirm?: (card: ConfirmCard, approve: boolean) => void
+  onConfirm?: (card: ConfirmCard, approve: boolean, always: boolean) => void
 }>()
 const scroller = ref<HTMLElement | null>(null)
 

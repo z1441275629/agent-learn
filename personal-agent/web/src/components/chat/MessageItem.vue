@@ -7,11 +7,13 @@ import UsageMeta from '../common/UsageMeta.vue'
 defineProps<{
   message: DisplayMessage
   /** 确认卡上的允许/拒绝（穿自 useChat.answerConfirm） */
-  onConfirm?: (card: ConfirmCard, approve: boolean) => void
+  onConfirm?: (card: ConfirmCard, approve: boolean, always: boolean) => void
 }>()
 
 // 工具痕迹默认收起：要点开才看参数/结果——痕迹是审计用的，不该淹没正文
 const openTool = ref<number | null>(null)
+// 「本会话总是允许」勾选（卡片一张一张出，单值够用；只在点允许时读）
+const alwaysAllow = ref(false)
 
 // 确认卡参数展示：尽量美化成可读 JSON，失败就原样
 function prettyArgs(args: string): string {
@@ -40,8 +42,12 @@ function prettyArgs(args: string): string {
           <div class="confirm-head">⚠️ 写入确认 · {{ card.name }}</div>
           <pre class="confirm-args">{{ prettyArgs(card.args) }}</pre>
           <div v-if="!card.outcome" class="confirm-actions">
-            <button class="approve" @click="onConfirm?.(card, true)">允许</button>
-            <button class="deny" @click="onConfirm?.(card, false)">拒绝</button>
+            <label class="always" title="只对当前会话生效（存在服务端内存，重启即失效）；后果自负的快捷方式">
+              <input v-model="alwaysAllow" type="checkbox" />
+              本会话内总是允许
+            </label>
+            <button class="approve" @click="onConfirm?.(card, true, alwaysAllow)">允许</button>
+            <button class="deny" @click="onConfirm?.(card, false, false)">拒绝</button>
           </div>
           <div v-else class="confirm-outcome">
             {{ card.outcome === 'approved' ? '✓ 已允许' : card.outcome === 'denied' ? '✗ 已拒绝' : '⏱ 无人应答，已自动拒绝' }}
@@ -244,7 +250,18 @@ function prettyArgs(args: string): string {
 
 .confirm-actions {
   display: flex;
+  align-items: center;
   gap: 8px;
+}
+
+.confirm-actions .always {
+  margin-right: auto;
+  font-size: 12px;
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
 }
 
 .confirm-actions button {

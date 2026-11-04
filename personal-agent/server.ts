@@ -293,9 +293,14 @@ const CONFIRM_TIMEOUT_MS = Number(process.env.PA_CONFIRM_TIMEOUT_MS || 120_000)
 type ConfirmOutcome = 'approved' | 'denied' | 'timeout'
 interface PendingConfirm {
   sid: string
+  name: string
   settle: (approve: boolean, outcome: ConfirmOutcome) => void
 }
 const pendingConfirms = new Map<string, PendingConfirm>()
+
+// 会话级「总是允许」：确认卡上勾了才进这里（内存态，重启即清——长期授权是危险品，
+// 刻意不给它落盘）；本会话内同工具的后续调用直接放行，不再出卡
+const sessionAllows = new Map<string, Set<string>>()
 
 // ---------- 对话：服务端持有账本，客户端只发新消息；流式 SSE ----------
 interface ChatBody {
@@ -375,6 +380,11 @@ async function handleChat(req: http.IncomingMessage, res: http.ServerResponse) {
     /** 出确认卡等人点：批准/拒绝/超时都给循环一个明确答复（超时也发 outcome 帧让卡片定格） */
     const askConfirm = (req: { name: string; args: string }) =>
       new Promise<boolean>((resolve) => {
+        // 会话内已「总是允许」的工具直接放行：不出卡（工具芯片照常留痕，审计不缺）
+        if (sessionAllows.get(sid)?.has(req.name)) {
+          console.log(`[pa] ${req.name} 本会话已总允许，自动放行 · session ${sid}`)
+          return resolve(true)
+        }
         const confirmId = `cf_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`
         const settle = (approve: boolean, outcome: ConfirmOutcome) => {
           clearTimeout(timer)
@@ -383,7 +393,7 @@ async function handleChat(req: http.IncomingMessage, res: http.ServerResponse) {
           resolve(approve)
         }
         const timer = setTimeout(() => settle(false, 'timeout'), CONFIRM_TIMEOUT_MS)
-        pendingConfirms.set(confirmId, { sid, settle })
+        pendingConfirms.set(confirmId, { sid, name: req.name, settle })
         send({ type: 'confirm', confirmId, name: req.name, args: req.args })
         console.log(`[pa] 等待确认 ${req.name} ${req.args.slice(0, 80)} · session ${sid}`)
       })
@@ -527,6 +537,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse) {
       }
       if (req.method === 'DELETE') {
         await store.remove(id)
+        sessionAllows.delete(id) // 会话没了，它的「总是允许」授权跟着走
         return json(res, 200, { ok: true })
       }
     }
@@ -573,12 +584,22 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse) {
       return json(res, 200, { ok: true })
     }
 
-    // 确认门应答（确认卡上的允许/拒绝按钮）：找不到 = 已处理/已超时/已断流
+    // 确认门应答（确认卡上的允许/拒绝按钮；勾「本会话总是允许」时 approve+always 一起带）：
+    // 找不到 = 已处理/已超时/已断流
     if (req.method === 'POST' && url.pathname === '/api/chat/confirm') {
-      const body = JSON.parse(await readBody(req)) as { confirmId?: string; approve?: boolean }
+      const body = JSON.parse(await readBody(req)) as { confirmId?: string; approve?: boolean; always?: boolean }
       const pending = pendingConfirms.get(String(body.confirmId ?? ''))
       if (!pending) return json(res, 404, { error: '确认请求不存在或已处理' })
       pending.settle(body.approve === true, body.approve === true ? 'approved' : 'denied')
+      if (body.approve === true && body.always === true) {
+        let set = sessionAllows.get(pending.sid)
+        if (!set) {
+          set = new Set()
+          sessionAllows.set(pending.sid, set)
+        }
+        set.add(pending.name)
+        console.log(`[pa] 本会话总是允许 ${pending.name} · session ${pending.sid}`)
+      }
       return json(res, 200, { ok: true })
     }
 

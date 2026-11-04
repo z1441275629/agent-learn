@@ -162,7 +162,12 @@ export interface KbStore {
   list(): Promise<KbDocSummary[]>
   add(name: string, text: string): Promise<KbDocSummary>
   remove(id: string): Promise<boolean>
-  search(query: string, topK?: number): Promise<KbHit[]>
+  /**
+   * @param opts.chatterGate 寒暄闸（worthSearching，默认开）：自动注入用它挡「继续/好的」级
+   *   短查询；模型主动调 search_kb 时传 false——要不要查已由模型决定，闸不该替它把关
+   *   （否则「组会」这类单关键词的精确查询会被当成寒暄吞掉）
+   */
+  search(query: string, topK?: number, opts?: { chatterGate?: boolean }): Promise<KbHit[]>
 }
 
 export function createKbStore(dataDir: string): KbStore {
@@ -217,8 +222,8 @@ export function createKbStore(dataDir: string): KbStore {
       return true
     },
 
-    async search(query, topK = 3) {
-      if (!worthSearching(query)) return []
+    async search(query, topK = 3, opts = {}) {
+      if (opts.chatterGate !== false && !worthSearching(query)) return []
       const { docs } = await load()
       return bm25Search(query, docs, topK)
     },
