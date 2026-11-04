@@ -43,6 +43,7 @@ import { runToolLoop, truncateToolResult, type ToolDef } from './core/agent.ts'
 import { builtinTools } from './tools.ts'
 import { mergeVoiceResults, voiceErrorMessage, type VoiceResultItem } from './web/src/utils/voice.ts'
 import { resolveAsrConfig, validateAsrAudio, parseTranscription } from './asr.ts'
+import { assertNavigableUrl, capText, formatPageForModel, type BrowserReader, type FetchedPage } from './browser.ts'
 import { encodeWav } from './web/src/utils/wav.ts'
 
 let pass = 0
@@ -1131,6 +1132,67 @@ console.log('Q16 同轮多工具执行策略（read 并发 / write 串行过门 
       r.trace[0].result.includes('完成') && r.trace[1].result.includes('拒绝'),
     )
   }
+}
+
+console.log('Q17 浏览器工具 v1（URL 守门/正文截断/结果整形/工具面接线——纯函数层，真浏览器归 E2E）')
+{
+  const throws = (fn: () => unknown) => {
+    try {
+      fn()
+      return ''
+    } catch (err) {
+      return err instanceof Error ? err.message : String(err)
+    }
+  }
+  // ① URL 守门：只放 http/https（file:// 读本机文件、javascript:/data: 是注入面）
+  check('http/https 放行且去空白', assertNavigableUrl('  https://Example.com/a?b=1 ') === 'https://Example.com/a?b=1')
+  check('http 也放行', assertNavigableUrl('http://127.0.0.1:8899/x') === 'http://127.0.0.1:8899/x')
+  const fileErr = throws(() => assertNavigableUrl('file:///C:/Windows/win.ini'))
+  check('file:// 拒绝且错误人话（说只支持 http/https）', fileErr.includes('只支持 http/https'), fileErr)
+  check('javascript: 拒绝', throws(() => assertNavigableUrl('javascript:alert(1)')).includes('只支持 http/https'))
+  check('data: 拒绝', throws(() => assertNavigableUrl('data:text/html,<b>x</b>')).includes('只支持 http/https'))
+  const noScheme = throws(() => assertNavigableUrl('example.com/docs'))
+  check('裸域名拒绝且提示要带协议', noScheme.includes('合法的 URL') || noScheme.includes('协议'), noScheme)
+  check('空 url 拒绝', throws(() => assertNavigableUrl('  ')).includes('不能为空'))
+  check('超长 url 拒绝（>2048）', throws(() => assertNavigableUrl('https://a.com/' + 'x'.repeat(2100))).includes('太长'))
+
+  // ② 正文截断：头部优先 + 标注总长（截断要让模型知道后面还有多少）
+  check('短正文原样', capText('短短的') === '短短的')
+  check('恰好在上限原样', capText('x'.repeat(6000), 6000) === 'x'.repeat(6000))
+  const capped = capText('y'.repeat(7000), 6000)
+  check(
+    '超长截断保留头部并标注总长',
+    capped.startsWith('y'.repeat(6000)) && capped.includes('共 7000 字') && capped.includes('前 6000 字'),
+    `尾 60 字：…${capped.slice(-60)}`,
+  )
+
+  // ③ 结果整形：模型看到的字符串形状
+  const shaped = formatPageForModel({ url: 'https://a.com/final', title: '巡检页', text: '正文第一行' })
+  check('整形含标题/最终地址/正文', shaped.includes('《巡检页》') && shaped.includes('https://a.com/final') && shaped.includes('正文第一行'))
+
+  // ④ 工具面接线：browser 依赖在 → 注册；不在 → 不注册；守门先于执行器（非法 URL 不叫醒浏览器）
+  const fakeKb = {} as any
+  const fakeMem = {} as any
+  let actuatorCalled = 0
+  const fakeBrowser: BrowserReader = {
+    read: async (raw: string): Promise<FetchedPage> => {
+      actuatorCalled++
+      return { url: raw, title: '假页', text: '假正文' }
+    },
+    close: async () => {},
+  }
+  const withBrowser = builtinTools({ kb: fakeKb, memories: fakeMem, browser: fakeBrowser })
+  const withoutBrowser = builtinTools({ kb: fakeKb, memories: fakeMem })
+  check('browser 依赖在时注册 browser_read', withBrowser.some((t) => t.name === 'browser_read'))
+  check('依赖不在时不注册（PA_BROWSER=0 的形状）', !withoutBrowser.some((t) => t.name === 'browser_read'))
+  const def = withBrowser.find((t) => t.name === 'browser_read')!
+  check('browser_read 是只读（无确认卡）', def.risk === 'read')
+  const r1 = JSON.parse(await def.run({}))
+  check('缺 url 快失败', r1.error?.includes('不能为空'), JSON.stringify(r1))
+  const r2 = JSON.parse(await def.run({ url: 'file:///C:/secret.txt' }))
+  check('非法 URL 在工具层被拦（不进执行器）', r2.error?.includes('只支持 http/https') && actuatorCalled === 0, JSON.stringify(r2))
+  const r3 = await def.run({ url: 'https://ok.example/' })
+  check('正常路径输出整形结果', r3.includes('《假页》') && r3.includes('假正文') && actuatorCalled === 1, r3)
 }
 
 await terminateOcr()

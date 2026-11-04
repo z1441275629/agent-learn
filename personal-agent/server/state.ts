@@ -7,6 +7,7 @@ import { createMemoryStore, extractMemories, mergeMemoryList, shouldAcceptExtrac
 import { createKbStore } from '../core/rag.ts'
 import { builtinTools } from '../tools.ts'
 import { resolveAsrConfig } from '../asr.ts'
+import { createBrowserReader, type BrowserReader } from '../browser.ts'
 import { MODELS } from '../models.ts'
 import { thinkingParams } from '../models.ts'
 
@@ -15,7 +16,10 @@ export const config = loadConfig()
 export const store = createSessionStore(config.dataDir)
 export const memories = createMemoryStore(config.dataDir)
 export const kb = createKbStore(config.dataDir)
-export const tools = builtinTools({ kb, memories })
+// 无头浏览器执行器（computer use 只读 v1）：PA_BROWSER=0 关掉（工具面不注册 browser_read）；
+// 实例惰性——首次真正读网页才拉起 Chromium
+export const browser: BrowserReader | undefined = process.env.PA_BROWSER === '0' ? undefined : createBrowserReader()
+export const tools = builtinTools({ kb, memories, browser })
 // 大模型转写配置（PA_ASR_* 可整体换平台；缺省回落备用/小档/embed 档的按量端点与 key）
 export const ASR = resolveAsrConfig(process.env)
 

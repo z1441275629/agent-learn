@@ -7,7 +7,7 @@
 import { terminateOcr } from '../ocr.ts'
 import { MODELS } from '../models.ts'
 import { createApp } from './app.ts'
-import { config } from './state.ts'
+import { browser, config } from './state.ts'
 
 const PORT = Number(process.env.PA_PORT || 8798)
 const HOST = process.env.PA_HOST || '127.0.0.1'
@@ -20,10 +20,12 @@ const server = createApp().listen(PORT, HOST, () => {
   )
 })
 
-// Ctrl+C 收 worker（tesseract 的 wasm worker 不 terminate 会留一个子线程）
+// Ctrl+C 收 worker（tesseract 的 wasm worker 不 terminate 会留一个子线程；
+// 无头 Chromium 同理——不 close 会留浏览器进程树）
 for (const sig of ['SIGINT', 'SIGTERM'] as const) {
   process.on(sig, async () => {
     await terminateOcr()
+    await browser?.close()
     server.close()
     process.exit(0)
   })

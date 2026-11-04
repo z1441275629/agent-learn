@@ -9,12 +9,48 @@
 //     会出现在确认卡上，人批的才是账上的（PITFALLS #39：派生内容不得未经批准长命于源头）
 //   - forget：删一条记忆——text 必须与系统提示里的记忆原文完全一致，不许模型自由发挥
 //   - add_note：存一条笔记进知识库（search_kb 的写侧对偶）
+// 浏览器（模块 14 computer use，只读 v1）：
+//   - browser_read：无头 Chromium 打开网页读 JS 渲染后的正文——「选择器注入式」路线第一步，
+//     点击/输入（写侧过门）与截图视觉路线是后续层；PA_BROWSER=0 时不注册（deps.browser 为空）
 
 import { newId, type MemoryStore } from './core/memories.ts'
 import type { ToolDef } from './core/agent.ts'
 import type { KbStore } from './core/rag.ts'
+import { assertNavigableUrl, formatPageForModel, type BrowserReader } from './browser.ts'
 
-export function builtinTools(deps: { kb: KbStore; memories: MemoryStore }): ToolDef[] {
+export function builtinTools(deps: { kb: KbStore; memories: MemoryStore; browser?: BrowserReader }): ToolDef[] {
+  const browserTool: ToolDef[] = deps.browser
+    ? [
+        {
+          name: 'browser_read',
+          description:
+            '用无头浏览器打开一个公开网页，读取 JS 渲染完成后的正文文本。适合查网页内容、文档、公告、版本变更；SPA/动态渲染的页面也能读到。url 必须是 http(s) 完整地址（本工具只读公开网页，读不了本机文件）。返回页面标题、最终地址（重定向后）与正文，超长自动截断。本工具不能点击、输入或提交表单——需要交互时告诉用户做不到，不要编造页面内容。',
+          parameters: {
+            type: 'object',
+            properties: {
+              url: { type: 'string', description: '要打开的网页完整地址，如 https://example.com/docs' },
+            },
+            required: ['url'],
+          },
+          risk: 'read',
+          run: async (args) => {
+            const raw = String(args?.url ?? '').trim()
+            // 先在工具层快失败（守门与执行器同一份 assertNavigableUrl）：非法 URL 不值得叫醒浏览器
+            try {
+              assertNavigableUrl(raw)
+            } catch (err) {
+              return JSON.stringify({ error: err instanceof Error ? err.message : String(err) })
+            }
+            try {
+              return formatPageForModel(await deps.browser!.read(raw))
+            } catch (err) {
+              return JSON.stringify({ error: err instanceof Error ? err.message : String(err) })
+            }
+          },
+        },
+      ]
+    : []
+
   return [
     {
       name: 'get_time',
@@ -113,5 +149,6 @@ export function builtinTools(deps: { kb: KbStore; memories: MemoryStore }): Tool
         return `已存入知识库：《${doc.name}》（${doc.chunkCount} 块），之后可用 search_kb 检索。`
       },
     },
+    ...browserTool,
   ]
 }
