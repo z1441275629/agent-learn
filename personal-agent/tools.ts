@@ -16,7 +16,7 @@
 import { newId, type MemoryStore } from './core/memories.ts'
 import type { ToolDef } from './core/agent.ts'
 import type { KbStore } from './core/rag.ts'
-import { assertNavigableUrl, formatPageForModel, validateRefArg, type BrowserReader } from './browser.ts'
+import { assertNavigableUrl, formatInspectResult, formatPageForModel, validateRefArg, type BrowserReader } from './browser.ts'
 
 /** ref 参数在工具层快失败（守门与执行器同一份 validateRefArg）：坏 ref 不值得出确认卡 */
 function checkedRef(value: unknown): number | string {
@@ -27,7 +27,17 @@ function checkedRef(value: unknown): number | string {
   }
 }
 
-export function builtinTools(deps: { kb: KbStore; memories: MemoryStore; browser?: BrowserReader }): ToolDef[] {
+export interface BuiltinToolDeps {
+  kb: KbStore
+  memories: MemoryStore
+  browser?: BrowserReader
+  /** 截图存盘（体检工具要给人看图，注册 inspect 需要） */
+  shots?: { save(dataUrl: string): { url: string } }
+  /** 视觉描述子调用（可选——没配视觉档就降级成纯控制台体检） */
+  vision?: { describe(dataUrl: string): Promise<string> }
+}
+
+export function builtinTools(deps: BuiltinToolDeps): ToolDef[] {
   const browserTool: ToolDef[] = deps.browser
     ? [
         {
@@ -125,6 +135,59 @@ export function builtinTools(deps: { kb: KbStore; memories: MemoryStore; browser
             }
           },
         },
+        // 体检（开发调试）：截图存盘（报告里带 markdown 图，界面直接渲染）+ 视觉描述（视觉档
+        // 子调用，主模型不用吃图）+ 控制台（确定性半边）。shots 没接就不注册
+        ...(deps.shots
+          ? [
+              {
+                name: 'browser_inspect',
+                description:
+                  '体检一个网页（开发调试用）：打开页面（带 url）或检查当前页（不带 url），截图保存（报告里能看到图）、给出视觉模型对界面的描述、以及自本次加载起的控制台消息——JS 报错、console.error/warn、请求失败、HTTP 4xx/5xx。分析页面为什么不对、白屏、报错时用它；要看文字内容用 browser_read。',
+                parameters: {
+                  type: 'object',
+                  properties: {
+                    url: { type: 'string', description: '要体检的网页地址；省略 = 体检当前已打开的页面' },
+                  },
+                  required: [],
+                },
+                risk: 'read',
+                run: async (args: any) => {
+                  const raw = String(args?.url ?? '').trim()
+                  if (raw) {
+                    try {
+                      assertNavigableUrl(raw)
+                    } catch (err) {
+                      return JSON.stringify({ error: err instanceof Error ? err.message : String(err) })
+                    }
+                  }
+                  let page: Awaited<ReturnType<BrowserReader['inspect']>>
+                  try {
+                    page = await deps.browser!.inspect(raw || undefined)
+                  } catch (err) {
+                    return JSON.stringify({ error: err instanceof Error ? err.message : String(err) })
+                  }
+                  const shot = deps.shots!.save(page.screenshot)
+                  let visionText: string | undefined
+                  let visionError: string | undefined
+                  if (deps.vision) {
+                    try {
+                      visionText = await deps.vision.describe(page.screenshot)
+                    } catch (err) {
+                      visionError = err instanceof Error ? err.message.split('\n')[0] : String(err)
+                    }
+                  }
+                  return formatInspectResult({
+                    url: page.url,
+                    title: page.title,
+                    shotUrl: shot.url,
+                    visionText,
+                    visionError,
+                    consoleEntries: page.console,
+                  })
+                },
+              } as ToolDef,
+            ]
+          : []),
       ]
     : []
 

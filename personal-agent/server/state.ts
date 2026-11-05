@@ -8,8 +8,12 @@ import { createKbStore } from '../core/rag.ts'
 import { builtinTools } from '../tools.ts'
 import { resolveAsrConfig } from '../asr.ts'
 import { createBrowserReader, type BrowserReader } from '../browser.ts'
+import { describeScreenshot } from '../shot-vision.ts'
 import { MODELS } from '../models.ts'
 import { thinkingParams } from '../models.ts'
+import { decodeImage } from './http.ts'
+import fs from 'node:fs'
+import path from 'node:path'
 
 /** 进程级配置与存储（dataDir 由 env 决定，一个进程一份） */
 export const config = loadConfig()
@@ -19,7 +23,33 @@ export const kb = createKbStore(config.dataDir)
 // 无头浏览器执行器（computer use 只读 v1）：PA_BROWSER=0 关掉（工具面不注册 browser_read）；
 // 实例惰性——首次真正读网页才拉起 Chromium
 export const browser: BrowserReader | undefined = process.env.PA_BROWSER === '0' ? undefined : createBrowserReader()
-export const tools = builtinTools({ kb, memories, browser })
+// 截图存盘（体检报告里的 markdown 图指到这里；目录封顶 20 张，旧的自然淘汰）
+const SHOTS_DIR = path.join(config.dataDir, 'browser-shots')
+export const shots = {
+  dir: SHOTS_DIR,
+  save(dataUrl: string): { file: string; url: string } {
+    const buf = decodeImage(dataUrl)
+    fs.mkdirSync(SHOTS_DIR, { recursive: true })
+    const file = `shot_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}.png`
+    fs.writeFileSync(path.join(SHOTS_DIR, file), buf)
+    try {
+      const names = fs.readdirSync(SHOTS_DIR).filter((n) => n.endsWith('.png'))
+      if (names.length > 20) {
+        const withTime = names.map((n) => ({ n, t: fs.statSync(path.join(SHOTS_DIR, n)).mtimeMs })).sort((a, b) => b.t - a.t)
+        for (const { n } of withTime.slice(20)) fs.unlinkSync(path.join(SHOTS_DIR, n))
+      }
+    } catch {
+      /* 清理失败不碍事——下张截图再试 */
+    }
+    return { file, url: `/api/browser/shots/${file}` }
+  },
+}
+// 视觉描述子调用：视觉档配置存在才接；没配/失败都在工具层降级成「无描述」，不断体检报告
+const visionEntry = MODELS.find((m) => m.id === 'vision' && m.vision)
+export const shotVision = visionEntry
+  ? { describe: (dataUrl: string) => describeScreenshot(visionEntry.client, visionEntry.model, dataUrl) }
+  : undefined
+export const tools = builtinTools({ kb, memories, browser, shots, vision: shotVision })
 // 大模型转写配置（PA_ASR_* 可整体换平台；缺省回落备用/小档/embed 档的按量端点与 key）
 export const ASR = resolveAsrConfig(process.env)
 

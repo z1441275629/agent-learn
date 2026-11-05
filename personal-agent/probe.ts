@@ -46,13 +46,17 @@ import { resolveAsrConfig, validateAsrAudio, parseTranscription } from './asr.ts
 import {
   assertNavigableUrl,
   capText,
+  formatConsoleSection,
+  formatInspectResult,
   formatPageForModel,
   formatRefSection,
   validateRefArg,
   type BrowserReader,
+  type ConsoleEntry,
   type ElementRef,
   type FetchedPage,
 } from './browser.ts'
+import { markdownToHtml } from './web/src/utils/markdown.ts'
 import { encodeWav } from './web/src/utils/wav.ts'
 
 let pass = 0
@@ -1287,6 +1291,76 @@ console.log('Q18 浏览器操作闭环 v2（ref 校验/元素索引格式化/卡
   check('type+submit 结果带提交后地址', r3.includes('after-type/4') && r3.includes('回车提交'), r3)
   const r4 = JSON.parse(await type.run({ ref: 4, text: '' }))
   check('type 空 text 拒绝', r4.error?.includes('不能为空'))
+}
+
+console.log('Q19 页面体检（控制台格式化/报告整形/markdown 图渲染/工具接线——纯函数层，真浏览器归 E2E）')
+{
+  // ① 控制台格式化：错误类全列、log 只报数量、空日志说干净
+  const entries: ConsoleEntry[] = [
+    { kind: 'log', text: '应用启动' },
+    { kind: 'error', text: '渲染失败 E1' },
+    { kind: 'pageerror', text: 'Uncaught TypeError: Cannot read undefined' },
+    { kind: 'requestfailed', text: 'GET http://a.com/x net::ERR_CONNECTION_REFUSED' },
+    { kind: 'http', text: '404 http://a.com/nope' },
+    { kind: 'warn', text: '废弃 API' },
+    { kind: 'log', text: '第二次渲染' },
+    { kind: 'log', text: '第三次渲染' },
+  ]
+  const section = formatConsoleSection(entries)
+  check('空日志说干净', formatConsoleSection([]).includes('控制台干净'))
+  check('计数行含各类型条数', section.includes('pageerror 1') && section.includes('error 1') && section.includes('log 3'), section.split('\n')[0])
+  check('错误类四条全列且带类型标注', section.includes('✗ [pageerror]') && section.includes('✗ [error] 渲染失败 E1') && section.includes('✗ [请求失败]') && section.includes('✗ [HTTP 4xx/5xx] 404'))
+  check('log 只报数量与最近两条（不逐条列）', section.includes('其余 log/info 共 3 条') && section.includes('第三次渲染') && !section.includes('· [log]'))
+  check('warn 列出且带 ⚠', section.includes('⚠ [warn] 废弃 API'))
+  const many: ConsoleEntry[] = Array.from({ length: 40 }, (_, i) => ({ kind: 'error', text: `错误${i}` }))
+  const capped = formatConsoleSection(many)
+  check('错误类超 30 条截断并说明', (capped.match(/✗ \[error\]/g) ?? []).length === 30 && capped.includes('共 40 条，只列前 30'))
+
+  // ② 体检报告整形：截图链接 + 视觉描述三态（成功/失败/未配置）+ 控制台
+  const base = { url: 'http://dev:5173/', title: '开发页', shotUrl: '/api/browser/shots/shot_abc.png', consoleEntries: entries }
+  const r1 = formatInspectResult({ ...base, visionText: '一个登录表单，未见明显异常' })
+  check('成功态：截图 markdown + 描述 + 控制台', r1.includes('![页面截图](/api/browser/shots/shot_abc.png)') && r1.includes('未见明显异常') && r1.includes('✗ [pageerror]'))
+  const r2 = formatInspectResult({ ...base, visionError: '502 上游错误' })
+  check('视觉失败降级：说明原因但报告完整', r2.includes('502 上游错误') && r2.includes('✗ [pageerror]') && r2.includes('![页面截图]'))
+  const r3 = formatInspectResult({ ...base })
+  check('未配视觉档：降级说明不含错误括号', r3.includes('未配置视觉档') && !r3.includes('（502'))
+
+  // ③ markdown 渲染：自家 /api/ 图渲染成 <img>，外链/data: 不当图（防跟踪与注入）
+  const html = markdownToHtml('看图 ![截图](/api/browser/shots/shot_abc.png) 与外链 ![x](https://evil.com/a.png) 和 ![y](data:image/png;base64,AAAA)')
+  check('/api/ 图渲染成 img', html.includes('<img alt="截图" src="/api/browser/shots/shot_abc.png"'))
+  check('外链图不渲染成 img（仍按链接/文本处理）', !html.includes('evil.com/a.png"') || !html.includes('<img') || !/src="https:\/\/evil/.test(html), html)
+  check('data: URI 图不渲染', !/src="data:/.test(html))
+
+  // ④ 工具接线：inspect 注册条件（browser+shots）、视觉失败/缺失降级、非法 url 快失败
+  const fakeKb = {} as any
+  const fakeMem = {} as any
+  let inspectCalls = 0
+  const fakeBrowser = {
+    read: async () => ({ url: 'u', title: 't', text: 'x', refs: [] }),
+    click: async () => ({ url: 'u', title: 't' }),
+    type: async () => ({ url: 'u', title: 't' }),
+    describeRef: () => null,
+    inspect: async (raw?: string) => {
+      inspectCalls++
+      return { url: raw ?? 'http://current', title: '体检页', screenshot: 'data:image/png;base64,QUJD', console: [{ kind: 'pageerror', text: 'BOOM' }] }
+    },
+    close: async () => {},
+  } as unknown as BrowserReader
+  const fakeShots = { save: (d: string) => ({ url: `/api/browser/shots/shot_${d.length}.png` }) }
+  let visionCalls = 0
+  const full = builtinTools({ kb: fakeKb, memories: fakeMem, browser: fakeBrowser, shots: fakeShots, vision: { describe: async () => '界面正常（mock）' } })
+  const inspectDef = full.find((t) => t.name === 'browser_inspect')!
+  check('browser+shots 都在时注册 inspect 且只读', !!inspectDef && inspectDef.risk === 'read')
+  check('shots 缺失时不注册', !builtinTools({ kb: fakeKb, memories: fakeMem, browser: fakeBrowser }).some((t) => t.name === 'browser_inspect'))
+  const ok = await inspectDef.run({ url: 'https://dev.local/' })
+  check('体检结果：描述 + 截图链接 + pageerror', ok.includes('界面正常（mock）') && ok.includes('![页面截图]') && ok.includes('BOOM') && inspectCalls === 1)
+  const noVision = builtinTools({ kb: fakeKb, memories: fakeMem, browser: fakeBrowser, shots: fakeShots }).find((t) => t.name === 'browser_inspect')!
+  check('没配视觉档照常体检（降级说明）', (await noVision.run({})).includes('未配置视觉档'))
+  const boomVision = builtinTools({ kb: fakeKb, memories: fakeMem, browser: fakeBrowser, shots: fakeShots, vision: { describe: async () => { throw new Error('502 挂了') } } }).find((t) => t.name === 'browser_inspect')!
+  check('视觉子调用失败不断报告', (await boomVision.run({})).includes('502 挂了') && (await boomVision.run({})).includes('BOOM'))
+  const callsBefore = inspectCalls
+  const badUrl = JSON.parse(await inspectDef.run({ url: 'file:///C:/x' }))
+  check('非法 url 工具层快失败（不进执行器）', badUrl.error?.includes('只支持 http/https') && inspectCalls === callsBefore)
 }
 
 await terminateOcr()

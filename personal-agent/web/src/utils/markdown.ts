@@ -10,6 +10,9 @@ const inline = (s: string) =>
   s
     .replace(/`([^`\n]+)`/g, '<code>$1</code>')
     .replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>')
+    // 图片只放行自家 /api/ 路径（会话图/体检截图）——外链/协议相对/data: 一律不当图渲染，
+    // 防外链跟踪与奇怪注入；链接仍只认 http(s)
+    .replace(/!\[([^\]]*)\]\((\/api\/[a-z0-9/_\-.]+)\)/g, '<img alt="$1" src="$2" loading="lazy">')
     .replace(/\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>')
 
 export function markdownToHtml(src: string): string {

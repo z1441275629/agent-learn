@@ -65,6 +65,13 @@ const html = computed(() => markdownToHtml(props.source))
   color: var(--accent);
 }
 
+.markdown :deep(img) {
+  max-width: 100%;
+  border-radius: 8px;
+  border: 1px solid #e2e8f0;
+  margin: 6px 0;
+}
+
 .markdown :deep(.gap) {
   height: 6px;
 }

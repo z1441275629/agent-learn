@@ -11,6 +11,7 @@ import { router as kbRouter } from './routes/kb.ts'
 import { router as modelsRouter } from './routes/models.ts'
 import { router as asrRouter } from './routes/asr.ts'
 import { router as ocrRouter } from './routes/ocr.ts'
+import { router as shotsRouter } from './routes/shots.ts'
 
 const DIR = path.dirname(fileURLToPath(import.meta.url))
 const PUBLIC_DIR = path.resolve(DIR, '../public') // Vue 构建产物（源码 web/，构建输出 public/）
@@ -89,6 +90,7 @@ export function createApp(): Koa {
   app.use(modelsRouter.routes())
   app.use(asrRouter.routes())
   app.use(ocrRouter.routes())
+  app.use(shotsRouter.routes())
 
   // 404 兜底：非 /api 的 GET 是「没这个文件」（提示先构建前端），其余是「没这个路由」
   app.use(async (ctx) => {

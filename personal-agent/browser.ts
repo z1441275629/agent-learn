@@ -97,6 +97,79 @@ export function formatPageForModel(p: FetchedPage): string {
   return section ? `${head}\n\n${section}` : head
 }
 
+// ---------- 页面体检（开发调试）：控制台捕获 + 截图 ----------
+
+export type ConsoleKind = 'error' | 'warn' | 'log' | 'info' | 'pageerror' | 'requestfailed' | 'http'
+
+export interface ConsoleEntry {
+  kind: ConsoleKind
+  text: string
+}
+
+export interface PageInspection {
+  url: string
+  title: string
+  /** PNG dataURL（存盘给人看 + 视觉模型描述用） */
+  screenshot: string
+  /** 自本次页面加载起的控制台消息（错误类全收，其余截尾） */
+  console: ConsoleEntry[]
+}
+
+const KIND_LABEL: Record<ConsoleKind, string> = {
+  error: 'error',
+  pageerror: 'pageerror',
+  requestfailed: '请求失败',
+  http: 'HTTP 4xx/5xx',
+  warn: 'warn',
+  log: 'log',
+  info: 'info',
+}
+
+/**
+ * 纯函数·控制台格式化：错误类（pageerror/error/请求失败/HTTP 4xx5xx）全列（上限 30），
+ * warn 截尾 10 条，log/info 只报数量与最近 2 条——模型分析报错要的是「错误全量 + 噪声概览」。
+ */
+export function formatConsoleSection(entries: ConsoleEntry[]): string {
+  if (!entries.length) return '控制台干净（本次加载没有 error / 警告 / 失败请求）'
+  const isError = (e: ConsoleEntry) => e.kind === 'error' || e.kind === 'pageerror' || e.kind === 'requestfailed' || e.kind === 'http'
+  const errors = entries.filter(isError)
+  const warns = entries.filter((e) => e.kind === 'warn')
+  const rest = entries.filter((e) => !isError(e) && e.kind !== 'warn')
+  const counts = [...new Set(entries.map((e) => e.kind))]
+    .map((k) => `${KIND_LABEL[k]} ${entries.filter((e) => e.kind === k).length}`)
+    .join(' · ')
+  const lines: string[] = [`控制台（自本次加载起）：${counts}`]
+  const shownErr = errors.slice(0, 30)
+  for (const e of shownErr) lines.push(`✗ [${KIND_LABEL[e.kind]}] ${e.text}`)
+  if (errors.length > shownErr.length) lines.push(`✗ …（错误类共 ${errors.length} 条，只列前 30）`)
+  for (const e of warns.slice(-10)) lines.push(`⚠ [warn] ${e.text}`)
+  if (rest.length) {
+    lines.push(`· 其余 log/info 共 ${rest.length} 条（最近：${rest.slice(-2).map((e) => e.text).join(' | ') || '无'}）`)
+  }
+  return lines.join('\n')
+}
+
+export interface InspectReportInput {
+  url: string
+  title: string
+  /** 截图存盘后的可访问地址（结果里以 markdown 图片给出，界面直接渲染） */
+  shotUrl: string
+  /** 视觉模型对截图的描述；两个都空 = 没配视觉档 */
+  visionText?: string
+  visionError?: string
+  consoleEntries: ConsoleEntry[]
+}
+
+/** 纯函数·体检报告整形：截图链接 + 视觉描述（失败降级不断报告）+ 控制台 */
+export function formatInspectResult(r: InspectReportInput): string {
+  const head = `《${r.title}》\n${r.url}`
+  const shot = `截图：![页面截图](${r.shotUrl})`
+  const vision = r.visionText
+    ? `视觉描述（视觉模型看图）：\n${r.visionText}`
+    : `视觉描述：本次没有${r.visionError ? `（${r.visionError}）` : '（未配置视觉档）'}——看截图与下面的控制台即可`
+  return [head, shot, vision, formatConsoleSection(r.consoleEntries)].join('\n\n')
+}
+
 /** 工具面依赖的最小接口（tools.ts 只认这个，不认 playwright） */
 export interface BrowserReader {
   /** 带 url = 导航后读；不带 url = 读当前页（点击/输入之后看结果，不重新导航） */
@@ -107,6 +180,8 @@ export interface BrowserReader {
   type(ref: number, text: string, submit?: boolean): Promise<{ url: string; title: string }>
   /** 确认卡用：把 ref 解析成人话（最近一次快照的登记表；查不到返回 null） */
   describeRef(ref: number): string | null
+  /** 体检：导航（带 url 时，控制台从零重记）→ 等渲染 → 截图 + 控制台快照 */
+  inspect(rawUrl?: string): Promise<PageInspection>
   close(): Promise<void>
 }
 
@@ -123,6 +198,12 @@ export function createBrowserReader(): BrowserReader {
   let browser: LaunchedBrowser | null = null
   let page: Awaited<ReturnType<LaunchedBrowser['newPage']>> | null = null
   let registry: Map<number, ElementRef> = new Map()
+  // 控制台环形缓冲：导航（新加载）时清零——体检报告的口径是「自本次加载起」
+  const entries: ConsoleEntry[] = []
+  const pushEntry = (e: ConsoleEntry) => {
+    entries.push(e)
+    if (entries.length > 300) entries.splice(0, entries.length - 300)
+  }
   // 互斥链：tail 永不 reject，job 的成败各自返回给调用方
   let tail: Promise<void> = Promise.resolve()
   function enqueue<T>(job: () => Promise<T>): Promise<T> {
@@ -137,8 +218,23 @@ export function createBrowserReader(): BrowserReader {
   async function ensurePage() {
     browser ??= await chromium.launch({ headless: true })
     if (!page) {
-      page = await browser.newPage()
+      // 视口钉死：截图尺寸可预期（长页截当前视口，不整页——整页截图 token 爆炸）
+      page = await browser.newPage({ viewport: { width: 1280, height: 800 } })
       page.setDefaultNavigationTimeout(20_000)
+      // 控制台捕获（体检的确定性半边）：JS 报错/警告、网络失败、HTTP 4xx5xx
+      page.on('console', (m) => {
+        const t = m.type()
+        if (t === 'error' || t === 'warn' || t === 'log' || t === 'info') {
+          pushEntry({ kind: t, text: m.text().replace(/\s+/g, ' ').slice(0, 200) })
+        }
+      })
+      page.on('pageerror', (e) => pushEntry({ kind: 'pageerror', text: String((e as Error).message ?? e).replace(/\s+/g, ' ').slice(0, 300) }))
+      page.on('requestfailed', (r) =>
+        pushEntry({ kind: 'requestfailed', text: `${r.method()} ${r.url()} ${r.failure()?.errorText ?? ''}`.replace(/\s+/g, ' ').slice(0, 250) }),
+      )
+      page.on('response', (r) => {
+        if (r.status() >= 400) pushEntry({ kind: 'http', text: `${r.status()} ${r.url()}`.slice(0, 250) })
+      })
     }
     return page
   }
@@ -195,6 +291,7 @@ export function createBrowserReader(): BrowserReader {
     const p = await ensurePage()
     const url = String(rawUrl ?? '').trim()
     if (url) {
+      entries.length = 0 // 新的页面加载，控制台从零记
       try {
         await p.goto(assertNavigableUrl(url), { waitUntil: 'domcontentloaded' })
       } catch (err) {
@@ -260,10 +357,36 @@ export function createBrowserReader(): BrowserReader {
     return { url: page!.url(), title: await page!.title() }
   }
 
+  /** 体检：导航（可选）→ 等渲染 → 视口截图 + 控制台快照。视觉模型/存盘在工具层，这里只交原料 */
+  async function doInspect(rawUrl?: string): Promise<PageInspection> {
+    const p = await ensurePage()
+    const url = String(rawUrl ?? '').trim()
+    if (url) {
+      entries.length = 0
+      try {
+        await p.goto(assertNavigableUrl(url), { waitUntil: 'domcontentloaded' })
+      } catch (err) {
+        return failRead(err, url)
+      }
+    } else if (!p.url() || p.url() === 'about:blank') {
+      throw new Error('浏览器还没打开过页面——先带 url 调一次 browser_read 或 browser_inspect')
+    }
+    await Promise.race([p.waitForLoadState('networkidle'), sleep(3000)]).catch(() => {})
+    await sleep(400)
+    const shot = await p.screenshot({ type: 'png' })
+    return {
+      url: p.url(),
+      title: await p.title(),
+      screenshot: `data:image/png;base64,${shot.toString('base64')}`,
+      console: [...entries],
+    }
+  }
+
   return {
     read: (rawUrl?: string) => enqueue(() => doRead(rawUrl)),
     click: (ref: number) => enqueue(() => doClick(ref)),
     type: (ref: number, text: string, submit?: boolean) => enqueue(() => doType(ref, text, submit)),
+    inspect: (rawUrl?: string) => enqueue(() => doInspect(rawUrl)),
     describeRef: (ref: number) => {
       const e = registry.get(ref)
       return e ? `[${e.ref}] ${e.role}${e.label ? `「${e.label}」` : ''}` : null

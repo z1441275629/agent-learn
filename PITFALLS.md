@@ -352,3 +352,10 @@
 - 根因：拿运行时属性当标注来源时，没区分「反射出来的默认值」与「HTML 里真实写着的属性」。input.type 默认 text 是有用信息（搜索框/复选框的区分就靠它），button.type 默认 submit 是规范噪音——同一个属性名，两种语义价值
 - 修法：button 的 role 只在 `getAttribute('type')` 显式存在时才带（`button:submit` = 作者真想提交）；input 照用 `el.type`。这类区分只有逐元素断言的 E2E 能揪出来——「返回了元素列表」级别的外围断言看不见标注内容
 - 原则：**给模型看的结构化标注是它对页面的全部认知，标注里的每个字段都要过一遍「这个值是作者意图还是平台默认」**；把标注内容本身钉进断言，而不是只断言列表非空
+
+### 48. 用无头浏览器模拟「网络失败」时，Chromium 有自己的端口黑名单——ERR_UNSAFE_PORT 不是连接拒绝 [14]
+
+- 症状：体检工具的 E2E fixture 想造一条「连接拒绝」，fetch 打 `http://127.0.0.1:9/dead`（9 端口没人听，心想必拒）。真跑一遍 Chromium 返回的是 `net::ERR_UNSAFE_PORT`——浏览器内置的 blocked port 名单（1/7/9/11/13/…/445/…，历史上被滥用的协议端口）在 TCP 之前就拦了，`requestfailed` 里的 errorText 与预期的 ERR_CONNECTION_REFUSED 对不上，断言假失败
+- 根因：给「真实执行器」造假环境时，替身（这里的 fixture 页面）预设了操作系统的行为（端口没人听 → RST），但中间还隔着一层浏览器自己的安全策略——假环境只模拟了最外圈。与 #44 同族：mock/fixture 的行为是先验，执行器的真实行为要实测
+- 修法：fixture 换高位未监听端口（如 47631）拿到真 CONNECTION_REFUSED；断言错误码前先用真浏览器打一遍看 errorText 实际是什么。顺带的收获：真跑还暴露了 Chrome 会把资源失败**同时**记成 console error（`Failed to load resource: ...`）与 requestfailed——真实 devtools 就这么吵，格式化层不去重（去重有丢信息风险），断言只断存在不断数量
+- 原则：**fixture 模拟的失败路径要过一遍真执行器核对报错形状**；浏览器是一整层平台策略，别假设它的网络语义与裸 OS 一致
