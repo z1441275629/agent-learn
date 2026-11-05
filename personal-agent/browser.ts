@@ -224,8 +224,9 @@ export function createBrowserReader(): BrowserReader {
       // 控制台捕获（体检的确定性半边）：JS 报错/警告、网络失败、HTTP 4xx5xx
       page.on('console', (m) => {
         const t = m.type()
-        if (t === 'error' || t === 'warn' || t === 'log' || t === 'info') {
-          pushEntry({ kind: t, text: m.text().replace(/\s+/g, ' ').slice(0, 200) })
+        // Playwright 的字面量是 'warning' 不是 'warn'——v3 写成 'warn' 是死分支（tsc 揪出）
+        if (t === 'error' || t === 'warning' || t === 'log' || t === 'info') {
+          pushEntry({ kind: t === 'warning' ? 'warn' : t, text: m.text().replace(/\s+/g, ' ').slice(0, 200) })
         }
       })
       page.on('pageerror', (e) => pushEntry({ kind: 'pageerror', text: String((e as Error).message ?? e).replace(/\s+/g, ' ').slice(0, 300) }))

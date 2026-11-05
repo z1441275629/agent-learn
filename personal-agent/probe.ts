@@ -58,6 +58,7 @@ import {
 } from './browser.ts'
 import { markdownToHtml } from './web/src/utils/markdown.ts'
 import { encodeWav } from './web/src/utils/wav.ts'
+import { createMcpServer, makeMcpTools, missingRequired, pickProtocolVersion, type McpTool } from './mcp-server.ts'
 
 let pass = 0
 let fail = 0
@@ -1192,6 +1193,7 @@ console.log('Q17 浏览器工具 v1（URL 守门/正文截断/结果整形/工�
       actuatorCalled++
       return { url: raw ?? 'http://current-page', title: '假页', text: '假正文', refs: [] }
     },
+    inspect: async () => ({ url: 'http://insp', title: '体检', screenshot: 'data:image/png;base64,x', console: [] }),
     click: async (ref: number) => ({ url: `http://c/${ref}`, title: 'c' }),
     type: async (ref: number) => ({ url: `http://t/${ref}`, title: 't' }),
     describeRef: () => null,
@@ -1261,6 +1263,7 @@ console.log('Q18 浏览器操作闭环 v2（ref 校验/元素索引格式化/卡
       actuator++
       return { url: raw ?? 'http://current', title: '假页', text: '假正文', refs: [] }
     },
+    inspect: async () => ({ url: 'http://insp', title: '体检', screenshot: 'data:image/png;base64,x', console: [] }),
     click: async (ref: number) => {
       actuator++
       return { url: `http://after-click/${ref}`, title: '点后' }
@@ -1361,6 +1364,115 @@ console.log('Q19 页面体检（控制台格式化/报告整形/markdown 图渲�
   const callsBefore = inspectCalls
   const badUrl = JSON.parse(await inspectDef.run({ url: 'file:///C:/x' }))
   check('非法 url 工具层快失败（不进执行器）', badUrl.error?.includes('只支持 http/https') && inspectCalls === callsBefore)
+}
+
+console.log('Q20 MCP server 协议核心（手写 JSON-RPC：握手/版本协商/工具面/错误两层——io 注入零成本驱动）')
+{
+  const sent: any[] = []
+  const probeTools: McpTool[] = [
+    {
+      name: 'echo',
+      description: '回声',
+      inputSchema: { type: 'object', properties: { q: { type: 'string' } }, required: ['q'] },
+      run: async (a) => ({ content: [{ type: 'text', text: `回:${a.q}` }] }),
+    },
+    {
+      name: 'boom',
+      description: '必炸',
+      inputSchema: { type: 'object', properties: {} },
+      run: async () => {
+        throw new Error('炸了')
+      },
+    },
+  ]
+  const srv = createMcpServer({ send: (o) => sent.push(o), tools: probeTools })
+  const tick = () => new Promise((r) => setImmediate(r))
+  const last = () => sent[sent.length - 1]
+
+  // ① 版本协商：支持回显（三个修订版），未知回自己最新
+  check('版本协商：支持的版本回显', pickProtocolVersion('2025-06-18') === '2025-06-18' && pickProtocolVersion('2024-11-05') === '2024-11-05')
+  check('版本协商：未知版本回自己最新', pickProtocolVersion('1999-01-01') === '2025-06-18')
+
+  // ② initialize 应答形状
+  srv.handleLine(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'probe' } } }))
+  const init = last()
+  check(
+    'initialize 应答形状（jsonrpc/id/serverInfo/capabilities.tools/说明）',
+    init?.jsonrpc === '2.0' && init?.id === 1 && init?.result?.serverInfo?.name === 'personal-agent' && !!init?.result?.capabilities?.tools && init?.result?.protocolVersion === '2025-06-18' && typeof init?.result?.instructions === 'string',
+  )
+
+  // ③ initialized 是通知：不回包，置位
+  const before = sent.length
+  srv.handleLine('{"jsonrpc":"2.0","method":"notifications/initialized"}')
+  check('notifications/initialized 不回包', sent.length === before && srv.initialized === true)
+
+  // ④ tools/list：出工具卡
+  srv.handleLine('{"jsonrpc":"2.0","id":2,"method":"tools/list"}')
+  const list = last()
+  check('tools/list 工具卡齐（name/description/inputSchema）', list?.result?.tools?.length === 2 && list.result.tools.every((t: any) => t.name && t.description && t.inputSchema?.type === 'object'))
+
+  // ⑤ tools/call 正常路径（异步应答）
+  srv.handleLine('{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"echo","arguments":{"q":"你好"}}}')
+  await tick()
+  const called = last()
+  check('tools/call 正常应答（content 文本 + isError:false）', called?.id === 3 && called?.result?.content?.[0]?.text === '回:你好' && called?.result?.isError === false)
+
+  // ⑥ 执行错误 = isError 结果（不是 JSON-RPC error——连接不断，模型能读到原因自己调整）
+  srv.handleLine('{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"boom","arguments":{}}}')
+  await tick()
+  const boomed = last()
+  check('执行失败走 isError 结果', boomed?.id === 4 && boomed?.result?.isError === true && boomed?.result?.content?.[0]?.text?.includes('炸了') && boomed?.error === undefined)
+
+  // ⑦ 协议错误两层：未知工具 / 必填缺失 → -32602
+  srv.handleLine('{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"nope","arguments":{}}}')
+  check('未知工具 → -32602', last()?.id === 5 && last()?.error?.code === -32602)
+  srv.handleLine('{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"echo","arguments":{}}}')
+  check('必填缺失 → -32602', last()?.id === 6 && last()?.error?.code === -32602 && last()?.error?.message?.includes('q'))
+  check('missingRequired：空串/null/缺省都算缺', missingRequired(probeTools[0].inputSchema, { q: 'x' }) === null && missingRequired(probeTools[0].inputSchema, {}) === 'q' && missingRequired(probeTools[0].inputSchema, { q: '' }) === 'q' && missingRequired(probeTools[0].inputSchema, { q: null }) === 'q')
+
+  // ⑧ ping 应空结果；未知方法带 id → -32601；未知通知 → 无应答
+  srv.handleLine('{"jsonrpc":"2.0","id":7,"method":"ping"}')
+  check('ping → 空 result', last()?.id === 7 && last()?.result !== undefined && Object.keys(last()?.result ?? {}).length === 0)
+  srv.handleLine('{"jsonrpc":"2.0","id":8,"method":"resources/list"}')
+  check('未知方法 → -32601', last()?.id === 8 && last()?.error?.code === -32601)
+  const quiet = sent.length
+  srv.handleLine('{"jsonrpc":"2.0","method":"notifications/cancelled","params":{}}')
+  check('未知通知不回包', sent.length === quiet)
+
+  // ⑨ 坏 JSON → -32700（id:null）且服务器活着
+  srv.handleLine('这不是 JSON')
+  check('坏 JSON → -32700', last()?.error?.code === -32700 && last()?.id === null)
+  srv.handleLine('{"jsonrpc":"2.0","id":9,"method":"ping"}')
+  check('坏输入之后照常服务', last()?.id === 9 && last()?.result !== undefined)
+
+  // ⑩ 工具面组装：kb 假检索 + 假浏览器（makeMcpTools 注入口，不拉真 Chromium）
+  const fakeBrowserReader: BrowserReader = {
+    read: async (raw?: string) => ({ url: raw ?? 'http://current', title: '体检', text: '正文', refs: [] }),
+    click: async () => ({ url: 'http://x', title: 'x' }),
+    type: async () => ({ url: 'http://x', title: 'x' }),
+    describeRef: () => null,
+    inspect: async () => ({ url: 'http://insp', title: '体检', screenshot: 'data:image/png;base64,AAAA', console: [{ kind: 'error', text: 'E' }] as ConsoleEntry[] }),
+    close: async () => {},
+  }
+  const kbOnly = makeMcpTools({ kbSearch: async (q) => `KB:${q}` })
+  check('无 browser 只注册 kb_search', kbOnly.length === 1 && kbOnly[0].name === 'kb_search')
+  const full = makeMcpTools({ kbSearch: async (q) => `KB:${q}`, browser: fakeBrowserReader })
+  check('有 browser 注册三件', full.map((t) => t.name).join(',') === 'kb_search,browser_read,browser_inspect')
+  check('kb_search 结果走检索文本', (await kbOnly[0].run({ query: '组会' })).content[0]?.text === 'KB:组会')
+  const readTool = full[1]
+  check('browser_read 不带 url 读当前页', (await readTool.run({})).content[0]?.text?.includes('http://current') === true)
+  let guardThrew = false
+  try {
+    await readTool.run({ url: 'file:///C:/secret' })
+  } catch {
+    guardThrew = true
+  }
+  check('browser_read 守门抛错（协议层转 isError）', guardThrew)
+  const inspectContent = (await full[2].run({})).content
+  check(
+    'browser_inspect 返回 image 内容块（剥 dataURL 前缀 + png + 控制台文本）',
+    inspectContent[0]?.type === 'image' && inspectContent[0]?.data === 'AAAA' && inspectContent[0]?.mimeType === 'image/png' && inspectContent[1]?.text?.includes('体检') && inspectContent[1]?.text?.includes('E'),
+  )
 }
 
 await terminateOcr()

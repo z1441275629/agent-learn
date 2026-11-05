@@ -359,3 +359,10 @@
 - 根因：给「真实执行器」造假环境时，替身（这里的 fixture 页面）预设了操作系统的行为（端口没人听 → RST），但中间还隔着一层浏览器自己的安全策略——假环境只模拟了最外圈。与 #44 同族：mock/fixture 的行为是先验，执行器的真实行为要实测
 - 修法：fixture 换高位未监听端口（如 47631）拿到真 CONNECTION_REFUSED；断言错误码前先用真浏览器打一遍看 errorText 实际是什么。顺带的收获：真跑还暴露了 Chrome 会把资源失败**同时**记成 console error（`Failed to load resource: ...`）与 requestfailed——真实 devtools 就这么吵，格式化层不去重（去重有丢信息风险），断言只断存在不断数量
 - 原则：**fixture 模拟的失败路径要过一遍真执行器核对报错形状**；浏览器是一整层平台策略，别假设它的网络语义与裸 OS 一致
+
+### 49. 测试驱动把「常驻基建」当普通子进程拉起——套件跑完事件循环退不出去 [15]
+
+- 症状：MCP E2E 驱动 14/14 全绿、结果行打印完毕，进程却挂着不退（外层 timeout 100s 杀掉才作罢）。`process.getActiveResourcesInfo()` 诊断出两个 ProcessWrap，一度以为是子进程没收干净
+- 根因：两件事叠着。(a) 真凶：mock（8899 共享桩）当时没起，驱动用普通 `spawn` 把它拉成自己的子进程——mock 设计成常驻不退，活着的子进程句柄占住事件循环，套件自己的活干完了也退不出去；(b) 干扰项：Windows 上已 close 的子进程也会在 activeResources 里短暂列着 ProcessWrap（最小复现验证：close 后列表有 ProcessWrap 但进程正常退出）——照着列表去杀进程是白忙
+- 修法：跨套件共享的基建用 `spawn(..., { detached: true, stdio: 'ignore' })` + `unref()` 拉起——它不占本驱动的循环，谁都不用等谁；M10 等子进程用 `close` 事件而不是 `exit`（exit 只代表进程终止，stdio 管道要等所有写端关闭——孙进程继承管道时 exit 早于 close，两者之间还有账没收）。修完 exit=0，mock 常驻给后续套件复用
+- 原则：**驱动脚本的子进程分两类：套件私有的（跑完必须收干净，等 close）与共享基建（detached+unref，不进事件循环）**；诊断挂死先看「谁还活着」，别把资源列表当持有者名单
