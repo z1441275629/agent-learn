@@ -1384,6 +1384,15 @@ console.log('Q20 MCP server 协议核心（手写 JSON-RPC：握手/版本协商
         throw new Error('炸了')
       },
     },
+    {
+      name: 'slow',
+      description: '慢应答',
+      inputSchema: { type: 'object', properties: {} },
+      run: async () => {
+        await new Promise((r) => setTimeout(r, 30))
+        return { content: [{ type: 'text', text: '慢好了' }] }
+      },
+    },
   ]
   const srv = createMcpServer({ send: (o) => sent.push(o), tools: probeTools })
   const tick = () => new Promise((r) => setImmediate(r))
@@ -1409,7 +1418,7 @@ console.log('Q20 MCP server 协议核心（手写 JSON-RPC：握手/版本协商
   // ④ tools/list：出工具卡
   srv.handleLine('{"jsonrpc":"2.0","id":2,"method":"tools/list"}')
   const list = last()
-  check('tools/list 工具卡齐（name/description/inputSchema）', list?.result?.tools?.length === 2 && list.result.tools.every((t: any) => t.name && t.description && t.inputSchema?.type === 'object'))
+  check('tools/list 工具卡齐（name/description/inputSchema）', list?.result?.tools?.length === 3 && list.result.tools.every((t: any) => t.name && t.description && t.inputSchema?.type === 'object'))
 
   // ⑤ tools/call 正常路径（异步应答）
   srv.handleLine('{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"echo","arguments":{"q":"你好"}}}')
@@ -1422,6 +1431,12 @@ console.log('Q20 MCP server 协议核心（手写 JSON-RPC：握手/版本协商
   await tick()
   const boomed = last()
   check('执行失败走 isError 结果', boomed?.id === 4 && boomed?.result?.isError === true && boomed?.result?.content?.[0]?.text?.includes('炸了') && boomed?.error === undefined)
+
+  // ⑥b 在途调用计数：dispatch 后为 1，应答后归零（one-shot 管道靠它等应答排干）
+  srv.handleLine('{"jsonrpc":"2.0","id":41,"method":"tools/call","params":{"name":"slow","arguments":{}}}')
+  check('在途计数：dispatch 后 pendingCalls=1', srv.pendingCalls === 1)
+  await new Promise((r) => setTimeout(r, 60)) // slow 30ms，等它真完成
+  check('在途计数：应答后归零', srv.pendingCalls === 0 && last()?.id === 41)
 
   // ⑦ 协议错误两层：未知工具 / 必填缺失 → -32602
   srv.handleLine('{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"nope","arguments":{}}}')
@@ -1457,7 +1472,7 @@ console.log('Q20 MCP server 协议核心（手写 JSON-RPC：握手/版本协商
   const kbOnly = makeMcpTools({ kbSearch: async (q) => `KB:${q}` })
   check('无 browser 只注册 kb_search', kbOnly.length === 1 && kbOnly[0].name === 'kb_search')
   const full = makeMcpTools({ kbSearch: async (q) => `KB:${q}`, browser: fakeBrowserReader })
-  check('有 browser 注册三件', full.map((t) => t.name).join(',') === 'kb_search,browser_read,browser_inspect')
+  check('有 browser 注册五件（browser 面含 click/type）', full.map((t) => t.name).join(',') === 'kb_search,browser_read,browser_inspect,browser_click,browser_type')
   check('kb_search 结果走检索文本', (await kbOnly[0].run({ query: '组会' })).content[0]?.text === 'KB:组会')
   const readTool = full[1]
   check('browser_read 不带 url 读当前页', (await readTool.run({})).content[0]?.text?.includes('http://current') === true)
@@ -1473,6 +1488,74 @@ console.log('Q20 MCP server 协议核心（手写 JSON-RPC：握手/版本协商
     'browser_inspect 返回 image 内容块（剥 dataURL 前缀 + png + 控制台文本）',
     inspectContent[0]?.type === 'image' && inspectContent[0]?.data === 'AAAA' && inspectContent[0]?.mimeType === 'image/png' && inspectContent[1]?.text?.includes('体检') && inspectContent[1]?.text?.includes('E'),
   )
+}
+
+console.log('Q21 MCP 写侧工具（remember/forget/add_note/browser_click/type：按依赖注册 + 真存储行为——审批语义在客户端，本层钉的是注册面与落库）')
+{
+  const dir = path.join(os.tmpdir(), `pa-q21-${Date.now()}`)
+  await fs.mkdir(dir, { recursive: true })
+  const memStore = createMemoryStore(dir)
+  const kbStore = createKbStore(dir)
+  const clickCount = { n: 0 }
+  const fakeBrowser: BrowserReader = {
+    read: async (raw?: string) => ({ url: raw ?? 'http://cur', title: 't', text: 'x', refs: [] }),
+    inspect: async () => ({ url: 'http://i', title: 'i', screenshot: 'data:image/png;base64,x', console: [] }),
+    click: async (ref: number) => {
+      clickCount.n++
+      return { url: `http://after/${ref}`, title: '点后' }
+    },
+    type: async (ref: number) => ({ url: 'http://typed', title: '填后' }),
+    describeRef: () => null,
+    close: async () => {},
+  }
+  const fullTools = makeMcpTools({ kbSearch: async (q) => '', memories: memStore, kb: kbStore, browser: fakeBrowser })
+  const byName = (n: string) => fullTools.find((t) => t.name === n)!
+  check('全依赖注册八件（读三+写五）', fullTools.map((t) => t.name).join(',') === 'kb_search,remember,forget,add_note,browser_read,browser_inspect,browser_click,browser_type')
+  const noMem = makeMcpTools({ kbSearch: async (q) => '', kb: kbStore })
+  check('没 memories 不注册 remember/forget', !noMem.some((t) => t.name === 'remember') && !noMem.some((t) => t.name === 'forget'))
+  const noKb = makeMcpTools({ kbSearch: async (q) => '', memories: memStore })
+  check('没 kb 不注册 add_note', !noKb.some((t) => t.name === 'add_note'))
+  const ro = makeMcpTools({ kbSearch: async (q) => '', memories: memStore, kb: kbStore, browser: fakeBrowser }, { readonly: true })
+  check('readonly 只留三读（写面全撤、读不误伤）', ro.map((t) => t.name).join(',') === 'kb_search,browser_read,browser_inspect')
+
+  const runOf = async (t: any, args: any) => await t.run(args)
+
+  // remember：空/超长 → isError；正常 → 真落库；重复 → 提示已存在
+  const rEmpty = await runOf(byName('remember'), {})
+  check('remember 空 text → isError', rEmpty.isError === true && rEmpty.content[0].text.includes('不能为空'))
+  const rLong = await runOf(byName('remember'), { text: '长'.repeat(301) })
+  check('remember 超长 → isError', rLong.isError === true)
+  const rOk = await runOf(byName('remember'), { text: '我爱吃甜的' })
+  check('remember 正常落库', rOk.isError !== true && rOk.content[0].text.includes('已记住'))
+  const rDup = await runOf(byName('remember'), { text: '我爱吃甜的' })
+  check('remember 重复 → 提示已存在', rDup.content[0].text.includes('已经存在'))
+  const memList = await memStore.list()
+  check('memories.json 里只有一条', memList.length === 1 && memList[0].text === '我爱吃甜的')
+
+  // forget：精确删；找不到如实说
+  const fMiss = await runOf(byName('forget'), { text: '不存在的话' })
+  check('forget 找不到 → 明说没找到', fMiss.content[0].text.includes('没有找到'))
+  const fOk = await runOf(byName('forget'), { text: '我爱吃甜的' })
+  check('forget 精确删除', fOk.content[0].text.includes('已忘记') && (await memStore.list()).length === 0)
+
+  // add_note：空 → isError；正常 → 存进 kb 且检索得到
+  const nEmpty = await runOf(byName('add_note'), {})
+  check('add_note 空 text → isError', nEmpty.isError === true)
+  const nOk = await runOf(byName('add_note'), { title: '口味', text: '口味：爱甜不吃辣' })
+  check('add_note 正常入库', nOk.content[0].text.includes('已存入知识库') && (await kbStore.search('口味', 3, { chatterGate: false })).length === 1)
+  const nDefault = await runOf(byName('add_note'), { text: '没给标题' })
+  check('add_note 缺 title 用日期默认', !nDefault.isError && (await kbStore.list()).length === 2)
+
+  // browser_click/type：坏 ref → isError；好 ref → 真调用；type 空 text → isError
+  const cBad = await runOf(byName('browser_click'), { ref: 999 })
+  check('browser_click 坏 ref → isError（不进执行器）', cBad.isError === true && clickCount.n === 0)
+  const cOk = await runOf(byName('browser_click'), { ref: 3 })
+  check('browser_click 正常点击并报结果', cOk.content[0].text.includes('已点击 [3]') && clickCount.n === 1)
+  const tEmpty = await runOf(byName('browser_type'), { ref: 2 })
+  check('browser_type 空 text → isError', tEmpty.isError === true)
+  const tOk = await runOf(byName('browser_type'), { ref: 2, text: '你好', submit: true })
+  check('browser_type 提交态报结果', tOk.content[0].text.includes('回车提交'))
+  await fs.rm(dir, { recursive: true, force: true })
 }
 
 await terminateOcr()

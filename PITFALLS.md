@@ -366,3 +366,10 @@
 - 根因：两件事叠着。(a) 真凶：mock（8899 共享桩）当时没起，驱动用普通 `spawn` 把它拉成自己的子进程——mock 设计成常驻不退，活着的子进程句柄占住事件循环，套件自己的活干完了也退不出去；(b) 干扰项：Windows 上已 close 的子进程也会在 activeResources 里短暂列着 ProcessWrap（最小复现验证：close 后列表有 ProcessWrap 但进程正常退出）——照着列表去杀进程是白忙
 - 修法：跨套件共享的基建用 `spawn(..., { detached: true, stdio: 'ignore' })` + `unref()` 拉起——它不占本驱动的循环，谁都不用等谁；M10 等子进程用 `close` 事件而不是 `exit`（exit 只代表进程终止，stdio 管道要等所有写端关闭——孙进程继承管道时 exit 早于 close，两者之间还有账没收）。修完 exit=0，mock 常驻给后续套件复用
 - 原则：**驱动脚本的子进程分两类：套件私有的（跑完必须收干净，等 close）与共享基建（detached+unref，不进事件循环）**；诊断挂死先看「谁还活着」，别把资源列表当持有者名单
+
+### 50. Windows 上 stdio 全局命令别用 spawn+inherit——子进程 stdout 应答会丢；one-shot 管道测异步工具要先排干在途应答 [15]
+
+- 症状两则：(a) 把 MCP server 打包成全局命令 `pa-mcp`，包装层 `spawn(process.execPath, [entry], { stdio:'inherit' })`，直接 echo 管道调用时 stderr（启动日志）透传正常，**stdout 的 JSON 应答整条消失**；(b) 直接跑裸服务器 echo 管道测 `tools/list` 正常、测 `kb_search` 应答也消失
+- 根因：两层不同的事。(a) Windows 上 node 子进程的 `stdio:'inherit'` 对管道 stdout 有继承怪癖——包装进程被管道包着时，子进程 stdout 没落到同一个捕获管道上；(b) 更本质：`tools/list` 是同步应答（在 line 事件里写完），`kb_search` 是异步应答（先读文件后写）——echo 管道一 EOF，readline 立刻 close，close 处理器马上 `process.exit(0)`，**在途异步应答被截断**
+- 修法：(a) 包装层改 in-process：`import { main } from './mcp-server.ts'` 同进程直接跑，stdin/stdout 就是命令自己的，协议通道天然干净（也省一层进程）；(b) 协议核心加 `pendingCalls` 在途计数（dispatch++ / 应答--），close 时先 `while(pendingCalls>0) sleep(50)`（上限 30s）再收浏览器退出——真实客户端从不发完请求立刻关 stdin，这个等待只发生在 one-shot 管道调试场景，不改变正常会话的关停语义
+- 原则：**「日志可见 ≠ 应答可达」——调试单管道调工具要分清同步/异步应答，异步工具要靠等待或客户端配对，不能靠「命令结束自然收尾」**；全局命令的 stdout 通道要经过真管道实测，别信 `inherit` 在本地 shell 里的表现

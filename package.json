@@ -3,6 +3,9 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
+  "bin": {
+    "pa-mcp": "personal-agent/mcp-bin.mjs"
+  },
   "description": "AI Agent 面试准备实验室：Function Calling / RAG / Agent / MCP / Skill 手写 demo",
   "scripts": {
     "smoke": "node smoke_test.ts",

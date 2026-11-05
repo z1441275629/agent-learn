@@ -96,18 +96,20 @@
     进模型）是后续层——接口形态完全不同（WS 状态机/多模态 content）
   - 纯逻辑层（`web/src/utils/voice.ts` + `asr.ts`）探针覆盖：DOM 结果形状/错误码人话、
     配置回落矩阵/音频校验（mime 白名单、25MB 上限）/响应解析
-- **MCP server（模块 15 · 能力外露给 Claude Code）**：`node personal-agent/mcp-server.ts`——
-  手写 stdio JSON-RPC（换行分帧，不引 SDK），把工作台只读三件外露成 MCP 工具：
-  `kb_search`（个人知识库检索）、`browser_read`（真渲染读网页）、`browser_inspect`
-  （页面体检——**截图直接以 image 内容块返回**，Claude 自己就是多模态，感知交给客户端模型，
-  与工作台内「视觉档子调用」构成同一能力的两种分工）。协议形状照 2025-06-18 规范：
-  initialize 版本协商（支持三个修订版回显）、错误两层（未知工具/参数缺失 = JSON-RPC
-  -32602；执行失败 = `isError:true` 结果喂回模型，连接不断）。写侧工具刻意不外露——
-  工作台里有确认门，MCP 侧还没有对应审批语义。复用 `core/rag` 与 `browser`，不 import
-  `server/state`（MCP 进程是独立供给方）；数据目录与工作台共享（缺省同一 `data/`，
-  `PA_DATA_DIR` 可改），`PA_BROWSER=0` 只剩 kb_search。仓库根 `.mcp.json` 已注册，
-  Claude Code 在本仓库启动时会请求批准一次。关停走 stdio 语义：客户端关 stdin =
-  收掉浏览器进程树再退出
+- **MCP server（模块 15 · 能力外露给 Claude Code）**：`node personal-agent/mcp-server.ts`
+  或全局命令 `pa-mcp`（`npm link` 后任何目录/任何 MCP 客户端可用）——手写 stdio JSON-RPC
+  （换行分帧，不引 SDK），工具面 = **读三件** `kb_search`/`browser_read`/`browser_inspect`
+  （inspect 截图直接以 image 内容块返回，感知交给客户端模型，与工作台内「视觉档子调用」
+  是同能力两分工）+ **写五件** `remember`/`forget`/`add_note`/`browser_click`/`browser_type`
+  （与工作台产品核心同一写入路径；审批语义在客户端——Claude Code 对写操作逐个请求批准，
+  与工作台内「确认卡」是同一原则的两处落地）。协议形状照 2025-06-18 规范：initialize
+  版本协商、错误两层（协议错 -32602 vs 执行错 `isError` 结果）。`PA_MCP_READONLY=1` =
+  写面全撤只留三读（kill switch）；`PA_BROWSER=0` = 浏览器工具全撤。复用 `core/rag`/
+  `core/memories`/`browser`，不 import `server/state`；数据目录与工作台共享（缺省同一
+  `data/`，`PA_DATA_DIR` 可改）。仓库根 `.mcp.json` 已注册；建议在 `.claude/settings.json`
+  把读三件放进 `permissions.allow`（自动放行），写五件**不列**（默认每次询问）——想强制
+  兜底可把写五件放进 `permissions.ask`。关停走 stdio 语义：客户端关 stdin = 先排干在途
+  应答（one-shot 管道调试不截断异步响应）再收浏览器进程树退出
 
 服务端 `POST /api/chat`：客户端只发**新消息**（历史在服务端账本里），`stream:true` +
 `stream_options.include_usage`；客户端断开即 abort 上游，防止没人看的长回答继续烧 token。

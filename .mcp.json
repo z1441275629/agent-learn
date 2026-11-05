@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "personal-agent": {
+      "command": "node",
+      "args": ["personal-agent/mcp-server.ts"]
+    }
+  }
+}
