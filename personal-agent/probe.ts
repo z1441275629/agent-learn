@@ -59,6 +59,7 @@ import {
 import { markdownToHtml } from './web/src/utils/markdown.ts'
 import { encodeWav } from './web/src/utils/wav.ts'
 import { createMcpServer, makeMcpTools, missingRequired, pickProtocolVersion, type McpTool } from './mcp-server.ts'
+import { createSkillStore, parseSkillDoc, renderSkillIndex } from './core/skills.ts'
 
 let pass = 0
 let fail = 0
@@ -1555,6 +1556,63 @@ console.log('Q21 MCP 写侧工具（remember/forget/add_note/browser_click/type�
   check('browser_type 空 text → isError', tEmpty.isError === true)
   const tOk = await runOf(byName('browser_type'), { ref: 2, text: '你好', submit: true })
   check('browser_type 提交态报结果', tOk.content[0].text.includes('回车提交'))
+  await fs.rm(dir, { recursive: true, force: true })
+}
+
+console.log('Q22 技能注册表（skills/ 目录：索引只给触发条件 / load 返回全文 / use_skill 接线——发现与执行分离，描述不概括流程）')
+{
+  const dir = path.join(os.tmpdir(), `pa-q22-${Date.now()}`)
+  await fs.mkdir(dir, { recursive: true })
+  await fs.writeFile(
+    path.join(dir, 'weekly-summary.md'),
+    `---\nname: weekly-summary\ndescription: Use when 用户问这周学了什么——"本周总结"、"上周复盘"。\n---\n\n# 近期知识库总结\n\n1. 先 get_time\n2. 多次 search_kb\n`,
+  )
+  await fs.writeFile(
+    path.join(dir, 'note-taker.md'),
+    `---\nname: note-taker\ndescription: Use when 用户要记录——"记下来"、"存到笔记"。\n---\n\n# 记录\n\n调 add_note 入库。\n`,
+  )
+  const store = createSkillStore(dir)
+  const idx = await store.index()
+  check('索引按名排序返回 name+description', idx.map((s) => s.name).join(',') === 'note-taker,weekly-summary' && idx[1].description.includes('这周'))
+  check('索引只带触发条件不带正文（发现不扛正文）', idx.every((s) => !('body' in s)))
+  const doc = await store.load('weekly-summary')
+  check('load 返回全文（含正文步骤）', doc?.name === 'weekly-summary' && doc.body.includes('多次 search_kb'))
+  check('load 未知技能 → null', (await store.load('nope')) === null)
+  check('load 非法名 → null（不读盘，防路径穿越）', (await store.load('../../x')) === null)
+  await fs.writeFile(path.join(dir, 'broken.md'), `---\nname: broken\n---\n正文缺触发条件`)
+  check('缺 description 的文档 → 抛错（不许静默吞）', await (async () => {
+    try {
+      await store.index()
+      return false
+    } catch {
+      return true
+    }
+  })())
+  check('frontmatter 围栏缺失 → 抛错', await (async () => {
+    try {
+      parseSkillDoc('plain text no frontmatter', 'x.md')
+      return false
+    } catch {
+      return true
+    }
+  })())
+  const rendered = renderSkillIndex(idx)
+  check('索引块提示先加载再执行', rendered.includes('use_skill') && rendered.includes('- weekly-summary：Use when'))
+  const truncated = renderSkillIndex([{ name: 'x', description: '长'.repeat(200) }], 100)
+  check('超长 description 截断', truncated.includes('长'.repeat(100) + '…') && !truncated.includes('长'.repeat(200)))
+
+  const fakeKb = {} as any
+  const fakeMem = {} as any
+  const withSkills = builtinTools({ kb: fakeKb, memories: fakeMem, skills: store })
+  const skillTool = withSkills.find((t) => t.name === 'use_skill')
+  check('有 skills 依赖注册 use_skill（read 无确认门）', !!skillTool && skillTool.risk === 'read')
+  check('无 skills 依赖不注册 use_skill', !builtinTools({ kb: fakeKb, memories: fakeMem }).some((t) => t.name === 'use_skill'))
+  const out = await skillTool!.run({ name: 'weekly-summary' })
+  check('use_skill 返回技能全文（触发条件+步骤）', typeof out === 'string' && out.includes('# 技能 weekly-summary') && out.includes('多次 search_kb'))
+  const miss = await skillTool!.run({ name: 'nope' })
+  check('use_skill 未知技能 → 明说找不到', typeof miss === 'string' && miss.includes('没有找到技能'))
+  const empty = await skillTool!.run({})
+  check('use_skill 空 name → 报错', typeof empty === 'string' && empty.includes('不能为空'))
   await fs.rm(dir, { recursive: true, force: true })
 }
 

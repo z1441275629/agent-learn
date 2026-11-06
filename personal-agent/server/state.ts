@@ -5,6 +5,7 @@ import { loadConfig } from '../core/config.ts'
 import { createSessionStore } from '../core/sessions.ts'
 import { createMemoryStore, extractMemories, mergeMemoryList, shouldAcceptExtraction } from '../core/memories.ts'
 import { createKbStore } from '../core/rag.ts'
+import { createSkillStore } from '../core/skills.ts'
 import { builtinTools } from '../tools.ts'
 import { resolveAsrConfig } from '../asr.ts'
 import { createBrowserReader, type BrowserReader } from '../browser.ts'
@@ -49,7 +50,9 @@ const visionEntry = MODELS.find((m) => m.id === 'vision' && m.vision)
 export const shotVision = visionEntry
   ? { describe: (dataUrl: string) => describeScreenshot(visionEntry.client, visionEntry.model, dataUrl) }
   : undefined
-export const tools = builtinTools({ kb, memories, browser, shots, vision: shotVision })
+// 技能注册表（模块 15）：skills/ 目录的 SKILL.md 文档——系统提示注入索引、use_skill 按需加载全文
+export const skills = createSkillStore(config.skillsDir)
+export const tools = builtinTools({ kb, memories, skills, browser, shots, vision: shotVision })
 // 大模型转写配置（PA_ASR_* 可整体换平台；缺省回落备用/小档/embed 档的按量端点与 key）
 export const ASR = resolveAsrConfig(process.env)
 

@@ -16,6 +16,7 @@
 import { newId, type MemoryStore } from './core/memories.ts'
 import type { ToolDef } from './core/agent.ts'
 import type { KbStore } from './core/rag.ts'
+import type { SkillStore } from './core/skills.ts'
 import { assertNavigableUrl, formatInspectResult, formatPageForModel, validateRefArg, type BrowserReader } from './browser.ts'
 
 /** ref 参数在工具层快失败（守门与执行器同一份 validateRefArg）：坏 ref 不值得出确认卡 */
@@ -30,6 +31,8 @@ function checkedRef(value: unknown): number | string {
 export interface BuiltinToolDeps {
   kb: KbStore
   memories: MemoryStore
+  /** 技能注册表（skills/ 目录）：有它才注册 use_skill 加载工具 */
+  skills?: SkillStore
   browser?: BrowserReader
   /** 截图存盘（体检工具要给人看图，注册 inspect 需要） */
   shots?: { save(dataUrl: string): { url: string } }
@@ -222,6 +225,29 @@ export function builtinTools(deps: BuiltinToolDeps): ToolDef[] {
         return hits.map((h, i) => `[${i + 1}]《${h.docName}》（相关度 ${h.score.toFixed(2)}）\n${h.text}`).join('\n\n')
       },
     },
+    // 技能加载（模块 15 skill）：系统提示里有技能索引（name+触发条件），用户需求匹配时先加载全文再照做
+    ...(deps.skills
+      ? [
+          {
+            name: 'use_skill',
+            description:
+              '加载一个技能的完整说明。系统提示的「可用技能」列表里有每个技能的名字和触发条件；当用户的请求匹配某个技能的触发条件时，先调用本工具加载该技能全文（name 用列表里的名字），然后严格照技能文档里的步骤执行。技能文档是用户沉淀的固定流程——不要凭印象跳过步骤。',
+            parameters: {
+              type: 'object',
+              properties: { name: { type: 'string', description: '技能名（系统提示「可用技能」列表里的名字）' } },
+              required: ['name'],
+            },
+            risk: 'read',
+            run: async (args) => {
+              const name = String(args?.name ?? '').trim()
+              if (!name) return JSON.stringify({ error: 'name 不能为空' })
+              const doc = await deps.skills!.load(name)
+              if (!doc) return JSON.stringify({ error: `没有找到技能 ${name}——用系统提示「可用技能」列表核对名字` })
+              return `# 技能 ${doc.name}\n\n## 触发条件\n${doc.description}\n\n## 步骤\n${doc.body}`
+            },
+          } as ToolDef,
+        ]
+      : []),
     {
       name: 'remember',
       description:

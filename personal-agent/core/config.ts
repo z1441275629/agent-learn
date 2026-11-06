@@ -8,6 +8,8 @@ import path from 'node:path'
 export interface AppConfig {
   /** 运行数据根：sessions/、以后 memories/、rag/ 都在它下面 */
   dataDir: string
+  /** 技能目录（SKILL.md 文档；PA_SKILLS_DIR 可改，缺省 personal-agent/skills） */
+  skillsDir: string
   /** 单次发送的上下文预算（估算 token；超了触发摘要/窗口）。PA_CONTEXT_BUDGET 可改 */
   contextBudget: number
   /** 长期记忆总开关（抽取 + 注入一起关）。PA_MEMORY=0 关闭 */
@@ -17,9 +19,12 @@ export interface AppConfig {
 export function loadConfig(): AppConfig {
   const fromEnv = process.env.PA_DATA_DIR?.trim()
   const dataDir = fromEnv ? path.resolve(process.cwd(), fromEnv) : path.join(import.meta.dirname, '..', 'data')
+  const skillsFromEnv = process.env.PA_SKILLS_DIR?.trim()
+  const skillsDir = skillsFromEnv ? path.resolve(process.cwd(), skillsFromEnv) : path.join(import.meta.dirname, '..', 'skills')
   const budget = Number(process.env.PA_CONTEXT_BUDGET || 6000)
   return {
     dataDir,
+    skillsDir,
     contextBudget: Number.isFinite(budget) && budget > 0 ? budget : 6000,
     memoryEnabled: process.env.PA_MEMORY !== '0',
   }

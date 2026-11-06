@@ -12,7 +12,8 @@ import {
   storedMessagesTokens,
   summarizeConversation,
 } from '../core/context.ts'
-import { config, store, memories, kb } from './state.ts'
+import { renderSkillIndex } from '../core/skills.ts'
+import { config, store, memories, kb, skills } from './state.ts'
 
 export interface ChatBody {
   sessionId?: string | null
@@ -99,7 +100,10 @@ export async function prepareContext(
     toolsOn && kbCount > 0
       ? '用户有个人知识库（个人笔记）；问题涉及其个人记录、安排、项目时，先用 search_kb 工具检索再回答。'
       : ''
-  const systemContent = [memoryEntries.length ? memorySystemContent(memoryEntries) : '', guidance]
+  // 技能索引（模块 15）：只给触发条件（name+description），agent 匹配时用 use_skill 加载全文再照做
+  const skillSummaries = toolsOn ? await skills.index() : []
+  const skillsBlock = skillSummaries.length ? renderSkillIndex(skillSummaries) : ''
+  const systemContent = [memoryEntries.length ? memorySystemContent(memoryEntries) : '', guidance, skillsBlock]
     .filter(Boolean)
     .join('\n')
   const basePrefix = systemContent ? 1 : 0
