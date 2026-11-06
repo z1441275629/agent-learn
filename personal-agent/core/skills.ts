@@ -47,7 +47,7 @@ export function parseSkillDoc(markdown: string, file = '<技能>'): SkillDoc {
 export function renderSkillIndex(skills: SkillSummary[], maxDescriptionChars = 150): string {
   if (!skills.length) return ''
   return (
-    '可用技能（用户需求匹配某技能触发条件时，先调 use_skill 加载全文，再严格照技能步骤执行）：\n' +
+    '可用技能（用户需求匹配某技能触发条件时，必须先用 use_skill 加载全文，再严格照技能步骤执行——技能是用户沉淀的固定流程，不许凭印象跳过步骤）：\n' +
     skills
       .map((s) => `- ${s.name}：${s.description.length > maxDescriptionChars ? s.description.slice(0, maxDescriptionChars) + '…' : s.description}`)
       .join('\n')

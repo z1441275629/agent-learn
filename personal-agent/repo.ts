@@ -22,8 +22,9 @@ export interface RepoConfig {
 }
 
 export interface RepoReader {
-  /** 最近提交；since 为时间窗（today 00:00 / 3 days / 2026-11-05），省略 = 最近 20 条 */
-  gitLog(since?: string, max?: number): Promise<string>
+  /** 最近提交；since/until 为时间窗（today 00:00 / 3 days / 2026-11-05，都省略 = 最近 20 条）；
+   *  圈定单日必须 since=该日 + until=该日的次日（since 是下界，不配 until 会混入其后几天的提交） */
+  gitLog(since?: string, until?: string, max?: number): Promise<string>
   /** 读仓库内文件（仓库相对路径），超长截断 */
   readFile(rel: string): Promise<string>
   /** 写仓库内文件（白名单目录 + 确认门在 tools 层），返回结果字符串 */
@@ -63,11 +64,13 @@ function checkWritable(resolved: string, repoDir: string, writableDirs: string[]
 export function createRepoReader(config: RepoConfig): RepoReader {
   const root = path.resolve(config.repoDir)
   return {
-    async gitLog(since, max = 20) {
+    async gitLog(since, until, max = 20) {
       const count = Math.max(1, Math.min(Math.floor(Number(max)) || 20, 100))
       const args = ['log', '--date=short', `--pretty=format:%h %ad %s`, `--max-count=${count}`]
       const sinceStr = since ? String(since).trim() : ''
       if (sinceStr) args.push(`--since=${sinceStr}`)
+      const untilStr = until ? String(until).trim() : ''
+      if (untilStr) args.push(`--until=${untilStr}`)
       try {
         const { stdout } = await execFileAsync('git', args, { cwd: root, maxBuffer: 1024 * 1024 })
         const out = stdout.trim()

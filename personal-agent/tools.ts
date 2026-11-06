@@ -257,11 +257,12 @@ export function builtinTools(deps: BuiltinToolDeps): ToolDef[] {
           {
             name: 'git_log',
             description:
-              '查看这个仓库的 git 提交历史。涉及「最近的提交、这周/今天按提交干了什么」时调用。since 是时间窗（如 today 00:00、3 days、2026-11-05），省略 = 最近一天；max 最多条数（默认 20）。返回「提交号 日期 消息」列表。',
+              '查看这个仓库的 git 提交历史。涉及「最近的提交、按提交查某天干了什么」时调用。since = 起始时间窗（today 00:00 / 3 days / 2026-11-05，省略 = 最近一天），until = 截止时间窗（同格式，可省）；要圈定单日必须 since=该日 且 until=该日的次日，否则混入其后几天的提交；max 最多条数（默认 20，圈定单日建议 ≥50）。返回「提交号 日期 消息」列表。',
             parameters: {
               type: 'object',
               properties: {
-                since: { type: 'string', description: '时间窗，如 today 00:00 / 3 days / 2026-11-05；省略 = 最近一天' },
+                since: { type: 'string', description: '起始时间窗，如 today 00:00 / 3 days / 2026-11-05；省略 = 最近一天' },
+                until: { type: 'string', description: '截止时间窗，同格式；圈定单日 = 目标日期的次日（如 since=2026-11-03 00:00、until=2026-11-04 00:00）' },
                 max: { type: 'number', description: '最多条数，默认 20' },
               },
               required: [],
@@ -269,7 +270,11 @@ export function builtinTools(deps: BuiltinToolDeps): ToolDef[] {
             risk: 'read',
             run: async (args) => {
               try {
-                return await deps.repo!.gitLog(String(args?.since ?? '').trim() || undefined, Number(args?.max) || 20)
+                return await deps.repo!.gitLog(
+                  String(args?.since ?? '').trim() || undefined,
+                  String(args?.until ?? '').trim() || undefined,
+                  Number(args?.max) || 20,
+                )
               } catch (err) {
                 return JSON.stringify({ error: err instanceof Error ? err.message : String(err) })
               }
