@@ -17,6 +17,7 @@ import { newId, type MemoryStore } from './core/memories.ts'
 import type { ToolDef } from './core/agent.ts'
 import type { KbStore } from './core/rag.ts'
 import type { SkillStore } from './core/skills.ts'
+import type { RepoReader } from './repo.ts'
 import { assertNavigableUrl, formatInspectResult, formatPageForModel, validateRefArg, type BrowserReader } from './browser.ts'
 
 /** ref 参数在工具层快失败（守门与执行器同一份 validateRefArg）：坏 ref 不值得出确认卡 */
@@ -33,6 +34,8 @@ export interface BuiltinToolDeps {
   memories: MemoryStore
   /** 技能注册表（skills/ 目录）：有它才注册 use_skill 加载工具 */
   skills?: SkillStore
+  /** 仓库能力（git_log/read_file/write_file）：有它才注册三个工具 */
+  repo?: RepoReader
   browser?: BrowserReader
   /** 截图存盘（体检工具要给人看图，注册 inspect 需要） */
   shots?: { save(dataUrl: string): { url: string } }
@@ -247,6 +250,76 @@ export function builtinTools(deps: BuiltinToolDeps): ToolDef[] {
             },
           } as ToolDef,
         ]
+      : []),
+    // 仓库能力（模块 15）：git_log/read_file 只读；write_file 写侧（白名单目录 + 确认门）
+    ...(deps.repo
+      ? ([
+          {
+            name: 'git_log',
+            description:
+              '查看这个仓库的 git 提交历史。涉及「最近的提交、这周/今天按提交干了什么」时调用。since 是时间窗（如 today 00:00、3 days、2026-11-05），省略 = 最近一天；max 最多条数（默认 20）。返回「提交号 日期 消息」列表。',
+            parameters: {
+              type: 'object',
+              properties: {
+                since: { type: 'string', description: '时间窗，如 today 00:00 / 3 days / 2026-11-05；省略 = 最近一天' },
+                max: { type: 'number', description: '最多条数，默认 20' },
+              },
+              required: [],
+            },
+            risk: 'read',
+            run: async (args) => {
+              try {
+                return await deps.repo!.gitLog(String(args?.since ?? '').trim() || undefined, Number(args?.max) || 20)
+              } catch (err) {
+                return JSON.stringify({ error: err instanceof Error ? err.message : String(err) })
+              }
+            },
+          },
+          {
+            name: 'read_file',
+            description:
+              '读取仓库里的一个文件（仓库相对路径，如 reviews/2026-11-06.md）。读复盘、日志、文档时用；超长自动截断标注。',
+            parameters: {
+              type: 'object',
+              properties: { path: { type: 'string', description: '仓库相对路径，如 reviews/2026-11-06.md' } },
+              required: ['path'],
+            },
+            risk: 'read',
+            run: async (args) => {
+              try {
+                return await deps.repo!.readFile(String(args?.path ?? '').trim())
+              } catch (err) {
+                return JSON.stringify({ error: err instanceof Error ? err.message : String(err) })
+              }
+            },
+          },
+          {
+            name: 'write_file',
+            description:
+              '把内容写入仓库里的一个文件（仓库相对路径）。只能写白名单目录（reviews/、personal-agent/skills/ 等）。执行前用户会在确认卡上看到路径和内容并批准；批准后覆盖写入。写复盘文件、技能文档时用。',
+            parameters: {
+              type: 'object',
+              properties: {
+                path: { type: 'string', description: '仓库相对路径，如 reviews/2026-11-06.md（必须在白名单目录内）' },
+                content: { type: 'string', description: '要写入的完整内容' },
+              },
+              required: ['path', 'content'],
+            },
+            risk: 'write',
+            describe: (args) => {
+              const rel = String(args?.path ?? '')
+              const content = String(args?.content ?? '')
+              return `写入文件 ${rel}（${content.length} 字符）：${content.slice(0, 120)}${content.length > 120 ? '…' : ''}`
+            },
+            run: async (args) => {
+              try {
+                return await deps.repo!.writeFile(String(args?.path ?? '').trim(), String(args?.content ?? ''))
+              } catch (err) {
+                return JSON.stringify({ error: err instanceof Error ? err.message : String(err) })
+              }
+            },
+          },
+        ] as ToolDef[])
       : []),
     {
       name: 'remember',

@@ -10,6 +10,10 @@ export interface AppConfig {
   dataDir: string
   /** 技能目录（SKILL.md 文档；PA_SKILLS_DIR 可改，缺省 personal-agent/skills） */
   skillsDir: string
+  /** 仓库根（git_log/read_file/write_file 的路径基座；PA_REPO_DIR 可改，缺省 cwd） */
+  repoDir: string
+  /** 可写目录白名单（相对 repoDir 第一段；PA_WRITABLE_DIRS 逗号分隔可改，缺省 reviews + personal-agent/skills） */
+  writableDirs: string[]
   /** 单次发送的上下文预算（估算 token；超了触发摘要/窗口）。PA_CONTEXT_BUDGET 可改 */
   contextBudget: number
   /** 长期记忆总开关（抽取 + 注入一起关）。PA_MEMORY=0 关闭 */
@@ -21,10 +25,18 @@ export function loadConfig(): AppConfig {
   const dataDir = fromEnv ? path.resolve(process.cwd(), fromEnv) : path.join(import.meta.dirname, '..', 'data')
   const skillsFromEnv = process.env.PA_SKILLS_DIR?.trim()
   const skillsDir = skillsFromEnv ? path.resolve(process.cwd(), skillsFromEnv) : path.join(import.meta.dirname, '..', 'skills')
+  const repoFromEnv = process.env.PA_REPO_DIR?.trim()
+  const repoDir = repoFromEnv ? path.resolve(process.cwd(), repoFromEnv) : path.resolve(process.cwd())
+  const writableDirs = (process.env.PA_WRITABLE_DIRS?.trim() || 'reviews,personal-agent/skills')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean)
   const budget = Number(process.env.PA_CONTEXT_BUDGET || 6000)
   return {
     dataDir,
     skillsDir,
+    repoDir,
+    writableDirs,
     contextBudget: Number.isFinite(budget) && budget > 0 ? budget : 6000,
     memoryEnabled: process.env.PA_MEMORY !== '0',
   }

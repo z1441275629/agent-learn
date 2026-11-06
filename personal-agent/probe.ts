@@ -60,6 +60,10 @@ import { markdownToHtml } from './web/src/utils/markdown.ts'
 import { encodeWav } from './web/src/utils/wav.ts'
 import { createMcpServer, makeMcpTools, missingRequired, pickProtocolVersion, type McpTool } from './mcp-server.ts'
 import { createSkillStore, parseSkillDoc, renderSkillIndex } from './core/skills.ts'
+import { createRepoReader } from './repo.ts'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
+const execFileAsync = promisify(execFile)
 
 let pass = 0
 let fail = 0
@@ -1614,6 +1618,66 @@ console.log('Q22 技能注册表（skills/ 目录：索引只给触发条件 / l
   const empty = await skillTool!.run({})
   check('use_skill 空 name → 报错', typeof empty === 'string' && empty.includes('不能为空'))
   await fs.rm(dir, { recursive: true, force: true })
+}
+
+console.log('Q23 仓库能力（git_log/read_file/write_file：路径安全守门 + 真 git/真文件 IO——白名单目录才能写、.env 与 dataDir 挡读）')
+{
+  const root = path.join(os.tmpdir(), `pa-q23-${Date.now()}`)
+  await fs.mkdir(path.join(root, 'reviews'), { recursive: true })
+  await fs.mkdir(path.join(root, 'src'), { recursive: true })
+  await fs.writeFile(path.join(root, 'reviews', '2026-11-06.md'), '# 复盘\n内容')
+  const reader = createRepoReader({ repoDir: root, writableDirs: ['reviews'], denyReads: [] })
+
+  // 读：正常/不存在/穿越/绝对/.env
+  const content = await reader.readFile('reviews/2026-11-06.md')
+  check('read_file 读回仓库文件', content.includes('# 复盘'), content.slice(0, 40))
+  check('read_file 不存在 → 报错', await (async () => { try { await reader.readFile('nope.md'); return false } catch { return true } })())
+  check('read_file 穿越路径 → 拒绝', await (async () => { try { await reader.readFile('../secret'); return false } catch { return true } })())
+  check('read_file 绝对路径 → 拒绝', await (async () => { try { await reader.readFile('/etc/passwd'); return false } catch { return true } })())
+  await fs.writeFile(path.join(root, '.env'), 'SECRET=xx')
+  check('.env → 403 挡读', await (async () => { try { await reader.readFile('.env'); return false } catch (e: any) { return e?.code === 403 } })())
+
+  // 写：白名单内可写、白名单外拒绝、穿越拒绝、空内容拒绝
+  const wOk = await reader.writeFile('reviews/new.md', '新内容')
+  check('write_file 白名单目录可写', wOk.includes('已写入 reviews/new.md') && (await fs.readFile(path.join(root, 'reviews', 'new.md'), 'utf8')) === '新内容')
+  check('write_file 白名单外 → 403', await (async () => { try { await reader.writeFile('src/hack.ts', 'x'); return false } catch (e: any) { return e?.code === 403 } })())
+  check('write_file 穿越 → 拒绝', await (async () => { try { await reader.writeFile('../evil.txt', 'x'); return false } catch { return true } })())
+  check('write_file 空内容 → 拒绝', await (async () => { try { await reader.writeFile('reviews/empty.md', '  '); return false } catch { return true } })())
+
+  // dataDir 挡读（读侧显式黑名单）
+  const withDataDeny = createRepoReader({ repoDir: root, writableDirs: ['reviews'], denyReads: [path.join(root, 'data')] })
+  await fs.mkdir(path.join(root, 'data'), { recursive: true })
+  await fs.writeFile(path.join(root, 'data', 'kb.json'), '{}')
+  check('dataDir 目录 → 403 挡读', await (async () => { try { await withDataDeny.readFile('data/kb.json'); return false } catch (e: any) { return e?.code === 403 } })())
+
+  // git_log：真临时 git 仓库（init + 提交）
+  await execFileAsync('git', ['init', '-q'], { cwd: root })
+  await execFileAsync('git', ['config', 'user.email', 'probe@local'], { cwd: root })
+  await execFileAsync('git', ['config', 'user.name', 'probe'], { cwd: root })
+  await fs.writeFile(path.join(root, 'reviews', '2026-11-06.md'), '# 复盘\n已提交内容')
+  await execFileAsync('git', ['add', '.'], { cwd: root })
+  await execFileAsync('git', ['commit', '-q', '-m', 'probe 提交一'], { cwd: root })
+  const log = await reader.gitLog('2020-01-01', 10)
+  check('git_log 返回提交（号+日期+消息）', log.includes('probe 提交一') && /^最近提交：\n[0-9a-f]{7}/m.test(log), log.slice(0, 60))
+  const logEmpty = await reader.gitLog('2099-01-01', 10)
+  check('git_log 时间窗外 → 明说没有', logEmpty.includes('没有提交'), logEmpty)
+  const noGitDir = path.join(os.tmpdir(), `pa-q23-nogit-${Date.now()}`)
+  await fs.mkdir(noGitDir, { recursive: true })
+  const noGit = createRepoReader({ repoDir: noGitDir, writableDirs: [], denyReads: [] })
+  check('非 git 仓库 → 报错不炸', await (async () => { try { await noGit.gitLog(); return false } catch { return true } })())
+  await fs.rm(noGitDir, { recursive: true, force: true })
+
+  // tools 接线
+  const fakeKb = {} as any
+  const fakeMem = {} as any
+  const withRepo = builtinTools({ kb: fakeKb, memories: fakeMem, repo: reader })
+  check('有 repo 依赖注册三件', withRepo.filter((t) => ['git_log', 'read_file', 'write_file'].includes(t.name)).length === 3)
+  check('git_log/read_file 是 read（无确认门）', withRepo.find((t) => t.name === 'git_log')?.risk === 'read' && withRepo.find((t) => t.name === 'read_file')?.risk === 'read')
+  check('write_file 是 write（过确认门）', withRepo.find((t) => t.name === 'write_file')?.risk === 'write')
+  check('无 repo 依赖不注册', !builtinTools({ kb: fakeKb, memories: fakeMem }).some((t) => ['git_log', 'read_file', 'write_file'].includes(t.name)))
+  const badRun = await withRepo.find((t) => t.name === 'read_file')!.run({ path: '../x' })
+  check('工具层穿越路径 → error 字符串（循环不崩）', typeof badRun === 'string' && badRun.includes('error'), String(badRun).slice(0, 60))
+  await fs.rm(root, { recursive: true, force: true })
 }
 
 await terminateOcr()

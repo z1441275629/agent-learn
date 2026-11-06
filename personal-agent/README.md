@@ -120,6 +120,15 @@
   是 `weekly-summary`（近期知识库总结：get_time 锚定日期 → 多词多次 search_kb → 分节汇总，
   诚实边界=检索结果不带日期不假装精确到周）。真机实测：问「总结我这周学了什么」→
   use_skill → get_time → search_kb ×11 → 分节总结，全程 4 轮
+- **仓库能力（模块 15 · git + 文件工具）**：`git_log`（只读——查最近提交，`since` 时间窗 /
+  `max` 条数，返回「提交号 日期 消息」）、`read_file`（只读——读仓库内文件，超长截断）、
+  `write_file`（**写侧，过确认门**——写白名单目录内文件）。安全模型：路径一律**仓库相对**、
+  拒绝穿越/绝对路径；读挡 `.env` 与工作台自己的 dataDir（`PA_DATA_DIR` 若在仓库内自动加入
+  黑名单）；写只放行白名单目录（`PA_WRITABLE_DIRS` 逗号分隔可改，缺省 `reviews` +
+  `personal-agent/skills`）。仓库根 `PA_REPO_DIR` 可改（缺省 cwd）。git 用 `execFile` 参数数组
+  调用（不经 shell，`since` 无注入面）。执行器在 `repo.ts`（与 browser.ts 同构，tools.ts 只接线）。
+  这三个工具是复盘类技能（git log + 写 reviews/）移植到工作台的先决条件。真机实测：查最近 3 次
+  提交 / 读复盘文件 / 写临时文件（确认门批准）全通过
 
 会话接口：
 
