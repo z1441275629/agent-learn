@@ -6,10 +6,11 @@ defineProps<{
   models: ModelEntry[]
   memoryCount: number
   kbCount: number
+  skillCount: number
   /** 大模型转写可用时的模型名（null = 没配端点，语音引擎切换整个隐藏） */
   asrModel: string | null
 }>()
-const emit = defineEmits<{ toggleMemory: []; toggleKb: [] }>()
+const emit = defineEmits<{ toggleMemory: []; toggleKb: []; toggleSkills: [] }>()
 
 // Vue 3.4+ 的 defineModel：子组件里像普通 ref 一样用，父组件用 v-model:model-id 绑定
 const modelId = defineModel<string>('modelId', { required: true })
@@ -27,6 +28,9 @@ const voiceEngine = defineModel<'browser' | 'asr'>('voiceEngine', { required: tr
     </button>
     <button class="ghost" title="个人笔记知识库（上传切块索引，对话时关键词检索注入）" @click="emit('toggleKb')">
       知识库 {{ kbCount }}
+    </button>
+    <button class="ghost" title="工作台技能（对话时 agent 调 use_skill 加载执行；这里看有哪些可用）" @click="emit('toggleSkills')">
+      技能 {{ skillCount }}
     </button>
 
     <span class="divider"></span>

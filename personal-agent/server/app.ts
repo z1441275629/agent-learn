@@ -8,6 +8,7 @@ import { router as chatRouter } from './routes/chat.ts'
 import { router as sessionsRouter } from './routes/sessions.ts'
 import { router as memoriesRouter } from './routes/memories.ts'
 import { router as kbRouter } from './routes/kb.ts'
+import { router as skillsRouter } from './routes/skills.ts'
 import { router as modelsRouter } from './routes/models.ts'
 import { router as asrRouter } from './routes/asr.ts'
 import { router as ocrRouter } from './routes/ocr.ts'
@@ -87,6 +88,7 @@ export function createApp(): Koa {
   app.use(sessionsRouter.routes())
   app.use(memoriesRouter.routes())
   app.use(kbRouter.routes())
+  app.use(skillsRouter.routes())
   app.use(modelsRouter.routes())
   app.use(asrRouter.routes())
   app.use(ocrRouter.routes())

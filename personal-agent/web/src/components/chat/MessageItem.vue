@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref } from 'vue'
-import type { ConfirmCard, DisplayMessage } from '../../types'
+import type { ConfirmCard, DisplayMessage, ToolTraceInfo } from '../../types'
 import MarkdownView from '../common/MarkdownView.vue'
 import UsageMeta from '../common/UsageMeta.vue'
 
@@ -21,6 +21,17 @@ function prettyArgs(args: string): string {
     return JSON.stringify(JSON.parse(args), null, 2)
   } catch {
     return args
+  }
+}
+
+// 技能加载痕迹美化成「加载技能「名字」」：use_skill 的 args 是 {"name":"xxx"}；不是 use_skill 就返回 null 走普通工具 chip
+function skillNameOf(t: ToolTraceInfo): string | null {
+  if (t.name !== 'use_skill') return null
+  try {
+    const name = (JSON.parse(t.args) as { name?: unknown }).name
+    return typeof name === 'string' && name ? name : null
+  } catch {
+    return null
   }
 }
 </script>
@@ -62,7 +73,10 @@ function prettyArgs(args: string): string {
             :class="{ open: openTool === i }"
             @click="openTool = openTool === i ? null : i"
           >
-            🔧 {{ t.name }} · {{ t.ms }}ms {{ openTool === i ? '▾' : '▸' }}
+            <template v-if="skillNameOf(t)">
+              🧠 加载技能「{{ skillNameOf(t) }}」{{ openTool === i ? '▾' : '▸' }}
+            </template>
+            <template v-else>🔧 {{ t.name }} · {{ t.ms }}ms {{ openTool === i ? '▾' : '▸' }}</template>
           </button>
           <div v-if="openTool !== null && message.tools[openTool]" class="tool-detail">
             <div class="row"><span class="k">参数</span><code>{{ message.tools[openTool].args || '（无）' }}</code></div>

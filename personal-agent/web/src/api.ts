@@ -10,6 +10,7 @@ import type {
   OcrResponse,
   SessionDetail,
   SessionSummary,
+  SkillInfo,
 } from './types'
 
 async function readError(res: Response): Promise<string> {
@@ -167,4 +168,13 @@ export async function addKb(name: string, text: string): Promise<KbDoc> {
 export async function deleteKb(id: string): Promise<void> {
   const res = await fetch(`/api/kb/${encodeURIComponent(id)}`, { method: 'DELETE' })
   if (!res.ok) throw new Error(await readError(res))
+}
+
+// ---------- 技能（use_skill 加载执行在对话里；这里只列可用技能的索引） ----------
+
+export async function listSkills(): Promise<SkillInfo[]> {
+  const res = await fetch('/api/skills')
+  if (!res.ok) throw new Error(await readError(res))
+  const j = await res.json()
+  return j.skills as SkillInfo[]
 }

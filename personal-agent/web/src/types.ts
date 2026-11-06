@@ -78,6 +78,12 @@ export interface KbDoc {
   chunkCount: number
 }
 
+/** 工作台技能（索引只带触发条件供发现；正文由 agent 对话里调 use_skill 加载） */
+export interface SkillInfo {
+  name: string
+  description: string
+}
+
 export interface SessionDetail {
   id: string
   title: string

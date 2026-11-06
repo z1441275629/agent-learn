@@ -3,10 +3,12 @@ import { watch } from 'vue'
 import { useChat } from '../../composables/useChat'
 import { useKb } from '../../composables/useKb'
 import { useMemories } from '../../composables/useMemories'
+import { useSkills } from '../../composables/useSkills'
 import ChatComposer from './ChatComposer.vue'
 import ChatToolbar from './ChatToolbar.vue'
 import KbPanel from './KbPanel.vue'
 import MemoryPanel from './MemoryPanel.vue'
+import SkillPanel from './SkillPanel.vue'
 import MessageList from './MessageList.vue'
 import SessionSidebar from './SessionSidebar.vue'
 
@@ -45,9 +47,11 @@ const {
   remove: removeMemory,
 } = useMemories()
 const { docs: kbDocs, open: kbOpen, load: loadKb, toggle: toggleKb, upload: uploadKb, remove: removeKb } = useKb()
+const { skills: skillList, open: skillsOpen, load: loadSkills, toggle: toggleSkills } = useSkills()
 void init().then(() => {
   void loadMemories()
   void loadKb()
+  void loadSkills()
 })
 
 // 回答结束后抽空刷一次记忆数：抽取在服务端 done 之后异步跑（1~3 秒），这里等 2.5s 再取
@@ -70,12 +74,15 @@ watch(streaming, (now, was) => {
         :models="models"
         :memory-count="memoryItems.length"
         :kb-count="kbDocs.length"
+        :skill-count="skillList.length"
         :asr-model="asrModel"
         @toggle-memory="toggleMemory"
         @toggle-kb="toggleKb"
+        @toggle-skills="toggleSkills"
       />
       <MemoryPanel v-if="memoryOpen" :items="memoryItems" @close="memoryOpen = false" @remove="removeMemory" />
       <KbPanel v-if="kbOpen" :docs="kbDocs" @close="kbOpen = false" @upload="uploadKb" @remove="removeKb" />
+      <SkillPanel v-if="skillsOpen" :skills="skillList" @close="skillsOpen = false" />
       <MessageList :messages="messages" :on-confirm="answerConfirm" />
       <ChatComposer
         :pending="pending"

@@ -2,6 +2,9 @@
 // 机制与 Claude Code 的 skill 同构：系统提示只注入「索引」（name+触发条件，供发现），agent 判断用户
 // 需求匹配某技能时调 use_skill 加载全文再照做——索引绝不概括流程（描述概括了 agent 会走捷径跳过正文，
 // 这是 skill 发现性设计里被实测验证过的一条）。
+// 技能两种形态，技能名统一 = 文件/目录名（小写字母/数字/连字符，同时防路径穿越）：
+//   1) 单文件  skills/<name>.md
+//   2) 文件夹  skills/<name>/SKILL.md（同目录可放支撑文件——模板/参考文档，正文里用 read_file 按需读）
 // core/ 只管技能文档的读写与解析，不碰 HTTP、不依赖 LLM。
 
 import { readdir, readFile } from 'node:fs/promises'
@@ -19,6 +22,9 @@ export interface SkillSummary {
   description: string
 }
 
+/** 技能名只允许小写字母/数字/连字符（name 会拼进路径，同时挡穿越） */
+export const SKILL_NAME_RE = /^[a-z0-9-]+$/
+
 /** 解析 SKILL.md：剥 --- frontmatter → name/description，余下是 body。缺必填/格式错 = 抛错（不许静默吞） */
 export function parseSkillDoc(markdown: string, file = '<技能>'): SkillDoc {
   const m = /^---\n([\s\S]*?)\n---\n?([\s\S]*)$/.exec(markdown)
@@ -31,7 +37,7 @@ export function parseSkillDoc(markdown: string, file = '<技能>'): SkillDoc {
   }
   const name = field('name')
   const description = field('description')
-  if (!/^[a-z0-9-]+$/.test(name)) throw new Error(`技能文档 ${file} 的 name 不合法（只允许小写字母/数字/连字符）：${name || '(空)'}`)
+  if (!SKILL_NAME_RE.test(name)) throw new Error(`技能文档 ${file} 的 name 不合法（只允许小写字母/数字/连字符）：${name || '(空)'}`)
   if (!description) throw new Error(`技能文档 ${file} 缺 description（触发条件，供发现——不概括流程）`)
   if (!body) throw new Error(`技能文档 ${file} 正文为空`)
   return { name, description, body }
@@ -57,16 +63,47 @@ export interface SkillStore {
 }
 
 export function createSkillStore(skillsDir: string): SkillStore {
+  /** 全量扫描：单文件 skills/<name>.md 和文件夹 skills/<name>/SKILL.md 都收。重名/名字不一致 = 抛错（不许静默吞） */
   const readDocs = async (): Promise<SkillDoc[]> => {
-    let files: string[]
+    let entries: string[]
     try {
-      files = await readdir(skillsDir)
+      entries = await readdir(skillsDir)
     } catch {
       return [] // 目录不存在 = 没有技能，不是错误（个人工具不能因缺目录起不来）
     }
+    const seen = new Map<string, string>() // 技能名 → 首个出现的文件/目录（重名时报双方）
     const docs: SkillDoc[] = []
-    for (const f of files.filter((f) => f.endsWith('.md'))) {
-      docs.push(parseSkillDoc(await readFile(path.join(skillsDir, f), 'utf8'), f))
+    for (const entry of entries) {
+      let doc: SkillDoc
+      let label: string
+      let expectName: string
+      if (entry.endsWith('.md')) {
+        const stem = entry.slice(0, -3)
+        if (!SKILL_NAME_RE.test(stem)) continue // 非技能命名的 md（README 等）不参与索引
+        doc = parseSkillDoc(await readFile(path.join(skillsDir, entry), 'utf8'), entry)
+        label = entry
+        expectName = stem
+      } else if (SKILL_NAME_RE.test(entry)) {
+        // 文件夹技能：skills/<name>/SKILL.md；目录里没有 SKILL.md = 不是技能（支撑文件/资源目录）
+        try {
+          doc = parseSkillDoc(await readFile(path.join(skillsDir, entry, 'SKILL.md'), 'utf8'), `${entry}/SKILL.md`)
+        } catch (err: any) {
+          if (err?.code === 'ENOENT' || err?.code === 'ENOTDIR') continue
+          throw err // 文件在但读不了/解析错 = 真问题，不许静默吞
+        }
+        label = `${entry}/SKILL.md`
+        expectName = entry
+      } else {
+        continue // 非技能命名的文件/目录
+      }
+      if (doc.name !== expectName) {
+        throw new Error(`技能 ${label} 的 frontmatter name「${doc.name}」与文件/目录名不一致（技能名必须 = 文件/目录名）`)
+      }
+      if (seen.has(doc.name)) {
+        throw new Error(`技能重名「${doc.name}」：${seen.get(doc.name)} 与 ${label} 撞名（同一技能只能有一个文件/文件夹）`)
+      }
+      seen.set(doc.name, label)
+      docs.push(doc)
     }
     return docs
   }
@@ -80,15 +117,17 @@ export function createSkillStore(skillsDir: string): SkillStore {
         .map(({ name, description }) => ({ name, description }))
     },
     async load(name) {
-      // 名字只允许进到文件名（防路径穿越）：不合法直接 null，不读盘
-      if (!/^[a-z0-9-]+$/.test(name)) return null
-      let text: string
-      try {
-        text = await readFile(path.join(skillsDir, `${name}.md`), 'utf8')
-      } catch {
-        return null
+      // 名字只允许进到路径（防穿越）：不合法直接 null，不读盘
+      if (!SKILL_NAME_RE.test(name)) return null
+      // 单文件形态优先、文件夹形态次之；只读目标技能，别家坏了不连坐
+      for (const rel of [`${name}.md`, `${name}/SKILL.md`]) {
+        try {
+          return parseSkillDoc(await readFile(path.join(skillsDir, rel), 'utf8'), rel)
+        } catch {
+          continue
+        }
       }
-      return parseSkillDoc(text, `${name}.md`)
+      return null
     },
   }
 }

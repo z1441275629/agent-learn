@@ -113,13 +113,17 @@
 - **技能（模块 15 · 把真实流程沉淀成可复用资产）**：`personal-agent/skills/` 下 SKILL.md
   格式的技能文档（frontmatter `name`+`description` + 正文步骤），机制与 Claude Code 的 skill
   同构——系统提示只注入**索引**（name + 触发条件，供发现），agent 判断用户需求匹配某技能时
-  调 `use_skill(name)` 加载**全文**再严格照步骤执行（发现与执行分离）。核心设计纪律：
-  索引的 description 只写触发条件、**绝不概括流程**（描述概括了流程 agent 会走捷径跳过正文——
-  这是 skill 发现性设计里被实测验证的一条）。技能正文用 agent 现有的工具（get_time/search_kb/
-  add_note…）描述步骤。`PA_SKILLS_DIR` 可改技能目录；目录不存在 = 无技能（不炸）。首个技能
-  是 `weekly-summary`（近期知识库总结：get_time 锚定日期 → 多词多次 search_kb → 分节汇总，
-  诚实边界=检索结果不带日期不假装精确到周）。真机实测：问「总结我这周学了什么」→
-  use_skill → get_time → search_kb ×11 → 分节总结，全程 4 轮
+  调 `use_skill(name)` 加载**全文**再严格照步骤执行（发现与执行分离）。技能两种形态：
+  **单文件 `skills/<name>.md`**，或**文件夹 `skills/<name>/SKILL.md`**（同目录可放模板/参考文档
+  等支撑文件，正文里用 `read_file` 按需读；技能名必须 = 文件/目录名，重名/不一致 = 抛错）。
+  核心设计纪律：索引的 description 只写触发条件、**绝不概括流程**（描述概括了流程 agent 会走
+  捷径跳过正文——这是 skill 发现性设计里被实测验证的一条）。技能正文用 agent 现有的工具
+  （get_time/search_kb/add_note…）描述步骤。`PA_SKILLS_DIR` 可改技能目录；目录不存在 = 无技能
+  （不炸）。前端有「技能」面板（`GET /api/skills` 列可用技能 name+description），对话里加载
+  某技能时消息区显示「🧠 加载技能「名字」」chip、点开可看加载全文。首个技能是 `weekly-summary`
+  （近期知识库总结：get_time 锚定日期 → 多词多次 search_kb → 分节汇总，诚实边界=检索结果不带
+  日期不假装精确到周）。真机实测：问「总结我这周学了什么」→ use_skill → get_time → search_kb
+  ×11 → 分节总结，全程 4 轮
 - **仓库能力（模块 15 · git + 文件工具）**：`git_log`（只读——查最近提交，`since` 时间窗 /
   `max` 条数，返回「提交号 日期 消息」）、`read_file`（只读——读仓库内文件，超长截断）、
   `write_file`（**写侧，过确认门**——写白名单目录内文件）。安全模型：路径一律**仓库相对**、
@@ -172,10 +176,12 @@ POST   /api/chat/confirm          应答写入工具确认卡（confirmId + appr
   步数上限后强制文本收尾、结果在源头截断、abort 是状态不是异常（#38）。写入工具走
   `onConfirm` 确认门：没接门/门抛错/拒绝一律不放行（fail closed），拒绝也是一次已应答的
   工具调用（理由喂回模型）；工具清单在 `tools.ts`（core 不认识具体工具）
-- `core/skills.ts`：技能注册表（模块 15）。`skills/` 目录 SKILL.md 文档的读写与解析——
-  `parseSkillDoc`（frontmatter 剥 name/description，缺必填抛错不许静默吞）、`index()`
-  （发现用：只给触发条件）、`load(name)`（执行用：返回全文；非法名防路径穿越直接 null）、
-  `renderSkillIndex`（系统提示注入块，超长描述截断）。不依赖 LLM/HTTP，纯 IO + 解析
+- `core/skills.ts`：技能注册表（模块 15）。`skills/` 目录技能文档的读写与解析（单文件
+  `<name>.md` 与文件夹 `<name>/SKILL.md` 两种形态都收；非技能命名 md / 无 SKILL.md 的目录跳过；
+  重名、frontmatter name 与文件/目录名不一致 = 抛错）——`parseSkillDoc`（frontmatter 剥
+  name/description，缺必填抛错不许静默吞）、`index()`（发现用：只给触发条件）、`load(name)`
+  （执行用：返回全文；非法名防路径穿越直接 null）、`renderSkillIndex`（系统提示注入块，超长
+  描述截断）。不依赖 LLM/HTTP，纯 IO + 解析
 
 消息如何变成 API 形状（图片省略、失败消息排除）在 `chat.ts`；摘要/窗口的调度在 `server/chat-service.ts`
 的 `prepareContext()`——便宜的先做（省略图片），贵的后做（LLM 摘要），最后才是丢历史的滑窗。
