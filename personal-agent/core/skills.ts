@@ -14,6 +14,9 @@ export interface SkillDoc {
   name: string
   description: string
   body: string
+  /** 触发关键词（frontmatter triggers，逗号分隔）：用户消息命中任意一个，工作台自动把正文注入上下文，
+   *  不必等模型主动调 use_skill——实测模型（尤其小档）常跳过加载凭记忆自由发挥，自动加载是可靠兜底 */
+  triggers?: string[]
 }
 
 /** 索引只带触发条件（发现用）；正文只在 load 时进上下文 */
@@ -40,7 +43,11 @@ export function parseSkillDoc(markdown: string, file = '<技能>'): SkillDoc {
   if (!SKILL_NAME_RE.test(name)) throw new Error(`技能文档 ${file} 的 name 不合法（只允许小写字母/数字/连字符）：${name || '(空)'}`)
   if (!description) throw new Error(`技能文档 ${file} 缺 description（触发条件，供发现——不概括流程）`)
   if (!body) throw new Error(`技能文档 ${file} 正文为空`)
-  return { name, description, body }
+  const triggers = field('triggers')
+    .split(/[,，、]/)
+    .map((t) => t.trim())
+    .filter(Boolean)
+  return { name, description, body, ...(triggers.length ? { triggers } : {}) }
 }
 
 /** 系统提示里的技能索引块：只给触发条件 + 一句加载指引，不概括流程（SDO） */
@@ -60,6 +67,8 @@ export interface SkillStore {
   index(): Promise<SkillSummary[]>
   /** 执行用：某技能全文（use_skill 返回给模型）；未知/非法名 → null */
   load(name: string): Promise<SkillDoc | null>
+  /** 触发匹配：text 里命中某技能 triggers 关键词就返回该技能全文（工作台自动加载用，不依赖模型调 use_skill） */
+  match(text: string): Promise<SkillDoc[]>
 }
 
 export function createSkillStore(skillsDir: string): SkillStore {
@@ -128,6 +137,10 @@ export function createSkillStore(skillsDir: string): SkillStore {
         }
       }
       return null
+    },
+    async match(text) {
+      const docs = await readDocs()
+      return docs.filter((d) => d.triggers?.some((kw) => text.includes(kw)))
     },
   }
 }

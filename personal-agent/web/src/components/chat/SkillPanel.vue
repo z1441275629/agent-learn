@@ -13,7 +13,7 @@ const emit = defineEmits<{ close: [] }>()
       <button class="ghost" @click="emit('close')">关闭</button>
     </div>
     <p class="hint">
-      技能是沉淀的固定流程：对话里需求匹配触发条件时，agent 调 use_skill 加载技能全文再照做（对话里会看到「加载技能」）。
+      技能是沉淀的固定流程：用户消息命中技能的触发词（frontmatter 的 triggers）时，工作台自动把技能正文加载进上下文；没命中时靠 agent 调 use_skill 加载。
       技能放 personal-agent/skills/ 下——单文件 skills/&lt;名字&gt;.md，或有支撑文件的文件夹 skills/&lt;名字&gt;/SKILL.md。
     </p>
     <ul v-if="skills.length" class="skill-list">

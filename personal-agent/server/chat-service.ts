@@ -103,7 +103,24 @@ export async function prepareContext(
   // 技能索引（模块 15）：只给触发条件（name+description），agent 匹配时用 use_skill 加载全文再照做
   const skillSummaries = toolsOn ? await skills.index() : []
   const skillsBlock = skillSummaries.length ? renderSkillIndex(skillSummaries) : ''
-  const systemContent = [memoryEntries.length ? memorySystemContent(memoryEntries) : '', guidance, skillsBlock]
+  // 触发自动加载：用户消息命中某技能 frontmatter 的 triggers 关键词就把正文直接进上下文。
+  // 实测模型（尤其小档、思考关）常跳过 use_skill 凭记忆自由发挥——自动加载是可靠兜底，不依赖模型自觉。
+  // 匹配用全会话的用户消息：跟进式提问（如「那前天呢」）不带触发词，也保持加载不丢。
+  const userTexts = doc.messages
+    .filter((m) => m.role === 'user')
+    .map((m) => (m.text ?? '') as string)
+    .join('\n')
+  const preloadedSkills = toolsOn ? await skills.match(userTexts) : []
+  const preloadedBlock = preloadedSkills.length
+    ? '以下技能本次请求已匹配触发条件自动加载，直接严格照技能步骤执行（不必再调 use_skill）：\n' +
+      preloadedSkills.map((s) => `【技能 ${s.name}】\n触发条件：${s.description}\n\n${s.body}`).join('\n\n')
+    : ''
+  const systemContent = [
+    memoryEntries.length ? memorySystemContent(memoryEntries) : '',
+    guidance,
+    skillsBlock,
+    preloadedBlock,
+  ]
     .filter(Boolean)
     .join('\n')
   const basePrefix = systemContent ? 1 : 0

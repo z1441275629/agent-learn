@@ -120,7 +120,9 @@
   捷径跳过正文——这是 skill 发现性设计里被实测验证的一条）。技能正文用 agent 现有的工具
   （get_time/search_kb/add_note…）描述步骤。`PA_SKILLS_DIR` 可改技能目录；目录不存在 = 无技能
   （不炸）。前端有「技能」面板（`GET /api/skills` 列可用技能 name+description），对话里加载
-  某技能时消息区显示「🧠 加载技能「名字」」chip、点开可看加载全文。首个技能是 `weekly-summary`
+  某技能时消息区显示「🧠 加载技能「名字」」chip、点开可看加载全文。技能 frontmatter 可带
+  `triggers`（逗号分隔触发词）——用户消息命中任一词时工作台**自动把技能正文注入上下文**，不依赖
+  模型主动调 use_skill（实测 deepseek 常跳过加载凭记忆自由发挥，自动加载是可靠兜底）。首个技能是 `weekly-summary`
   （近期知识库总结：get_time 锚定日期 → 多词多次 search_kb → 分节汇总，诚实边界=检索结果不带
   日期不假装精确到周）。真机实测：问「总结我这周学了什么」→ use_skill → get_time → search_kb
   ×11 → 分节总结，全程 4 轮。第二个技能 `learning-review`（文件夹形态：SKILL.md +
