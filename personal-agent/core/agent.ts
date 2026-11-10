@@ -44,6 +44,9 @@ export interface ToolTrace {
 export interface AgentLoopResult {
   /** 所有轮的文本拼接（工具轮的 preamble 也算数，不丢字） */
   text: string
+  /** 最后一轮（无工具调用/最终回文本的那轮）的流式文本——子 agent 的成果取这一栏，
+   *  不混入前面工具轮的碎语（模块 16 研究员子 agent 的简报来源） */
+  lastText: string
   /** 跨轮累加的 usage（prompt/completion/total/cached/reasoning 全部求和） */
   usage: Record<string, any> | null
   rounds: number
@@ -131,6 +134,7 @@ export async function runToolLoop(
   const byName = new Map(tools.map((t) => [t.name, t]))
 
   let text = ''
+  let lastRoundText = ''
   let usage: Record<string, any> | null = null
   let rounds = 0
   const trace: ToolTrace[] = []
@@ -168,13 +172,14 @@ export async function runToolLoop(
         calls.set(tc.index, slot)
       }
     }
-    if (signal?.aborted) return { text, usage, rounds, trace, aborted: true }
-    if (calls.size === 0) return { text, usage, rounds, trace, aborted: false }
+    lastRoundText = roundText
+    if (signal?.aborted) return { text, lastText: lastRoundText, usage, rounds, trace, aborted: true }
+    if (calls.size === 0) return { text, lastText: lastRoundText, usage, rounds, trace, aborted: false }
 
     // 达到轮数上限还想要工具：去掉 tools 的最后一轮已经发了（includeTools=false）却仍回工具调用——
     // 放弃继续，把已出的文本交回去（空文本给个说明，别让界面收到一句没有）
     if (!includeTools) {
-      return { text: text || '（工具调用轮数已达上限，未能生成回答）', usage, rounds, trace, aborted: false }
+      return { text: text || '（工具调用轮数已达上限，未能生成回答）', lastText: lastRoundText, usage, rounds, trace, aborted: false }
     }
 
     messages.push({

@@ -27,7 +27,7 @@ export function loadConfig(): AppConfig {
   const skillsDir = skillsFromEnv ? path.resolve(process.cwd(), skillsFromEnv) : path.join(import.meta.dirname, '..', 'skills')
   const repoFromEnv = process.env.PA_REPO_DIR?.trim()
   const repoDir = repoFromEnv ? path.resolve(process.cwd(), repoFromEnv) : path.resolve(process.cwd())
-  const writableDirs = (process.env.PA_WRITABLE_DIRS?.trim() || 'reviews,personal-agent/skills')
+  const writableDirs = (process.env.PA_WRITABLE_DIRS?.trim() || 'reviews,personal-agent/skills,blogs')
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean)
