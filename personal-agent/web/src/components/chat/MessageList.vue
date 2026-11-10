@@ -1,13 +1,9 @@
 <script setup lang="ts">
 import { nextTick, ref, watch } from 'vue'
-import type { ConfirmCard, DisplayMessage } from '../../types'
+import type { DisplayMessage } from '../../types'
 import MessageItem from './MessageItem.vue'
 
-const props = defineProps<{
-  messages: DisplayMessage[]
-  /** 确认卡上的允许/拒绝（穿自 useChat.answerConfirm） */
-  onConfirm?: (card: ConfirmCard, approve: boolean, always: boolean) => void
-}>()
+const props = defineProps<{ messages: DisplayMessage }>()
 const scroller = ref<HTMLElement | null>(null)
 
 // 消息内容、流式增量、错误状态任一变化都滚到底
@@ -29,7 +25,7 @@ watch(
       可以直接聊天；也可以贴图/上传附件后提问（图片需选「视觉」模型）。<br />
       Enter 发送 · Shift+Enter 换行 · Ctrl+V 粘贴截图
     </div>
-    <MessageItem v-for="message in messages" :key="message.id" :message="message" :on-confirm="onConfirm" />
+    <MessageItem v-for="message in messages" :key="message.id" :message="message" />
   </section>
 </template>
 

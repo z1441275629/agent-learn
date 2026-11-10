@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { watch } from 'vue'
+import { computed, watch } from 'vue'
 import { useChat } from '../../composables/useChat'
 import { useKb } from '../../composables/useKb'
 import { useMemories } from '../../composables/useMemories'
 import { useSkills } from '../../composables/useSkills'
 import ChatComposer from './ChatComposer.vue'
 import ChatToolbar from './ChatToolbar.vue'
+import ConfirmDialog from './ConfirmDialog.vue'
 import KbPanel from './KbPanel.vue'
 import MemoryPanel from './MemoryPanel.vue'
 import SkillPanel from './SkillPanel.vue'
@@ -58,6 +59,21 @@ void init().then(() => {
 watch(streaming, (now, was) => {
   if (was && !now) setTimeout(() => void loadMemories(), 2500)
 })
+
+// 待决策的确认卡：只在流式进行中的消息里找——交互由弹窗接管，内联卡只留审计记录。
+// 不扫历史消息：服务端中途崩溃可能留下无 outcome 的陈旧卡，复活弹窗会点不动也关不掉（流已断，没有 outcome 帧来收场）
+const pendingConfirm = computed(() => {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (!messages[i].streaming) continue
+    const card = messages[i].confirms?.find((c) => !c.outcome)
+    if (card) return card
+  }
+  return null
+})
+
+function answerPending(approve: boolean, always: boolean): void {
+  if (pendingConfirm.value) void answerConfirm(pendingConfirm.value, approve, always)
+}
 </script>
 
 <template>
@@ -85,7 +101,7 @@ watch(streaming, (now, was) => {
         <MemoryPanel v-if="memoryOpen" :items="memoryItems" @close="memoryOpen = false" @remove="removeMemory" />
         <KbPanel v-if="kbOpen" :docs="kbDocs" @close="kbOpen = false" @upload="uploadKb" @remove="removeKb" />
         <SkillPanel v-if="skillsOpen" :skills="skillList" @close="skillsOpen = false" />
-        <MessageList :messages="messages" :on-confirm="answerConfirm" />
+        <MessageList :messages="messages" />
         <ChatComposer
           :pending="pending"
           :streaming="streaming"
@@ -100,6 +116,8 @@ watch(streaming, (now, was) => {
         />
       </div>
     </div>
+    <!-- 写入确认弹窗：decision 后 outcome 落定，v-if 自动收起。放根节点内（App.vue 对本组件用 v-show，须单根） -->
+    <ConfirmDialog v-if="pendingConfirm" :card="pendingConfirm" @answer="answerPending" />
   </div>
 </template>
 

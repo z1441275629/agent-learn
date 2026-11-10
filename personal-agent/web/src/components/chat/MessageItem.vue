@@ -1,19 +1,20 @@
 <script setup lang="ts">
-import { ref } from 'vue'
-import type { ConfirmCard, DisplayMessage, ToolTraceInfo } from '../../types'
+import { computed, ref } from 'vue'
+import type { DisplayMessage, ToolTraceInfo } from '../../types'
 import MarkdownView from '../common/MarkdownView.vue'
 import UsageMeta from '../common/UsageMeta.vue'
 
-defineProps<{
-  message: DisplayMessage
-  /** 确认卡上的允许/拒绝（穿自 useChat.answerConfirm） */
-  onConfirm?: (card: ConfirmCard, approve: boolean, always: boolean) => void
-}>()
+const props = defineProps<{ message: DisplayMessage }>()
 
 // 工具痕迹默认收起：要点开才看参数/结果——痕迹是审计用的，不该淹没正文
 const openTool = ref<number | null>(null)
-// 「本会话总是允许」勾选（卡片一张一张出，单值够用；只在点允许时读）
-const alwaysAllow = ref(false)
+
+// 流式占位的阶段文案：确认等待 > 工具循环 > 首 token 前的思考——「思考中」不再一路挂到底
+const phase = computed(() => {
+  if (props.message.confirms?.some((c) => !c.outcome)) return '等待你确认…'
+  if (props.message.tools?.length) return '工具调用中…'
+  return '思考中…'
+})
 
 // 确认卡参数展示：尽量美化成可读 JSON，失败就原样
 function prettyArgs(args: string): string {
@@ -48,19 +49,12 @@ function skillNameOf(t: ToolTraceInfo): string | null {
       </template>
 
       <template v-else>
-        <!-- 写入工具确认卡：批准前工具不跑；args 原文全量展示，人批的才是账上的 -->
+        <!-- 写入工具确认卡：待决策的交互在弹窗（ConfirmDialog），这里只留 args 全文与结果——
+             人批的才是账上的，审计线上「问过但没批」也是事实 -->
         <div v-for="card in message.confirms" :key="card.confirmId" class="confirm-card" :class="card.outcome">
           <div class="confirm-head">⚠️ 写入确认 · {{ card.name }}</div>
           <pre class="confirm-args">{{ prettyArgs(card.args) }}</pre>
-          <div v-if="!card.outcome" class="confirm-actions">
-            <label class="always" title="只对当前会话生效（存在服务端内存，重启即失效）；后果自负的快捷方式">
-              <input v-model="alwaysAllow" type="checkbox" />
-              本会话内总是允许
-            </label>
-            <button class="approve" @click="onConfirm?.(card, true, alwaysAllow)">允许</button>
-            <button class="deny" @click="onConfirm?.(card, false, false)">拒绝</button>
-          </div>
-          <div v-else class="confirm-outcome">
+          <div v-if="card.outcome" class="confirm-outcome">
             {{ card.outcome === 'approved' ? '✓ 已允许' : card.outcome === 'denied' ? '✗ 已拒绝' : '⏱ 无人应答，已自动拒绝' }}
           </div>
         </div>
@@ -83,7 +77,7 @@ function skillNameOf(t: ToolTraceInfo): string | null {
             <div class="row"><span class="k">结果</span><pre>{{ message.tools[openTool].result }}</pre></div>
           </div>
         </div>
-        <div v-if="message.streaming && !message.content" class="thinking"><span class="spin"></span>思考中…</div>
+        <div v-if="message.streaming && !message.content" class="thinking"><span class="spin"></span>{{ phase }}</div>
         <MarkdownView v-else :source="message.content" />
         <UsageMeta
           v-if="!message.streaming"
@@ -260,42 +254,6 @@ function skillNameOf(t: ToolTraceInfo): string | null {
   font-size: 12px;
   white-space: pre-wrap;
   word-break: break-all;
-}
-
-.confirm-actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.confirm-actions .always {
-  margin-right: auto;
-  font-size: 12px;
-  color: var(--muted);
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  cursor: pointer;
-}
-
-.confirm-actions button {
-  font: inherit;
-  font-size: 13px;
-  border-radius: 8px;
-  padding: 4px 14px;
-  cursor: pointer;
-  border: 1px solid var(--line);
-  background: #fff;
-}
-
-.confirm-actions .approve {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: #fff;
-}
-
-.confirm-actions .deny {
-  color: var(--danger);
 }
 
 .confirm-outcome {

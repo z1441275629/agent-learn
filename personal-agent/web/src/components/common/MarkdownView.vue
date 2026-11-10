@@ -65,6 +65,25 @@ const html = computed(() => markdownToHtml(props.source))
   color: var(--accent);
 }
 
+.markdown :deep(table) {
+  border-collapse: collapse;
+  margin: 8px 0;
+  font-size: 13px;
+  display: block; /* 宽表整块横向滚，不撑破气泡 */
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.markdown :deep(th),
+.markdown :deep(td) {
+  border: 1px solid var(--line);
+  padding: 5px 10px;
+}
+
+.markdown :deep(th) {
+  background: #f6f8fa;
+}
+
 .markdown :deep(img) {
   max-width: 100%;
   border-radius: 8px;
