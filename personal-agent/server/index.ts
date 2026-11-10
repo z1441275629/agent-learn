@@ -8,9 +8,13 @@ import { terminateOcr } from '../ocr.ts'
 import { MODELS } from '../models.ts'
 import { createApp } from './app.ts'
 import { browser, config } from './state.ts'
+import { jobDeps, startJobScheduler } from './jobs.ts'
 
 const PORT = Number(process.env.PA_PORT || 8798)
 const HOST = process.env.PA_HOST || '127.0.0.1'
+
+// 定时任务调度（模块16 第三层）：20s 心跳，到点触发 + 当天漏跑补跑；PA_JOBS_DISABLED=1 停用
+const stopJobs = startJobScheduler(jobDeps)
 
 const server = createApp().listen(PORT, HOST, () => {
   console.log(`[personal-agent] 工作台 → http://${HOST}:${PORT}`)
@@ -24,6 +28,7 @@ const server = createApp().listen(PORT, HOST, () => {
 // 无头 Chromium 同理——不 close 会留浏览器进程树）
 for (const sig of ['SIGINT', 'SIGTERM'] as const) {
   process.on(sig, async () => {
+    stopJobs()
     await terminateOcr()
     await browser?.close()
     server.close()
