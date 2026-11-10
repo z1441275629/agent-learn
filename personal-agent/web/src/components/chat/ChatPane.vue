@@ -80,22 +80,25 @@ watch(streaming, (now, was) => {
         @toggle-kb="toggleKb"
         @toggle-skills="toggleSkills"
       />
-      <MemoryPanel v-if="memoryOpen" :items="memoryItems" @close="memoryOpen = false" @remove="removeMemory" />
-      <KbPanel v-if="kbOpen" :docs="kbDocs" @close="kbOpen = false" @upload="uploadKb" @remove="removeKb" />
-      <SkillPanel v-if="skillsOpen" :skills="skillList" @close="skillsOpen = false" />
-      <MessageList :messages="messages" :on-confirm="answerConfirm" />
-      <ChatComposer
-        :pending="pending"
-        :streaming="streaming"
-        :active="active"
-        :voice-engine="voiceEngine"
-        :asr-model="asrModel"
-        @send="send"
-        @stop="stop"
-        @add-images="addImages"
-        @add-docs="addDocs"
-        @remove="removePending"
-      />
+      <div class="chat-body">
+        <!-- 面板锚在 chat-body（紧贴工具栏下缘）：top 不依赖工具栏高度，工具栏换行也不会被面板盖住 -->
+        <MemoryPanel v-if="memoryOpen" :items="memoryItems" @close="memoryOpen = false" @remove="removeMemory" />
+        <KbPanel v-if="kbOpen" :docs="kbDocs" @close="kbOpen = false" @upload="uploadKb" @remove="removeKb" />
+        <SkillPanel v-if="skillsOpen" :skills="skillList" @close="skillsOpen = false" />
+        <MessageList :messages="messages" :on-confirm="answerConfirm" />
+        <ChatComposer
+          :pending="pending"
+          :streaming="streaming"
+          :active="active"
+          :voice-engine="voiceEngine"
+          :asr-model="asrModel"
+          @send="send"
+          @stop="stop"
+          @add-images="addImages"
+          @add-docs="addDocs"
+          @remove="removePending"
+        />
+      </div>
     </div>
   </div>
 </template>
@@ -104,7 +107,6 @@ watch(streaming, (now, was) => {
 .chat-pane {
   display: flex;
   align-items: stretch;
-  position: relative; /* 记忆/知识库面板的定位锚 */
 }
 
 .chat-main {
@@ -112,5 +114,13 @@ watch(streaming, (now, was) => {
   min-width: 0;
   display: flex;
   flex-direction: column;
+}
+
+.chat-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  position: relative; /* 记忆/知识库/技能面板的定位锚 */
 }
 </style>

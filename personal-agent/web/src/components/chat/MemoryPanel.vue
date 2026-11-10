@@ -39,10 +39,10 @@ const emit = defineEmits<{ close: []; remove: [id: string] }>()
 
 .memory-panel {
   position: absolute;
-  top: 46px;
-  right: 18px;
+  top: 8px;
+  left: 18px;
   z-index: 31;
-  width: min(420px, calc(100vw - 36px));
+  width: min(420px, calc(100% - 36px));
   max-height: 60vh;
   display: flex;
   flex-direction: column;

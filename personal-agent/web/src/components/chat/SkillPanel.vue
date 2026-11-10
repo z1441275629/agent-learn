@@ -35,10 +35,10 @@ const emit = defineEmits<{ close: [] }>()
 
 .skill-panel {
   position: absolute;
-  top: 46px;
-  right: 18px;
+  top: 8px;
+  left: 18px;
   z-index: 31;
-  width: min(460px, calc(100vw - 36px));
+  width: min(460px, calc(100% - 36px));
   max-height: 60vh;
   display: flex;
   flex-direction: column;
