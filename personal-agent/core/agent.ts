@@ -59,6 +59,12 @@ export interface AgentLoopOptions {
   tools: ToolDef[]
   /** 工具轮上限，超过后最后一轮去掉 tools 强制文本答案 */
   maxRounds?: number
+  /**
+   * 工具调用总数上限（跨轮累计）——检索型子 agent 的机械终止闸：
+   * 模型可能一直调工具不肯收尾（11-10 研究员 burn 100k+ token 实录），
+   * 超过后下一轮去掉 tools 强制它出文本。不给 = 只受 maxRounds 约束
+   */
+  maxCalls?: number
   /** 单个工具结果的字符上限（截断在源头做） */
   maxResultChars?: number
   signal?: AbortSignal
@@ -126,7 +132,7 @@ export async function runToolLoop(
   messages: any[],
   options: AgentLoopOptions,
 ): Promise<AgentLoopResult> {
-  const { tools, maxRounds = 5, maxResultChars = 1200, signal, extraBody, onConfirm, onText, onToolCall } = options
+  const { tools, maxRounds = 5, maxCalls, maxResultChars = 1200, signal, extraBody, onConfirm, onText, onToolCall } = options
   const toolsParam = tools.map((t) => ({
     type: 'function',
     function: { name: t.name, description: t.description, parameters: t.parameters },
@@ -137,10 +143,12 @@ export async function runToolLoop(
   let lastRoundText = ''
   let usage: Record<string, any> | null = null
   let rounds = 0
+  let callsUsed = 0
   const trace: ToolTrace[] = []
 
   while (true) {
-    const includeTools = rounds < maxRounds
+    // 双闸：轮数上限 + 工具调用总数上限（maxCalls 超限同样强制收尾出文本）
+    const includeTools = rounds < maxRounds && callsUsed < (maxCalls ?? Infinity)
     const stream = (await client.chat.completions.create(
       {
         model,
@@ -236,7 +244,9 @@ export async function runToolLoop(
       onToolCall?.(item)
     }
 
-    // ③ 按原序落账 + 喂回（完成序可乱，落账序不乱）
+    // ③ 按原序落账 + 喂回（完成序可乱，落账序不乱）；先累计本轮调用数——下一轮的
+    // includeTools 判定用它（maxCalls 超限 → 去掉 tools 强制模型出文本收尾）
+    callsUsed += ordered.length
     for (let i = 0; i < ordered.length; i++) {
       const item = resultByIndex.get(i)!
       trace.push(item)
