@@ -1,0 +1,146 @@
+{
+  "$comment": "personal-agent 评估集 v1。固定任务样本 × 真实模型,测「模型+工具面」的端到端任务能力。判分规则:{origin} 运行时替换为本地 fixture 服务器地址;expectTools=必须调用的工具(集合匹配);expectToolOrder=指定工具的严格调用顺序;forbidTools=禁止调用;expectNoTools=整轮零工具(测工具纪律);answerAll/answerAny=答案关键词(包含匹配,忽略大小写);answerMinLen=答案最短字符数;dateToday=答案须含今天日期(多种写法任一);stateCheck 后检:memoryContains:/memoryNotContains:/kbHit:。种子数据在 run.ts 里(知识库 4 条笔记/记忆 3 条/技能 1 个),与任务的期望答案一一对应。",
+  "tasks": [
+    {
+      "id": "time-01",
+      "category": "time",
+      "task": "现在几点了?今天几号?",
+      "expectTools": ["get_time"],
+      "dateToday": true
+    },
+    {
+      "id": "time-02",
+      "category": "time",
+      "task": "帮我看看今天是几月几号星期几。",
+      "expectTools": ["get_time"],
+      "dateToday": true
+    },
+    {
+      "id": "kb-01",
+      "category": "knowledge-base",
+      "task": "我的机械键盘是什么型号?",
+      "expectTools": ["search_kb"],
+      "answerAll": ["HHKB"]
+    },
+    {
+      "id": "kb-02",
+      "category": "knowledge-base",
+      "task": "我春节计划去哪儿玩?预算多少?",
+      "expectTools": ["search_kb"],
+      "answerAll": ["成都", "5000"]
+    },
+    {
+      "id": "kb-03",
+      "category": "knowledge-base",
+      "task": "DDIA 这本书我读到第几章了?最喜欢哪部分?",
+      "expectTools": ["search_kb"],
+      "answerAny": ["第九章", "第 9 章", "第9章", "9 章", "一致性哈希"]
+    },
+    {
+      "id": "kb-04",
+      "category": "knowledge-base",
+      "task": "我的护照号码是多少?",
+      "expectTools": ["search_kb"],
+      "answerAny": ["没有", "未记录", "不知道", "没记", "未存", "查不到", "找不到"]
+    },
+    {
+      "id": "write-01",
+      "category": "write-tool",
+      "task": "记住:我对花生过敏。",
+      "expectTools": ["remember"],
+      "stateChecks": ["memoryContains:花生"]
+    },
+    {
+      "id": "write-02",
+      "category": "write-tool",
+      "task": "我现在不喜欢拿铁了,把这条记忆删掉。",
+      "expectTools": ["forget"],
+      "stateChecks": ["memoryNotContains:拿铁"]
+    },
+    {
+      "id": "write-03",
+      "category": "write-tool",
+      "task": "往知识库里记一条笔记:下周三要去看牙医。",
+      "expectTools": ["add_note"],
+      "stateChecks": ["kbHit:牙医"]
+    },
+    {
+      "id": "write-04",
+      "category": "write-tool",
+      "task": "现在几点了?直接告诉我就行,不用记任何笔记。",
+      "expectTools": ["get_time"],
+      "forbidTools": ["remember", "add_note", "forget"],
+      "dateToday": true
+    },
+    {
+      "id": "browser-01",
+      "category": "browser",
+      "task": "打开 {origin}/info 这个网页,告诉我上面列出了哪三台设备。",
+      "expectTools": ["browser_read"],
+      "answerAll": ["ThinkPad", "iPad", "Kindle"]
+    },
+    {
+      "id": "browser-02",
+      "category": "browser",
+      "task": "读一下 {origin}/spa 这个页面,等它加载完,告诉我页面上延迟加载出来的标记文字是什么。",
+      "expectTools": ["browser_read"],
+      "answerAll": ["PINEAPPLE-77"]
+    },
+    {
+      "id": "browser-03",
+      "category": "browser",
+      "task": "打开 {origin}/links,点击页面上的「关于我们」链接,然后告诉我落地页上写的暗号是什么。",
+      "expectToolOrder": ["browser_read", "browser_click", "browser_read"],
+      "answerAll": ["MANGO-42"]
+    },
+    {
+      "id": "repo-01",
+      "category": "repo",
+      "task": "看看这个仓库最近一次 git 提交说了什么,用一句话概括给我。",
+      "expectTools": ["git_log"],
+      "answerMinLen": 15
+    },
+    {
+      "id": "repo-02",
+      "category": "repo",
+      "task": "读一下 README.md,这个仓库是用来做什么的?一句话告诉我。",
+      "expectTools": ["read_file"],
+      "answerAny": ["面试", "求职", "岗位"]
+    },
+    {
+      "id": "chat-01",
+      "category": "chat",
+      "task": "用一句话解释什么是 SSE(服务器推送事件),不需要调用任何工具。",
+      "expectNoTools": true,
+      "answerMinLen": 10
+    },
+    {
+      "id": "chat-02",
+      "category": "chat",
+      "task": "把这句话翻译成英文:工欲善其事,必先利其器。",
+      "expectNoTools": true,
+      "answerAny": ["sharpen", "tool"]
+    },
+    {
+      "id": "skill-01",
+      "category": "skill",
+      "task": "执行暗号检查。",
+      "answerAll": ["【协议确认】"]
+    },
+    {
+      "id": "combo-01",
+      "category": "combo",
+      "task": "先查一下今天的日期,再查我的旅行计划是哪天出发,然后大致说说从今天到出发还有多久。",
+      "expectTools": ["get_time", "search_kb"],
+      "dateToday": true
+    },
+    {
+      "id": "combo-02",
+      "category": "combo",
+      "task": "我的显示器是什么型号?顺便记住:我很喜欢吃芒果,不过敏。",
+      "expectTools": ["search_kb", "remember"],
+      "answerAll": ["U2723QE"],
+      "stateChecks": ["memoryContains:芒果"]
+    }
+  ]
+}

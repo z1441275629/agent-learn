@@ -53,3 +53,9 @@ personal-agent/.tessdata/
 
 # personal-agent 运行数据（会话账本/图片/以后记忆与 RAG 索引——含个人对话，绝不入库）
 personal-agent/data/
+
+# 评估集运行数据(种子每次重建,报告和 results 要提交)
+personal-agent/eval/data/
+
+# 简历工作目录(含个人信息与第三方样本,永不入库)
+resume/
