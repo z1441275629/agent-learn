@@ -13,8 +13,6 @@ export interface CompositeRoleTrace {
 }
 
 export interface BlogCompositeOptions {
-  /** 用户原始消息（含主题；可能没给具体题目，研究员从知识库/git 自己挑） */
-  topic: string
   /** 主模型：研究员/写手 */
   entry: ModelEntry
   /** 小档：审校（缺省回落 entry） */
