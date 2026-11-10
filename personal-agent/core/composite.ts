@@ -339,8 +339,15 @@ export async function runBlogComposite(
     result.ok = result.stoppedBy === 'done'
     return settle()
   } catch (err: any) {
-    result.stoppedBy = 'error'
-    result.finalBlog = `【编排出错】${String(err?.message ?? err).slice(0, 300)}`
+    // 中止时 create 抛 AbortError 会被吞到这里——按 aborted 归因（chat 路由据此 interrupted 落盘），
+    // 别误标成 error；真正的错误才带诊断
+    if (opts.signal?.aborted) {
+      result.stoppedBy = 'aborted'
+      result.finalBlog = result.finalBlog || '（编排在调用大模型时被中止）'
+    } else {
+      result.stoppedBy = 'error'
+      result.finalBlog = `【编排出错】${String(err?.message ?? err).slice(0, 300)}`
+    }
     return settle()
   }
 }
