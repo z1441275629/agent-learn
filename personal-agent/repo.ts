@@ -23,8 +23,9 @@ export interface RepoConfig {
 
 export interface RepoReader {
   /** 最近提交；since/until 为时间窗（today 00:00 / 3 days / 2026-11-05，都省略 = 最近 20 条）；
-   *  圈定单日必须 since=该日 + until=该日的次日（since 是下界，不配 until 会混入其后几天的提交） */
-  gitLog(since?: string, until?: string, max?: number): Promise<string>
+   *  圈定单日必须 since=该日 + until=该日的次日（since 是下界，不配 until 会混入其后几天的提交）；
+   *  search 按关键词搜提交消息（只搜消息不搜 diff，fixed-strings 字面匹配、大小写不敏感） */
+  gitLog(since?: string, until?: string, max?: number, search?: string): Promise<string>
   /** 读仓库内文件（仓库相对路径），超长截断 */
   readFile(rel: string): Promise<string>
   /** 写仓库内文件（白名单目录 + 确认门在 tools 层），返回结果字符串 */
@@ -64,17 +65,25 @@ function checkWritable(resolved: string, repoDir: string, writableDirs: string[]
 export function createRepoReader(config: RepoConfig): RepoReader {
   const root = path.resolve(config.repoDir)
   return {
-    async gitLog(since, until, max = 20) {
+    async gitLog(since, until, max = 20, search) {
       const count = Math.max(1, Math.min(Math.floor(Number(max)) || 20, 100))
       const args = ['log', '--date=short', `--pretty=format:%h %ad %s`, `--max-count=${count}`]
       const sinceStr = since ? String(since).trim() : ''
       if (sinceStr) args.push(`--since=${sinceStr}`)
       const untilStr = until ? String(until).trim() : ''
       if (untilStr) args.push(`--until=${untilStr}`)
+      // search = 按关键词搜提交消息（字面匹配 + 大小写不敏感）；只搜消息不搜 diff，描述里已点名
+      const searchStr = search ? String(search).trim() : ''
+      if (searchStr) args.push('--fixed-strings', `--grep=${searchStr}`, '-i')
       try {
         const { stdout } = await execFileAsync('git', args, { cwd: root, maxBuffer: 1024 * 1024 })
         const out = stdout.trim()
-        return out ? `最近提交：\n${out}` : '（这个时间段内没有提交）'
+        const label = searchStr ? `最近提交（搜索 "${searchStr}"）：\n` : '最近提交：\n'
+        return out
+          ? label + out
+          : searchStr
+            ? `（没有匹配 "${searchStr}" 的提交）`
+            : '（这个时间段内没有提交）'
       } catch (err: any) {
         if (String(err?.code) === 'ENOENT') throw repoError('git 不可用（未安装或不在 PATH）')
         throw repoError(`git log 失败：${err?.message ?? String(err).slice(0, 120)}`)
