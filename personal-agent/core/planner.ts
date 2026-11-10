@@ -50,11 +50,18 @@ export function parsePlan(raw: string): PlanStep[] | null {
   return steps.length ? steps : null
 }
 
+/** planTask 的产物：步骤表 + 规划师自身的 usage（成本账要诚实——chat 层并入总汇报） */
+export interface PlanOutcome {
+  steps: PlanStep[]
+  promptTokens: number
+  completionTokens: number
+}
+
 /** 规划师单发调用（小档由调用方解析好传 entry）。任何失败返回 null——回落单 agent，不抛 */
 export async function planTask(
   text: string,
   opts: { entry: ModelEntry; signal?: AbortSignal },
-): Promise<PlanStep[] | null> {
+): Promise<PlanOutcome | null> {
   try {
     const resp = await opts.entry.client.chat.completions.create(
       {
@@ -67,7 +74,13 @@ export async function planTask(
       },
       opts.signal ? { signal: opts.signal } : {},
     )
-    return parsePlan(resp.choices?.[0]?.message?.content ?? '')
+    const steps = parsePlan(resp.choices?.[0]?.message?.content ?? '')
+    if (!steps) return null
+    return {
+      steps,
+      promptTokens: Number(resp.usage?.prompt_tokens) || 0,
+      completionTokens: Number(resp.usage?.completion_tokens) || 0,
+    }
   } catch {
     // 网络/中止/限流都按「规划不可用」处理——fail-closed 回落单 agent，别让规划挂了炸对话
     return null

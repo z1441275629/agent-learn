@@ -15,11 +15,14 @@ import {
   runMemoryExtraction,
   runningSessions,
   sessionAllows,
+  skills,
   store,
   tools,
 } from '../state.ts'
 import { routeMessage } from '../../core/router.ts'
 import { runBlogComposite } from '../../core/composite.ts'
+import { planTask } from '../../core/planner.ts'
+import { runPlan } from '../../core/plan.ts'
 
 export const router = new Router()
 
@@ -63,12 +66,13 @@ router.post('/api/chat', async (ctx) => {
     // 工具模式（默认开）：模型可调工具——只读的直接跑，写入的（remember）先过确认门；
     // 知识库此时走工具检索，自动注入只在工具关闭时做（同一内容不双份进上下文）
     const toolsOn = body.tools !== false
-    // 模块 16 总控路由：命中「写技术博客」意图 → 走多 agent 编排（composite）；否则单 agent 照旧。
-    // 工具关闭时不路由——研究员子 agent 要只读工具取材
-    const isComposite = toolsOn && routeMessage(text) === 'composite'
-    const kbBlock = !toolsOn && !isComposite && body.kbSearch !== false ? await kbContextFor(doc) : null
-    // composite 模式不建主循环上下文——编排自带各角色上下文
-    const messages = !isComposite ? await prepareContext(doc, entry, body.imageElision !== false, kbBlock, toolsOn) : []
+    // 模块 16 总控路由三态：plan（多步任务 planner-executor）/ composite（写博客编排）/ normal。
+    // 工具关闭时不路由——编排各角色都要工具面
+    const mode = toolsOn ? routeMessage(text) : 'normal'
+    const kbBlock = !toolsOn && mode === 'normal' && body.kbSearch !== false ? await kbContextFor(doc) : null
+    // plan 也建主循环上下文：规划师解析失败要回落单 agent 主路径（纯组装不烧 token）；
+    // composite 不建——编排自带各角色上下文
+    const messages = mode !== 'composite' ? await prepareContext(doc, entry, body.imageElision !== false, kbBlock, toolsOn) : []
 
     // 从这里开始应答全是 SSE：接管原生 res（Koa 不再替我们收尾）——上面的校验/落账失败
     // 仍走 Koa 正常的 JSON 错误路径，别让 respond=false 把错误帧也吞了
@@ -143,7 +147,146 @@ router.post('/api/chat', async (ctx) => {
       console.log(`[pa] chat 已停止 · ${streamedText.length} 字 · session ${sid}`)
     }
     try {
-      if (isComposite) {
+      // 单 agent 主路径抽成局部函数：normal 直跑 + plan 解析失败回落，同一段代码不复制
+      const runNormalChat = async (): Promise<void> => {
+        const result = await runToolLoop(entry.client, entry.model, messages, {
+          tools: toolsOn ? tools : [],
+          signal: ac.signal,
+          maxRounds: 5,
+          // 工具结果在循环层的截断兜底：browser_read 自带 6000 字正文 + 元素索引，
+          // 1200 的默认值会把网页结果拦腰砍断（工具内部各自有源头截断，这里只是保险网）
+          maxResultChars: 9000,
+          extraBody: thinkingParams(body.thinking ?? 'off'),
+          onConfirm: askConfirm,
+          onText: (delta) => {
+            streamedText += delta
+            send({ type: 'delta', text: delta })
+          },
+          onToolCall: (t) => {
+            streamedTrace = [...streamedTrace, t]
+            send({ type: 'tool', name: t.name, args: t.args, result: t.result, ms: t.ms })
+          },
+        })
+        const elapsedMs = Date.now() - t0
+        const usage: ChatUsage = result.usage ?? null
+        if (result.aborted || ac.signal.aborted) {
+          // 关键实测：OpenAI SDK 的上游流被 abort 时常常是「正常结束」而不是抛错，
+          // 所以不能只靠 catch 判断用户是否点了停止——循环结束后必须再看一次信号。
+          await saveInterrupted(elapsedMs)
+        } else {
+          await safeAppend(sid, {
+            role: 'assistant',
+            text: result.text,
+            usage,
+            model: entry.model,
+            elapsedMs,
+            tools: result.trace.length ? result.trace : undefined,
+          })
+          send({
+            type: 'done',
+            text: result.text,
+            usage,
+            model: entry.model,
+            modelId: entry.id,
+            sessionId: sid,
+            elapsedMs,
+            tools: result.trace.length ? result.trace : undefined,
+          })
+          console.log(
+            `[pa] chat ${entry.id}(${entry.model}) · ${result.text.length} 字 · ${usage?.total_tokens ?? '?'} tokens` +
+              ` · 工具 ${result.rounds} 轮${result.trace.length ? `（${result.trace.map((t) => t.name).join(',')}）` : ''}` +
+              ` · ${elapsedMs}ms · session ${sid}`,
+          )
+          // 回答完整落盘后才抽记忆：半截/出错的回答不抽（对话可能还没说完）
+          runMemoryExtraction(sid, text)
+        }
+      }
+
+      if (mode === 'plan') {
+        // 模块16 第二层 planner-executor：规划师拆步骤 → runPlan 串行执行。
+        // 规划 fail-closed：解析/调用失败 → 回落单 agent 主路径，规划挂了不伤对话
+        const lightEntry = MODELS.find((m) => m.id === 'light')
+        const outcome = await planTask(text, { entry: lightEntry ?? entry, signal: ac.signal })
+        if (!outcome || ac.signal.aborted) {
+          await runNormalChat()
+        } else {
+          const steps = outcome.steps
+          const planTrace: ToolTrace = {
+            name: '规划师',
+            args: text.slice(0, 60),
+            result: steps.map((s, i) => `${i + 1}. [${s.capability}] ${s.goal}`).join('\n'),
+            ms: 0,
+          }
+          streamedTrace = [...streamedTrace, planTrace]
+          send({ type: 'tool', name: planTrace.name, args: planTrace.args, result: planTrace.result, ms: planTrace.ms })
+          const r = await runPlan(text, steps, {
+            entry,
+            lightEntry,
+            allTools: tools,
+            readTools: tools.filter((t) => t.risk === 'read'),
+            skills,
+            onConfirm: askConfirm,
+            // 博客步骤落盘门（askConfirm + 写盘同 composite 分支语义）；写完出芯片进账本
+            saveBlog: async (path, content) => {
+              const approveArgs = JSON.stringify({ path, content })
+              if (!(await askConfirm({ name: 'write_file', args: approveArgs }))) return false
+              const wt0 = Date.now()
+              const out = await repo.writeFile(path, content)
+              const wtr: ToolTrace = { name: 'write_file', args: approveArgs, result: out, ms: Date.now() - wt0 }
+              streamedTrace = [...streamedTrace, wtr]
+              send({ type: 'tool', name: 'write_file', args: approveArgs, result: out, ms: wtr.ms })
+              return true
+            },
+            signal: ac.signal,
+            emit: (tr) => {
+              streamedTrace = [...streamedTrace, tr]
+              send({ type: 'tool', name: tr.name, args: tr.args, result: tr.result, ms: tr.ms })
+            },
+          })
+          const elapsedMs = Date.now() - t0
+          // usage 并账：执行链 + 规划师自身的调用（成本账要诚实）
+          const usage: ChatUsage = {
+            prompt_tokens: r.promptTokens + outcome.promptTokens,
+            completion_tokens: r.completionTokens + outcome.completionTokens,
+            total_tokens: r.promptTokens + r.completionTokens + outcome.promptTokens + outcome.completionTokens,
+          }
+          if (ac.signal.aborted) {
+            await safeAppend(sid, {
+              role: 'assistant',
+              text: r.finalText || '（任务被中止，无产出）',
+              model: entry.model,
+              elapsedMs,
+              interrupted: true,
+              tools: streamedTrace.length ? streamedTrace : undefined,
+            })
+            console.log(`[pa] plan 已停止 · session ${sid}`)
+          } else {
+            await safeAppend(sid, {
+              role: 'assistant',
+              text: r.finalText,
+              usage,
+              model: entry.model,
+              elapsedMs,
+              tools: streamedTrace.length ? streamedTrace : undefined,
+            })
+            send({
+              type: 'done',
+              text: r.finalText,
+              usage,
+              model: entry.model,
+              modelId: entry.id,
+              sessionId: sid,
+              elapsedMs,
+              tools: streamedTrace.length ? streamedTrace : undefined,
+            })
+            console.log(
+              `[pa] plan ${entry.id}(${entry.model}) · ${steps.length} 步（${r.steps.length} 完成） · ${usage.total_tokens} tokens` +
+                ` · ${r.stoppedBy} · ${elapsedMs}ms · session ${sid}`,
+            )
+            runMemoryExtraction(sid, text)
+          }
+        }
+      } else if (mode === 'composite') {
         // 模块 16 总控·写博客编排：研究员→审校①→写手→审校②，角色 trace 走 tool 帧（前端芯片零改动）；
         // 终稿落盘复用 write_file 确认门（卡上展示路径+内容预览）；中止时 saveInterrupted 语义直接落盘
         const lightEntry = MODELS.find((m) => m.id === 'light')
@@ -220,57 +363,7 @@ router.post('/api/chat', async (ctx) => {
           runMemoryExtraction(sid, text)
         }
       } else {
-        const result = await runToolLoop(entry.client, entry.model, messages, {
-          tools: toolsOn ? tools : [],
-          signal: ac.signal,
-          maxRounds: 5,
-          // 工具结果在循环层的截断兜底：browser_read 自带 6000 字正文 + 元素索引，
-          // 1200 的默认值会把网页结果拦腰砍断（工具内部各自有源头截断，这里只是保险网）
-          maxResultChars: 9000,
-          extraBody: thinkingParams(body.thinking ?? 'off'),
-          onConfirm: askConfirm,
-          onText: (delta) => {
-            streamedText += delta
-            send({ type: 'delta', text: delta })
-          },
-          onToolCall: (t) => {
-            streamedTrace = [...streamedTrace, t]
-            send({ type: 'tool', name: t.name, args: t.args, result: t.result, ms: t.ms })
-          },
-        })
-        const elapsedMs = Date.now() - t0
-        const usage: ChatUsage = result.usage ?? null
-        if (result.aborted || ac.signal.aborted) {
-          // 关键实测：OpenAI SDK 的上游流被 abort 时常常是「正常结束」而不是抛错，
-          // 所以不能只靠 catch 判断用户是否点了停止——循环结束后必须再看一次信号。
-          await saveInterrupted(elapsedMs)
-        } else {
-          await safeAppend(sid, {
-            role: 'assistant',
-            text: result.text,
-            usage,
-            model: entry.model,
-            elapsedMs,
-            tools: result.trace.length ? result.trace : undefined,
-          })
-          send({
-            type: 'done',
-            text: result.text,
-            usage,
-            model: entry.model,
-            modelId: entry.id,
-            sessionId: sid,
-            elapsedMs,
-            tools: result.trace.length ? result.trace : undefined,
-          })
-          console.log(
-            `[pa] chat ${entry.id}(${entry.model}) · ${result.text.length} 字 · ${usage?.total_tokens ?? '?'} tokens` +
-              ` · 工具 ${result.rounds} 轮${result.trace.length ? `（${result.trace.map((t) => t.name).join(',')}）` : ''}` +
-              ` · ${elapsedMs}ms · session ${sid}`,
-          )
-          // 回答完整落盘后才抽记忆：半截/出错的回答不抽（对话可能还没说完）
-          runMemoryExtraction(sid, text)
-        }
+        await runNormalChat()
       }
     } catch (err: any) {
       const elapsedMs = Date.now() - t0
