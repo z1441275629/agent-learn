@@ -10,6 +10,8 @@ import { createSkillStore } from '../core/skills.ts'
 import { createRepoReader } from '../repo.ts'
 import { builtinTools } from '../tools.ts'
 import { loadMcpTools } from '../mcp-tools.ts'
+import { createToolSearch } from '../tool-search.ts'
+import type { ToolDef } from '../core/agent.ts'
 import { resolveAsrConfig } from '../asr.ts'
 import { createBrowserReader, type BrowserReader } from '../browser.ts'
 import { describeScreenshot } from '../shot-vision.ts'
@@ -66,7 +68,17 @@ export const repo = createRepoReader({ repoDir: config.repoDir, writableDirs: co
 // 外部 MCP 工具（.mcp.json 驱动）：启动连一次进程长持，连不上降级空表——外部工具是增强不是依赖。
 // PA_MCP=0 整体关闭。风险分级见 mcp-tools.ts 头注（risk 缺省 write 走确认门）
 const mcpTools = await loadMcpTools()
-export const tools = [...builtinTools({ kb, memories, skills, repo, browser, shots, vision: shotVision }), ...mcpTools]
+// 工具检索网关（tool search / lazy loading）：外部工具定义不进请求，模型经 search_tools
+// 发现解锁（学习目的先行——18 个工具时全量直出也无妨）。PA_MCP_LAZY=0 回全量直出
+const builtin = builtinTools({ kb, memories, skills, repo, browser, shots, vision: shotVision })
+const toolSearch = mcpTools.length > 0 && process.env.PA_MCP_LAZY !== '0' ? createToolSearch(mcpTools) : undefined
+if (toolSearch) console.log(`[pa] mcp: ${mcpTools.length} 个外部工具走按需装载（search_tools 发现解锁；PA_MCP_LAZY=0 可回全量）`)
+/** 全量工具面：确认卡 describe 查找、plan/composite 过滤、以及未启用网关时的请求直出 */
+export const tools = [...builtin, ...mcpTools]
+/** normal 聊天的工具供应：网关启用时是每轮解析的供应器（基础面 + search_tools + 已解锁），否则全量 */
+export const chatTools: ToolDef[] | (() => ToolDef[]) = toolSearch
+  ? () => [...builtin, toolSearch.searchTool, ...toolSearch.unlockedTools()]
+  : tools
 // 大模型转写配置（PA_ASR_* 可整体换平台；缺省回落备用/小档/embed 档的按量端点与 key）
 export const ASR = resolveAsrConfig(process.env)
 

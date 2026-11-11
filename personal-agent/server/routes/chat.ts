@@ -10,6 +10,7 @@ import { json, readJsonBody } from '../http.ts'
 import { kbContextFor, prepareContext, safeAppend, type ChatBody } from '../chat-service.ts'
 import {
   CONFIRM_TIMEOUT_MS,
+  chatTools,
   pendingConfirms,
   repo,
   runMemoryExtraction,
@@ -154,7 +155,7 @@ router.post('/api/chat', async (ctx) => {
       // 单 agent 主路径抽成局部函数：normal 直跑 + plan 解析失败回落，同一段代码不复制
       const runNormalChat = async (): Promise<void> => {
         const result = await runToolLoop(entry.client, entry.model, messages, {
-          tools: toolsOn ? tools : [],
+          tools: toolsOn ? chatTools : [],
           signal: ac.signal,
           maxRounds: 5,
           // 工具结果在循环层的截断兜底：browser_read 自带 6000 字正文 + 元素索引，

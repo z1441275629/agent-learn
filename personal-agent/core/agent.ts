@@ -56,7 +56,12 @@ export interface AgentLoopResult {
 }
 
 export interface AgentLoopOptions {
-  tools: ToolDef[]
+  /**
+   * 工具面：静态数组，或每轮解析的供应器。供应器支撑「工具检索网关」——模型经 search_tools
+   * 发现外部工具后定义解锁进面（见 tool-search.ts），下一轮请求即带。每轮重解析很便宜
+   * （几十项的 map），贵的是请求本身；静态数组路径语义不变
+   */
+  tools: ToolDef[] | (() => ToolDef[])
   /** 工具轮上限，超过后最后一轮去掉 tools 强制文本答案 */
   maxRounds?: number
   /**
@@ -132,12 +137,18 @@ export async function runToolLoop(
   messages: any[],
   options: AgentLoopOptions,
 ): Promise<AgentLoopResult> {
-  const { tools, maxRounds = 5, maxCalls, maxResultChars = 1200, signal, extraBody, onConfirm, onText, onToolCall } = options
-  const toolsParam = tools.map((t) => ({
-    type: 'function',
-    function: { name: t.name, description: t.description, parameters: t.parameters },
-  }))
-  const byName = new Map(tools.map((t) => [t.name, t]))
+  const { tools: toolsInput, maxRounds = 5, maxCalls, maxResultChars = 1200, signal, extraBody, onConfirm, onText, onToolCall } = options
+  // 每轮解析工具面：静态数组时每轮构建等价结构（开销可忽略），供应器时把上一轮解锁的定义带进来
+  let toolsParam: { type: 'function'; function: { name: string; description: string; parameters: Record<string, unknown> } }[] = []
+  let byName = new Map<string, ToolDef>()
+  const refreshTools = (): void => {
+    const list = typeof toolsInput === 'function' ? toolsInput() : toolsInput
+    toolsParam = list.map((t) => ({
+      type: 'function',
+      function: { name: t.name, description: t.description, parameters: t.parameters },
+    }))
+    byName = new Map(list.map((t) => [t.name, t]))
+  }
 
   let text = ''
   let lastRoundText = ''
@@ -147,6 +158,7 @@ export async function runToolLoop(
   const trace: ToolTrace[] = []
 
   while (true) {
+    refreshTools() // 动态供应器的解锁定义这一轮就能被调用
     // 双闸：轮数上限 + 工具调用总数上限（maxCalls 超限同样强制收尾出文本）
     const includeTools = rounds < maxRounds && callsUsed < (maxCalls ?? Infinity)
     const stream = (await client.chat.completions.create(
