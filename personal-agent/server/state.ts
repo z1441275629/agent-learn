@@ -5,6 +5,7 @@ import { loadConfig } from '../core/config.ts'
 import { createSessionStore } from '../core/sessions.ts'
 import { createMemoryStore, extractMemories, mergeMemoryList, shouldAcceptExtraction } from '../core/memories.ts'
 import { createKbStore } from '../core/rag.ts'
+import { createVectorLane } from '../vector-lane.ts'
 import { createSkillStore } from '../core/skills.ts'
 import { createRepoReader } from '../repo.ts'
 import { builtinTools } from '../tools.ts'
@@ -21,7 +22,10 @@ import path from 'node:path'
 export const config = loadConfig()
 export const store = createSessionStore(config.dataDir)
 export const memories = createMemoryStore(config.dataDir)
-export const kb = createKbStore(config.dataDir)
+// 知识库：BM25 一路始终在（本地/零成本/确定性）；向量通道可选注入（Chroma 派生索引 +
+// 嵌入 API，向量为主 BM25 补位——实验依据 chroma/chromadb-notes.md §12）。PA_KB_VECTOR=0
+// 整体关掉回到纯 BM25；通道自身任何故障也自动降级，不炸检索
+export const kb = createKbStore(config.dataDir, process.env.PA_KB_VECTOR === '0' ? undefined : createVectorLane())
 // 无头浏览器执行器（computer use 只读 v1）：PA_BROWSER=0 关掉（工具面不注册 browser_read）；
 // 实例惰性——首次真正读网页才拉起 Chromium
 export const browser: BrowserReader | undefined = process.env.PA_BROWSER === '0' ? undefined : createBrowserReader()

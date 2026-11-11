@@ -215,13 +215,13 @@ search(query, topK):
   return RRF 融合两路，取 topK
 ```
 
-## 9. 将来接入 personal-agent 的形态（预告，不在本次范围）
+## 9. 接入 personal-agent 的形态（2026-11-11 已实施：vector-lane.ts + core/rag.ts + server/state.ts）
 
-- **部署**：`chroma run` 常驻，personal-agent 启动脚本捎带上；Node 侧 `ChromaClient` 连 HTTP——和练习环境一模一样，练习写好的 `embed()` helper 直接搬进 server。
-- **集合设计**：一个 collection；`id = "<docId>:<chunkIndex>"`（天然幂等，upsert 随便重跑）；`metadata = {docId, docName, createdAt}`；`hnsw:space: cosine`。
-- **同步点**：`add()` 文档 → 嵌入全部 chunk 后 upsert；`remove()` → `col.delete({ where: { docId } })`。kb.json 仍是事实源，Chroma 随时可 `rebuild`（留个管理脚本）。
-- **嵌入调用**：批量入参（方舟 embeddings 支持数组），一次一个查询。
-- **失败降级**：向量路任何异常 → 纯 BM25。检索是增强不是依赖，和会话持久化同一纪律。
+- **部署**：`chroma run` 常驻（`yarn chroma`）；服务端 `ChromaClient` 连 HTTP；嵌入复用 09-harness/llm.ts 的 `embedClient`（`LLM_EMBED_*` 环境变量，零新增配置）。
+- **集合设计**：按嵌入模型命名（`kb_<model>`——换模型=换集合，维度天然隔离）；`id = "<docId>:<chunkIndex>"`（幂等，upsert 随便重跑）；`metadata = {docId, docName, chunkIndex}`；`hnsw:space: cosine`；`embeddingFunction: null`（预计算路线）。
+- **同步**：add/remove 落盘后 fire-and-forget 增量同步；search 时条数对账，不平自动整库重灌（并发闸防同轮多查询重复重建）——kb.json 是唯一事实源，索引是可重建缓存，不需要管理脚本。
+- **融合**：向量为主、BM25 补位（union 追加不抢位）——§12 实测等权 RRF 被弱路拖累，07 预留的 RRF 路线作废。
+- **降级**：通道任何异常自吞降级纯 BM25；连续失败 3 次进程内熔断（重启复活）；`PA_KB_VECTOR=0` 整体关（旧探针/E2E 想回纯 BM25 基线时用）。
 
 ## 10. 动手练习清单（递进，建议按序）
 

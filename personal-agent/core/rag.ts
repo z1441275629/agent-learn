@@ -1,12 +1,13 @@
 // 产品核心：个人知识库（RAG 的检索层）
 //
-// 课程 02 的 RAG 是纯向量召回；07 的对照实验实测过它的盲区——实体/专名查询
-// （「李露露」「柳泉小学」）向量排序是浆糊，字面精确匹配才是 BM25 主场。
-// 产品 v1 只上 BM25 一路：
-//   - 零 API 成本、离线、确定性（同输入同结果——可探针、可回归）
-//   - 个人笔记检索的高频形态是「我记得我写过 xxx」——实体/关键词查询，正好是 BM25 主场
-//   - search() 是唯一入口：以后要语义召回，加向量通道走 RRF 融合即可（07 已验证的
-//     升级路径），调用方零改动
+// 检索两路（2026-11-11 起，实验依据 chroma/chromadb-notes.md §12，69 chunk 三路实测）：
+//   - BM25：本地、零 API 成本、确定性（同输入同结果，可回归探针）；实体/专名查询主场
+//   - 向量（可选注入，实现见 vector-lane.ts）：改述式语义召回——BM25 的实测盲区
+//     （「问法和笔记措辞对不上」2/5 落空，向量全中）
+//   融合 = 向量为主、BM25 补位（union 追加，不抢强路的位）：等权 RRF 实测反被弱路噪声
+//   名次拖累——07 验证过的 RRF 升级路径被自己的语料数据推翻（PITFALLS #63）。向量通道
+//   任何故障降级纯 BM25——检索是增强不是依赖。kb.json 仍是唯一事实源，向量索引是
+//   可重建缓存（条数对账不平自动重灌）。
 //
 // 语料 = 文档切块（约 500 字）；注入 = 构建请求时把命中片段塞进最后一条 user
 // 消息（只进发送视图，不落会话账本——账本里永远是用户真实说过的话）。
@@ -170,7 +171,56 @@ export interface KbStore {
   search(query: string, topK?: number, opts?: { chatterGate?: boolean }): Promise<KbHit[]>
 }
 
-export function createKbStore(dataDir: string): KbStore {
+/**
+ * 向量通道单条命中：similarity 越大越好（与 BM25 分数同向；跨路量纲不同，顺序才是契约）
+ */
+export interface VectorHit {
+  docId: string
+  chunkIndex: number
+  similarity: number
+}
+
+/**
+ * 向量通道（可选能力，由 vector-lane.ts 实现、server/state.ts 装配注入）：
+ * 实现方保证任何失败自吞——search 返回 null = 本次降级纯 BM25；钩子失败只记日志。
+ * docs 传进去是为了条数对账：索引与 kb.json 不平就整库重灌（自愈），调用方无感。
+ */
+export interface VectorLane {
+  search(query: string, topK: number, docs: KbDocRecord[]): Promise<VectorHit[] | null>
+  /** add() 落盘后的增量同步（fire-and-forget，实现内部自吞错误） */
+  onAdded(doc: KbDocRecord): Promise<void>
+  /** remove() 落盘后的增量同步 */
+  onRemoved(docId: string): Promise<void>
+}
+
+/**
+ * 两路融合：向量为主、BM25 补位。向量序原样保留，BM25 里向量没召回的追加在后——
+ * 只补位不抢位（弱路不许拉低强路排名），截 topK。向量命中 score 用相似度、补位保留
+ * BM25 分：跨路量纲不同，消费方（工具卡/日志）只该看顺序，不该跨路比分数。
+ */
+function mergeVectorFirst(
+  bm25Hits: KbHit[],
+  vecHits: VectorHit[],
+  docs: KbDocRecord[],
+  topK: number,
+): KbHit[] {
+  const merged: KbHit[] = []
+  const seen = new Set<string>()
+  for (const v of vecHits) {
+    const doc = docs.find((d) => d.id === v.docId)
+    const text = doc?.chunks[v.chunkIndex]
+    if (!doc || text == null) continue // 索引与账本不一致的防御：幽灵 chunk 不发给模型
+    merged.push({ docId: v.docId, docName: doc.name, chunkIndex: v.chunkIndex, text, score: v.similarity })
+    seen.add(`${v.docId}:${v.chunkIndex}`)
+  }
+  for (const b of bm25Hits) {
+    if (seen.has(`${b.docId}:${b.chunkIndex}`)) continue
+    merged.push(b)
+  }
+  return merged.slice(0, topK)
+}
+
+export function createKbStore(dataDir: string, vector?: VectorLane): KbStore {
   const file = path.join(dataDir, 'rag', 'kb.json')
 
   const load = async (): Promise<{ version: number; docs: KbDocRecord[] }> => {
@@ -211,6 +261,8 @@ export function createKbStore(dataDir: string): KbStore {
       }
       docs.push(record)
       await persist(docs)
+      // 增量同步派生索引：不 await（上传不该被嵌入耗时拖住）；lane 内部自吞错误
+      if (vector) void vector.onAdded(record)
       return { id: record.id, name: record.name, createdAt: record.createdAt, chunkCount: record.chunks.length }
     },
 
@@ -219,13 +271,18 @@ export function createKbStore(dataDir: string): KbStore {
       const next = docs.filter((d) => d.id !== id)
       if (next.length === docs.length) return false
       await persist(next)
+      if (vector) void vector.onRemoved(id)
       return true
     },
 
     async search(query, topK = 3, opts = {}) {
       if (opts.chatterGate !== false && !worthSearching(query)) return []
       const { docs } = await load()
-      return bm25Search(query, docs, topK)
+      const bm25Hits = bm25Search(query, docs, topK)
+      if (!vector) return bm25Hits
+      const vecHits = await vector.search(query, topK, docs)
+      if (!vecHits) return bm25Hits // 通道不可用（熔断/服务没起/嵌入失败）：降级纯 BM25
+      return mergeVectorFirst(bm25Hits, vecHits, docs, topK)
     },
   }
 }
