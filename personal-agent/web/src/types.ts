@@ -42,6 +42,8 @@ export interface DisplayMessage {
   images: { src: string; name: string }[]
   usage?: ChatUsage
   elapsedMs?: number
+  /** 首 token 时延（服务端量：流开始到第一个字；不流式的编排路径没有） */
+  ttftMs?: number
   model?: string
   /** 非空 = 这条没成功（服务端不会把它放进下一轮上下文） */
   error?: string
@@ -157,6 +159,8 @@ export interface ChatChunk {
   usage?: ChatUsage
   model?: string
   elapsedMs?: number
+  /** type:'done'：首 token 时延（不流式的路径不带） */
+  ttftMs?: number
   error?: string
   /** type:'tool' 时的一次工具调用；type:'done' 时是全量 trace */
   tools?: ToolTraceInfo[]

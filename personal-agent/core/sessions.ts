@@ -28,6 +28,8 @@ export interface StoredMessage {
   usage?: any
   model?: string
   elapsedMs?: number
+  /** 首 token 时延：流开始到第一个字出现（用户体感的「等多久开始出字」；不流式的编排路径没有） */
+  ttftMs?: number
   error?: string
   /** 用户点「停止」/断开连接时保存的半截回答 */
   interrupted?: boolean
@@ -64,6 +66,7 @@ export interface NewMessage {
   usage?: any
   model?: string
   elapsedMs?: number
+  ttftMs?: number
   error?: string
   interrupted?: boolean
   tools?: { name: string; args: string; result: string; ms: number }[]
@@ -195,6 +198,7 @@ export function createSessionStore(dataDir: string): SessionStore {
         usage: message.usage,
         model: message.model,
         elapsedMs: message.elapsedMs,
+        ttftMs: message.ttftMs,
         error: message.error,
         interrupted: message.interrupted,
         tools: message.tools,

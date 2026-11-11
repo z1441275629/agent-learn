@@ -84,6 +84,7 @@ function skillNameOf(t: ToolTraceInfo): string | null {
           :usage="message.usage"
           :model="message.model"
           :elapsed-ms="message.elapsedMs"
+          :ttft-ms="message.ttftMs"
           :interrupted="message.interrupted"
         />
       </template>

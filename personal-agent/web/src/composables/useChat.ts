@@ -213,6 +213,7 @@ export function useChat() {
             placeholder.content = chunk.text || acc
             placeholder.usage = chunk.usage
             placeholder.elapsedMs = chunk.elapsedMs
+            placeholder.ttftMs = chunk.ttftMs
             placeholder.model = chunk.model
             if (chunk.tools?.length) placeholder.tools = chunk.tools
           }

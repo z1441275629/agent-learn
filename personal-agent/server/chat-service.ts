@@ -46,6 +46,7 @@ export function sessionDetail(doc: SessionDoc) {
       usage: m.usage,
       model: m.model,
       elapsedMs: m.elapsedMs,
+      ttftMs: m.ttftMs,
       error: m.error,
       interrupted: m.interrupted,
       tools: m.tools,

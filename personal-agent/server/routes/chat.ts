@@ -133,6 +133,9 @@ router.post('/api/chat', async (ctx) => {
     // 服务端自己留一份已流出文本：runToolLoop 抛错（网络等）时半截内容还在手里，能落盘
     let streamedText = ''
     let streamedTrace: ToolTrace[] = []
+    // TTFT：首个 delta 帧的时刻（用户体感「等多久开始出字」）。只认 delta——工具帧/确认帧不算；
+    // plan/composite 不流 delta，自然没有（done 帧不带 undefined 字段，JSON 序列化会丢弃）
+    let ttftMs: number | undefined
     const saveInterrupted = async (elapsedMs: number) => {
       if (streamedText) {
         await safeAppend(sid, {
@@ -140,6 +143,7 @@ router.post('/api/chat', async (ctx) => {
           text: streamedText,
           model: entry.model,
           elapsedMs,
+          ttftMs,
           interrupted: true,
           tools: streamedTrace.length ? streamedTrace : undefined,
         })
@@ -159,6 +163,7 @@ router.post('/api/chat', async (ctx) => {
           extraBody: thinkingParams(body.thinking ?? 'off'),
           onConfirm: askConfirm,
           onText: (delta) => {
+            if (ttftMs === undefined) ttftMs = Date.now() - t0
             streamedText += delta
             send({ type: 'delta', text: delta })
           },
@@ -180,6 +185,7 @@ router.post('/api/chat', async (ctx) => {
             usage,
             model: entry.model,
             elapsedMs,
+            ttftMs,
             tools: result.trace.length ? result.trace : undefined,
           })
           send({
@@ -190,6 +196,7 @@ router.post('/api/chat', async (ctx) => {
             modelId: entry.id,
             sessionId: sid,
             elapsedMs,
+            ttftMs,
             tools: result.trace.length ? result.trace : undefined,
           })
           console.log(
