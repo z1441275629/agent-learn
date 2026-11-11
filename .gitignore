@@ -59,3 +59,6 @@ personal-agent/eval/data/
 
 # 简历工作目录(含个人信息与第三方样本,永不入库)
 resume/
+
+# chroma 练习：本地向量索引（可从 kb.json 重建的缓存，不入库）
+chroma/chroma_data/
