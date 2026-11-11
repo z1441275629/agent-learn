@@ -256,6 +256,7 @@ search(query, topK):
 
 | 坑 | 现象 | 处置 |
 |---|---|---|
+| 删除集合/重建集合 | bin 目录留在磁盘攒尸体（删除只清账本不清文件，无自动 GC）；Windows 下运行中的服务还握着已删段句柄，直接删 EPERM | `node chroma/cleanup-index.ts` 干跑看清单 → 停 chroma → `--clean` → 重启 |
 | JS 客户端只有 HTTP 模式 | 找 `PersistentClient` 找不到 | TS 一律 `chroma run` + `ChromaClient`，练习先开终端 A |
 | `new ChromaClient({ path })` | deprecation 警告 | 3.x 用 `{ host, port, ssl }` |
 | 建集合没写 `embeddingFunction: null` | 每次操作刷「install @chroma-core/default-embed」警告 | null 显式声明无 EF；**别靠装 default-embed 消音**——忘传 embeddings 会变英文模型静默嵌入；建过带 default 的旧集合要删了重建 |
