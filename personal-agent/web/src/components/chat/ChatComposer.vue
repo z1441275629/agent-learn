@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import type { PendingAttachment } from '../../types'
 import { toast } from '../../utils/toast'
 import { useVoiceInput } from '../../composables/useVoiceInput'
@@ -61,13 +61,15 @@ function resize(): void {
   el.style.height = Math.min(el.scrollHeight, 180) + 'px'
 }
 
-function submit(): void {
+async function submit(): Promise<void> {
   if (props.streaming) return
   if (listening.value) finalizeVoice() // 边说边发：先定格（撤掉未定段的转写），再取文本
   const text = draft.value.trim()
   if (!text && props.pending.length === 0) return
   emit('send', text)
   draft.value = ''
+  // v-model 清空要到下一帧才落到 DOM：同步量高度量到的还是多行的 scrollHeight，框会卡在高处不还原
+  await nextTick()
   resize()
 }
 

@@ -62,10 +62,12 @@ watch(streaming, (now, was) => {
 
 // 待决策的确认卡：只在流式进行中的消息里找——交互由弹窗接管，内联卡只留审计记录。
 // 不扫历史消息：服务端中途崩溃可能留下无 outcome 的陈旧卡，复活弹窗会点不动也关不掉（流已断，没有 outcome 帧来收场）
+// 注意 script 里 Ref 必须取 .value（tsc 不查 .vue，写成 messages.length 会静默 undefined，弹窗永远不弹）
 const pendingConfirm = computed(() => {
-  for (let i = messages.length - 1; i >= 0; i--) {
-    if (!messages[i].streaming) continue
-    const card = messages[i].confirms?.find((c) => !c.outcome)
+  const list = messages.value
+  for (let i = list.length - 1; i >= 0; i--) {
+    if (!list[i].streaming) continue
+    const card = list[i].confirms?.find((c) => !c.outcome)
     if (card) return card
   }
   return null

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { nextTick, ref, watch } from 'vue'
+import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { DisplayMessage } from '../../types'
 import MessageItem from './MessageItem.vue'
 
@@ -26,14 +26,32 @@ function jumpToLatest(): void {
   scrollToBottom()
 }
 
+// 内容不满一屏（没有可滚动余量）时贴底无条件成立——「最新」按钮在短页面上没有意义。
+// 光靠 scroll 事件不够：视口变大（窗口最大化/输入框收回/工具栏不换行了）时若 scrollTop 本来就是 0，
+// 浏览器不会触发 scroll 事件，pinned 会卡在 false，按钮就挂在短页面上
+function recheck(): void {
+  const el = scroller.value
+  if (el && el.scrollHeight - el.clientHeight <= 0) pinned.value = true
+}
+
+// 滚动区自身尺寸变化（窗口缩放、输入框长高/收回挤压消息区）都要重判
+let ro: ResizeObserver | undefined
+onMounted(() => {
+  if (!scroller.value) return
+  ro = new ResizeObserver(() => recheck())
+  ro.observe(scroller.value)
+})
+onBeforeUnmount(() => ro?.disconnect())
+
 // 流式增量/消息内容变化：贴底才跟随
 watch(
   () => props.messages,
   async (msgs) => {
     // 用户自己刚发消息：无条件贴底（发的那条和随后的回答都得看得见，哪怕发之前在翻历史）
     if (msgs.length > 0 && msgs[msgs.length - 1].role === 'user') pinned.value = true
-    if (!pinned.value) return
     await nextTick()
+    recheck()
+    if (!pinned.value) return
     scrollToBottom()
   },
   { deep: true },
