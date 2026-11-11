@@ -9,6 +9,7 @@ import { createVectorLane } from '../vector-lane.ts'
 import { createSkillStore } from '../core/skills.ts'
 import { createRepoReader } from '../repo.ts'
 import { builtinTools } from '../tools.ts'
+import { loadMcpTools } from '../mcp-tools.ts'
 import { resolveAsrConfig } from '../asr.ts'
 import { createBrowserReader, type BrowserReader } from '../browser.ts'
 import { describeScreenshot } from '../shot-vision.ts'
@@ -62,7 +63,10 @@ const repoRoot = path.resolve(config.repoDir)
 const dataResolved = path.resolve(config.dataDir)
 const denyReads = dataResolved === repoRoot || dataResolved.startsWith(repoRoot + path.sep) ? [dataResolved] : []
 export const repo = createRepoReader({ repoDir: config.repoDir, writableDirs: config.writableDirs, denyReads })
-export const tools = builtinTools({ kb, memories, skills, repo, browser, shots, vision: shotVision })
+// 外部 MCP 工具（.mcp.json 驱动）：启动连一次进程长持，连不上降级空表——外部工具是增强不是依赖。
+// PA_MCP=0 整体关闭。风险分级见 mcp-tools.ts 头注（risk 缺省 write 走确认门）
+const mcpTools = await loadMcpTools()
+export const tools = [...builtinTools({ kb, memories, skills, repo, browser, shots, vision: shotVision }), ...mcpTools]
 // 大模型转写配置（PA_ASR_* 可整体换平台；缺省回落备用/小档/embed 档的按量端点与 key）
 export const ASR = resolveAsrConfig(process.env)
 

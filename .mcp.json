@@ -3,6 +3,12 @@
     "personal-agent": {
       "command": "node",
       "args": ["personal-agent/mcp-server.ts"]
+    },
+    "04-mcp": {
+      "command": "node",
+      "args": ["04-mcp/server.ts"],
+      "risk": "read",
+      "timeoutMs": 20000
     }
   }
 }
