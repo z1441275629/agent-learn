@@ -482,3 +482,9 @@
 - 根因：通道形状是刻意的——①「返回 state 补丁」只存在于 beforeAgent/beforeModel/afterModel/afterAgent 生命周期钩子，工具包装层的写通道只有 Command.update；②框架对非 Command 返回自动包 `{messages:[结果]}`、Command 原样上抛，不带 messages 就是静默丢工具结果；③jumpTo 必须在钩子声明处 canJumpTo 白名单显式开（防误跳护栏）；④计数/累加字段用裸 zod 字段=LastValue 语义（一步只收一个值），框架跑并行 tool_calls 是 Promise.all 同 superstep 多写，直接 InvalidUpdateError——手搭 StateGraph 的并发写雷（P5）在 middleware 层原样复现
 - 修法：写 state 用 `Command({ update: { messages: [结果], 字段: 增量 } })`；累加语义字段用 `new ReducedValue(z.record(...).default(() => ({})), { reducer })`——update 只传增量、加法进 reducer（并发安全；若增量在写入点按快照算好、reducer 只做 key 替换，并行调同一工具会少记次数）；空 channel 首写直接当基值不过 reducer，无 default 时首写前读到 undefined；初始值三个位置：valueSchema 上的 thunk default（静态初值，字面量 default 共享引用有坑）/ invoke 输入（动态注入，带 checkpointer 后同 thread 变增量语义）/ beforeAgent 返回补丁（每运行重置）
 - 原则：**钩子的「读-写分离」是形状约束：request.state 是读、Command.update 是写、字段合并语义由 schema 的 reducer 声明，三件事各自声明；「必须发生」的流程控制（jumpTo 弹回）在编排层，但防死循环（只提醒一次/recursionLimit 兜底）是编排方自己的责任**
+
+## 67. 图拓扑确定、判定节点不确定——路由/审校的判定参数不锁，同一张图两次跑路径漂移（2026-11-12，langChain S3）
+- 症状：StateGraph 三态路由图，composite 场景首跑被 router 误判（路由去了别的态），重跑才对；composite 子图的审校结果不稳定——同一段初稿有时一轮 PASS 出图、有时连续打回修订 2~3 次，熔断/回边路径时有时无
+- 根因：条件边/熔断给的是**确定性拓扑**，但路由和审校是图里的 LLM 判定节点——非确定性的注入口。判定节点用默认参数（温度默认、思考未配）时，flash 级模型的分类和核对输出都会抖；拓扑的确定性只到判定节点的输出为止，判定一漂整条路径跟着漂（#61「判官思考档与判断类型错配」在图编排层的复现，换层不换病灶）
+- 修法：判定节点按判断类型配参数并单独建实例——路由=直觉判断（单发分类）：温度 0 + 思考关；审校=逐条核对型：温度 0 + 思考低档（flash 判官关思考产噪声判定）。非标参数经 modelKwargs 直通（对照 pa thinkingParams() 的 openapi 形态）。产出节点（写手/研究员/规划器）保持默认参数——产出要多样性，判定要稳定性，两类节点参数策略相反
+- 原则：**确定性编排的「确定」止于第一个未锁参数的判定节点——图管路径形状，判定节点的参数管路径本身；产出场温度放开、判定场温度锁死+思考档按判断类型选，这是同一张图里两套模型配置的原因**

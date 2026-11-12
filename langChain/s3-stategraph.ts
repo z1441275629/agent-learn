@@ -21,13 +21,31 @@ import { HumanMessage, AIMessage } from 'langchain'
 import * as z from 'zod'
 
 const env = process.env
+// 产出节点（research/revise/planner/exec/merge/answer）：默认参数——产出要多样性，不锁
 const llm = new ChatOpenAI({
   model: env.LLM_MODEL!,
   apiKey: env.LLM_API_KEY!,
   configuration: { baseURL: env.LLM_BASE_URL! },
 })
-const ask = async (system: string, user: string) =>
-  String((await llm.invoke([{ role: 'system', content: system }, { role: 'user', content: user }])).content)
+// 判定节点专用（#61 平移：判断类型配参数；非标参数走 modelKwargs 直通，对照 pa thinkingParams()）
+// 路由 = 直觉判断（单发分类）：温度 0 + 思考关——不锁的话同一张图两次跑路径会漂（首跑误判 composite 的根因）
+const routerLlm = new ChatOpenAI({
+  model: env.LLM_MODEL!,
+  apiKey: env.LLM_API_KEY!,
+  configuration: { baseURL: env.LLM_BASE_URL! },
+  temperature: 0,
+  modelKwargs: { thinking: { type: 'disabled' } },
+})
+// 审校 = 逐条核对型判断（#61 原案）：温度 0 + 思考低档——flash 级判官关思考会产噪声 FAIL/噪声 PASS
+const judgeLlm = new ChatOpenAI({
+  model: env.LLM_MODEL!,
+  apiKey: env.LLM_API_KEY!,
+  configuration: { baseURL: env.LLM_BASE_URL! },
+  temperature: 0,
+  modelKwargs: { thinking: { type: 'enabled' }, reasoning_effort: 'low' },
+})
+const ask = async (system: string, user: string, m: ChatOpenAI = llm) =>
+  String((await m.invoke([{ role: 'system', content: system }, { role: 'user', content: user }])).content)
 // 花括号切片剥 JSON 围栏（planner probe 验证过比剥 fence 鲁棒）
 const extractJson = (raw: string) => {
   const start = raw.indexOf('{'),
@@ -77,6 +95,7 @@ const composite = new StateGraph(CompositeState)
     const raw = await ask(
       '审校。判断初稿是否「准确、无编造、无空话」。只回 JSON：{"verdict":"PASS"} 或 {"verdict":"FAIL","reason":"一句话意见"}',
       `主题：${lastUser(s)}\n初稿：${s.draft}`,
+      judgeLlm,
     )
     let j: any = {}
     try {
@@ -110,6 +129,7 @@ const graph = new StateGraph(MainState)
     const raw = await ask(
       '路由器。判定任务类型，只回 JSON：{"route":"normal"}=单点问答/闲聊；{"route":"plan"}=多件事分别处理再汇总/对比；{"route":"composite"}=要求成稿输出（写短文/报告）',
       lastUser(s),
+      routerLlm,
     )
     let route: string = 'normal'
     try {
