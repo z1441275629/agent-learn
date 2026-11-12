@@ -62,3 +62,5 @@ resume/
 
 # chroma 练习：本地向量索引（可从 kb.json 重建的缓存，不入库）
 chroma/chroma_data/
+
+tmp/
