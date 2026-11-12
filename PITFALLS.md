@@ -470,3 +470,15 @@
 - 根因：.mcp.json 是与宿主（Claude Code）共享的配置，同一份文件两个消费者、两种角色（personal-agent 对 CC 是 server，对 04-mcp 是 client）；且 MCP 协议里没有「这个工具有没有副作用」的字段，risk 分级在协议层天然缺位
 - 修法：装载时按 args 路径识别并跳过自指条目（打日志明示）；risk 由接入方在配置里声明（本仓扩展键，缺省 'write' 走确认门——没声明的外部工具按有副作用对待）；远端调用必须包超时（子进程什么都能发生），单个 server 失败降级空表不阻塞启动
 - 原则：**agent 消费共享配置时要考虑「配置里的条目不是都为我而写」；外部工具的风险等级是接入方的信任决策，不是协议自描述——默认保守、显式放行**
+
+## 65. responseFormat 的交付引力：结构化输出抢走终点，中间工具步骤被跳过（2026-11-12，langChain S1）
+- 症状：createAgent 任务链「查资料→记笔记→结构化汇报」，flash 档模型只调 lookup 就直接进结构化输出收尾，write_note 从未被调（notes 落盘为空）；框架自打的 "Returning structured response" 日志证明终点动作是结构化交付。工具描述加强（写明「任务收尾时必须调用」）后仍跳步
+- 根因：responseFormat 是循环终止后的明确「终点动作」，模型把所有中间步骤向交付压缩——终点前的写入工具在它眼里是可省略项；工具描述只能给「调用倾向」，压不过交付引力。把动作绑进交付 schema（notedNote 字段 + .describe「必须先调用」）后动作发生了，但性质变成为填字段而做的仪式（笔记≈结论复述）——交付格式能迫使动作发生，不能让动作有意义
+- 修法（约束阶梯，可靠性递增）：A 描述层——description 写清使用时机，只提倾向，实测失败；B 交付层——动作绑进 responseFormat 字段，动作发生但仪式化；C 编排层（正解）——「必须发生」的动作放 StateGraph 确定边必经节点，或 middleware 拦截收尾校验（S2/S3 落地）
+- 原则：**responseFormat 管「答案的形状」，不管「流程的发生」——拿交付格式当流程引擎，动作会退化成填字段的仪式；提示词/描述/交付绑定全是「模型自觉」级软约束，关键动作要落在编排层硬约束上（对照 pa：确认门/护栏/熔断全在代码层，从没指望提示词）**
+
+## 66. middleware 改 state 的通道形状：wrapToolCall 无补丁返回形态、Command 必带工具结果、累加字段要 ReducedValue（2026-11-12，langChain S1→S2 预习）
+- 症状：在 wrapToolCall 里改 `request.state.xxx` 不生效（快照只读）；返回 `{ state: {...} }` 补丁类型不符——JS 版 wrapToolCall 返回值只有 ToolMessage | Command 两形态（Python 版的 afterTool 补丁钩子 JS 没有）；改返回 `new Command({ update: { 字段 } })` 后工具结果凭空消失、模型等不到 ToolMessage 卡死；afterModel 返回 `{ jumpTo: 'model' }` 直接抛 `Invalid jump target: model`
+- 根因：通道形状是刻意的——①「返回 state 补丁」只存在于 beforeAgent/beforeModel/afterModel/afterAgent 生命周期钩子，工具包装层的写通道只有 Command.update；②框架对非 Command 返回自动包 `{messages:[结果]}`、Command 原样上抛，不带 messages 就是静默丢工具结果；③jumpTo 必须在钩子声明处 canJumpTo 白名单显式开（防误跳护栏）；④计数/累加字段用裸 zod 字段=LastValue 语义（一步只收一个值），框架跑并行 tool_calls 是 Promise.all 同 superstep 多写，直接 InvalidUpdateError——手搭 StateGraph 的并发写雷（P5）在 middleware 层原样复现
+- 修法：写 state 用 `Command({ update: { messages: [结果], 字段: 增量 } })`；累加语义字段用 `new ReducedValue(z.record(...).default(() => ({})), { reducer })`——update 只传增量、加法进 reducer（并发安全；若增量在写入点按快照算好、reducer 只做 key 替换，并行调同一工具会少记次数）；空 channel 首写直接当基值不过 reducer，无 default 时首写前读到 undefined；初始值三个位置：valueSchema 上的 thunk default（静态初值，字面量 default 共享引用有坑）/ invoke 输入（动态注入，带 checkpointer 后同 thread 变增量语义）/ beforeAgent 返回补丁（每运行重置）
+- 原则：**钩子的「读-写分离」是形状约束：request.state 是读、Command.update 是写、字段合并语义由 schema 的 reducer 声明，三件事各自声明；「必须发生」的流程控制（jumpTo 弹回）在编排层，但防死循环（只提醒一次/recursionLimit 兜底）是编排方自己的责任**

@@ -7,15 +7,60 @@
 // 框架没做的：write_note 这种写入工具【默认直接执行，没有任何门】——
 //   pa 的 write 确认门（fail-closed）在这套默认配置里不存在，S2 用 middleware 补
 import 'dotenv/config'
-import { createAgent, tool } from 'langchain'
+import { createAgent, tool, createMiddleware, HumanMessage } from 'langchain'
 import { ChatOpenAI } from '@langchain/openai'
+import { Command, ReducedValue, StateSchema } from '@langchain/langgraph'
 import * as z from 'zod'
 
 const env = process.env
 const llm = new ChatOpenAI({
   model: env.LLM_MODEL!,
   apiKey: env.LLM_API_KEY!,
-  configuration: { baseURL: env.LLM_BASE_URL! }, // 方舟 OpenAI 兼容端点
+  configuration: { baseURL: env.LLM_BASE_URL! },
+})
+
+const MyState = new StateSchema({
+  callToolMap: new ReducedValue(z.record(z.string(), z.number()).default(() => ({})), {
+    reducer: (prev, next) => {
+      return Object.assign({}, prev, next)
+    },
+  }),
+})
+
+const checkToolUseMiddleware = createMiddleware({
+  name: 'check-tool-use',
+  stateSchema: MyState, // schema 在这声明，afterModel 的 state 才有类型
+  wrapToolCall: async (request, handler) => {
+    const map = request.state.callToolMap
+    const res = await handler(request)
+    const toolName = request.toolCall.name
+    return new Command({
+      update: {
+        messages: [res],
+        callToolMap: { [toolName]: (map?.[toolName] ?? 0) + 1 },
+      },
+    })
+  },
+  afterModel: {
+    canJumpTo: ['model'], // 不声明这行，jumpTo 直接抛 Error: Invalid jump target: model, no afterModel.canJumpTo defined in middleware check-tool-use.
+    hook: (state) => {
+      const last = state.messages.at(-1)
+      const REMIND = '【系统】你还没调用 write_note。先调用它记录核心结论，然后才能结束。'
+      if (
+        !last?.tool_calls?.length && // 模型没要工具 = 想收尾
+        !state?.callToolMap?.write_note && // 且 write_note 从没被调过（复用计数 state）
+        !state.messages?.some((m) => m.content === REMIND) // 防死循环：只提醒一次
+      ) {
+        return { messages: [new HumanMessage(REMIND)], jumpTo: 'model' }
+      }
+    },
+  },
+  // afterAgent: (state) => {
+  //   console.log(state.callToolMap)
+  //   if (!state.callToolMap.write_note) {
+  //     // return '请注意，您在本轮对话中没有使用 write_note 工具记录笔记。请确保在需要记录核心结论时调用 write_note 工具。'
+  //   }
+  // },
 })
 
 // 工具一：只读（查一个内存小库）
@@ -32,14 +77,17 @@ const lookup = tool(({ topic }) => db[topic] ?? `库里没有「${topic}」`, {
 
 // 工具二：写入（对照点——这一步会真的执行，没人拦）
 const notes: string[] = []
-const writeNote = tool(({ text }) => {
-  notes.push(text)
-  return `已记录（第 ${notes.length} 条）：${text}`
-}, {
-  name: 'write_note',
-  description: '把一条学习结论写进笔记',
-  schema: z.object({ text: z.string().describe('要记录的结论，一句话') }),
-})
+const writeNote = tool(
+  ({ text }) => {
+    notes.push(text)
+    return `已记录（第 ${notes.length} 条）：${text}`
+  },
+  {
+    name: 'write_note',
+    description: '任务收尾时必须调用：把本次的核心结论记成一条笔记；用户要求「记录/记笔记」时也用它',
+    schema: z.object({ text: z.string().describe('要记录的结论，一句话') }),
+  },
+)
 
 const agent = createAgent({
   model: llm,
@@ -48,14 +96,18 @@ const agent = createAgent({
   responseFormat: z.object({
     conclusion: z.string(),
     source: z.enum(['lookup', '模型自身']),
+    // notedNote: z.string().describe('已通过 write_note 记录的笔记原文——必须先调用 write_note 才能填此项'),
   }),
   name: 's1-agent',
+  middleware: [checkToolUseMiddleware],
 })
 
 // 流式消费：v1.3+ 的 streamEvents 类型化投影——token 流与工具事件各自独立迭代，最后 await 拿终态
 const stream = await agent.streamEvents(
-  { messages: [{ role: 'user', content: 'LangChain 的 v1 核心抽象是什么？查完记一条笔记。' }] },
+  // { messages: [{ role: 'user', content: 'LangChain 的 v1 核心抽象是什么？查完记一条笔记。' }] },
+  { messages: [{ role: 'user', content: 'deepSeek 的核心抽象是什么？' }] },
   { version: 'v3' },
+  // toolCallMap: {},
 )
 await Promise.all([
   (async () => {
