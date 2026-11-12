@@ -64,6 +64,8 @@ const MainState = new StateSchema({
   messages: MessagesValue, // 预置的 BaseMessage[] append 通道
   route: Route.default('normal'), // 覆盖语义（无 reducer = LastValue）——静态判定整张换
   steps: z.array(z.object({ id: z.number(), desc: z.string() })).default(() => []), // planner 产物，覆盖语义
+  // InvalidUpdateError: Invalid update for channel "results" with values [[xxxxx]]: LastValue can only receive one value per step.
+  // results: z.array(z.string()).default(() => []), // 探针①：裸字段 = LastValue（一步只收一个值）
   results: new ReducedValue(
     z.array(z.string()).default(() => []),
     {
@@ -156,6 +158,9 @@ const graph = new StateGraph(MainState)
   .addNode('exec', async (i: any) => {
     console.log(`    [exec] 步骤${i.step.id} 开跑（与同批并行）`)
     const out = await ask('执行器。完成这一步，50 字内给出成果。', `总任务：${i.question}\n本步：${i.step.desc}`)
+    // return { results: { fuck: `【${i.step.id}】${out}`} } // Error: Validation failed for field "results": [{"expected":"string","code":"invalid_type","path":[],"message":"Invalid input: expected string, received object"}]
+    // InvalidUpdateError: Invalid update for channel "results" with values [[xxxxx]]: LastValue can only receive one value per step.
+    // return { results: [`【${i.step.id}】${out}`] } // 类型必须合法（string[]），否则又停在第一层校验
     return { results: `【${i.step.id}】${out}` } // 单条进 reducer，append 语义
   })
   .addNode('merge', async (s: any) => {
@@ -180,7 +185,7 @@ const graph = new StateGraph(MainState)
   .addEdge('report', END)
   .compile()
 
-// ── 三场景跑一遍（normal / plan / composite 各一路）──
+// ── 三场景跑一遍（normal / plan / composite 各一路；调试单场景时注释其余两行）──
 const scenes: Array<[string, string]> = [
   ['normal', 'LangGraph 的 StateGraph 是什么？一句话。'],
   ['plan', '分别查 LangChain、LangGraph、DeepAgents 各自的定位，最后给我一个对比总结。'],
