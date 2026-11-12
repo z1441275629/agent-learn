@@ -21,8 +21,10 @@ const llm = new ChatOpenAI({
 
 const MyState = new StateSchema({
   callToolMap: new ReducedValue(z.record(z.string(), z.number()).default(() => ({})), {
-    reducer: (prev, next) => {
-      return Object.assign({}, prev, next)
+    reducer: (prev, cur) => {
+      // return Object.assign({}, prev, next)
+      for (const [k, v] of Object.entries(cur)) prev[k] = (prev[k] ?? 0) + v
+      return prev;
     },
   }),
 })
@@ -37,7 +39,8 @@ const checkToolUseMiddleware = createMiddleware({
     return new Command({
       update: {
         messages: [res],
-        callToolMap: { [toolName]: (map?.[toolName] ?? 0) + 1 },
+        // callToolMap: { [toolName]: (map?.[toolName] ?? 0) + 1 }, // 如果有并发，那么取的值可能不对，放到 reducer 里去做累加更稳
+        callToolMap: { [toolName]: 1 }, // reducer 里做累加
       },
     })
   },
@@ -55,12 +58,9 @@ const checkToolUseMiddleware = createMiddleware({
       }
     },
   },
-  // afterAgent: (state) => {
-  //   console.log(state.callToolMap)
-  //   if (!state.callToolMap.write_note) {
-  //     // return '请注意，您在本轮对话中没有使用 write_note 工具记录笔记。请确保在需要记录核心结论时调用 write_note 工具。'
-  //   }
-  // },
+  afterAgent: (state) => {
+    console.log('\n工具调用频率信息', state.callToolMap)
+  },
 })
 
 // 工具一：只读（查一个内存小库）
