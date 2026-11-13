@@ -67,3 +67,4 @@ tmp/
 
 # langChain S4 运行数据（checkpointer 的 SQLite 库——含对话内容，不入库；重置=删目录）
 langChain/.s4-data/
+langChain/.s5-data/
