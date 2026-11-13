@@ -129,3 +129,16 @@ if (mode === 'run') {
   await requirePause(val)
   await printPaused(await graph.invoke(new Command({ resume: val }), cfg))
 } else console.log(`未知模式：${mode}（run | approve | reject | confirm）`)
+
+// node .\langChain\s5-interrupt.ts resume:ohou
+// $ZodError: [
+//   {
+//     "code": "invalid_value",
+//     "values": [
+//       "approve",
+//       "reject"
+//     ],
+//     "path": [],
+//     "message": "Invalid option: expected one of \"approve\"|\"reject\""
+//   }
+// ]
