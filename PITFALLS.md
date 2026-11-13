@@ -524,3 +524,9 @@
 - 根因（src 源码实锤 resolvePath）：virtualMode 默认 false 的 legacy 模式下，相对路径 resolve 到 rootDir 下，但 `path.isAbsolute(key) ? 原样返回 key`——绝对路径不圈禁。①模型爱猜绝对路径（E:/...）直接穿透；②Windows 上 '/skills' 是"当前盘根相对"= 绝对路径 → 解析成 E:\skills → 不存在。文档示例 skills:['/skills/'] 与 FilesystemBackend 同框出现时隐含虚拟路径语义，没写明
 - 修法：`new FilesystemBackend({ rootDir, virtualMode: true })`——传入路径一律视为 rootDir 下的虚拟绝对路径 + 强制圈禁（`..` 穿越/出界抛 "outside root directory"）。安全要求高的场景文档原话：要么 sandbox 要么给文件操作挂 HITL 审批（本例同时挂了 interruptOn write_file）
 - 原则：**backend 的"根目录"参数先问是不是沙箱——默认实现对绝对路径的放行 = agent 可读宿主机任意路径；带 '/' 的配置路径在 Windows 上天生是绝对路径，跨平台配虚拟路径必须显式开虚拟模式；另外「任务跑通」≠「机制走通」——验收要认日志里的机制证据（技能注册）而不是只看产物**
+
+## 74. LangSmith/Chroma JS API 形状三连：evaluators 要裸函数、fromExistingCollection 是 getOrCreate、createExamples 弃用链（2026-11-13，langChain S7）
+- 症状：① evaluate() 报 "evaluator is not a function"——传 {key, evaluate: fn} 对象；② Chroma.fromExistingIndex is not a function——Python 名 from_existing_index 在 JS 叫 fromExistingCollection；③ 没跑 ingest 直接 ask，向量检索静默返回空（集合不存在时 fromExistingCollection 静默建空集合，getOrCreate 语义）；④ createExamples 弃用告警两连跳
+- 根因：①langsmith 0.9 的 evaluators 契约是裸函数 (args:{run,example,outputs,referenceOutputs})=>{key,score}，对象形态走废弃 RunEvaluator 分支（找 .evaluateRun 方法）；②③#68 方言家族——跨语言方法名不同义（index≠Collection）+ 创建语义藏在名字里；④参数名换代（outputs→referenceOutputs）之后整个 props 重载也被弃（→ uploads 数组，字段还换 snake_case reference_outputs）
+- 修法：①评估器写裸函数，target 返回值在 args.outputs、参考答案在 args.referenceOutputs；②③JS 用 fromExistingCollection，且**先 ingest 再查**——怀疑空结果先 col.count() 对账（pa vector-lane 的对账自愈就是防这个的）；④createExamples(ExampleCreate[])，每例自带 dataset_id
+- 原则：**eval/检索链路的「静默空」比报错难排查一个量级（空结果=0 分实验照常跑完，分数才会露馅）——数据面操作前先对账条数；JS/Python 双实现框架的静态方法名不可迁移，落笔前查 d.ts**

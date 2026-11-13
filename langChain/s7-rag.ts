@@ -5,6 +5,8 @@
 //   node langChain/s7-rag.ts ingest              # 官方路线建索引：load → splitter → embeddings → Chroma
 //   node langChain/s7-rag.ts ask "查询词"        # retriever 抽象检索：向量 vs BM25 两路对照
 //   node langChain/s7-rag.ts eval                # LangSmith dataset + evaluate（验收件）
+// 坑（实测）：Chroma.fromExistingCollection 是 getOrCreate 语义——集合不存在时【静默建空集合】，
+//   查询静默返回空（表象「向量没结果」，锅在创建语义）。先 ingest 再 ask；怀疑时直接查 col.count()
 // 前置：① chroma server 起着（pa 同款，PA_CHROMA_URL 缺省 http://localhost:8000）
 //       ② .env 有 LLM_EMBED_BASE_URL / LLM_EMBED_MODEL（pa 同一套，缺 EMBED_API_KEY 回落 LLM_API_KEY）
 //
@@ -74,7 +76,8 @@ if (mode === 'ingest') {
 else if (mode === 'ask') {
   const q = process.argv[3] ?? 'checkpointer 快照和业务层账本有什么区别？'
   console.log(`═══ S7 ask：向量（Chroma）vs BM25 两路对照 ═══\n问：${q}`)
-  const store = await Chroma.fromExistingIndex(embeddings, { collectionName: COLLECTION, url: CHROMA_URL })
+  // 坑（#68 方言家族）：Python 叫 from_existing_index，JS 是 fromExistingCollection
+  const store = await Chroma.fromExistingCollection(embeddings, { collectionName: COLLECTION, url: CHROMA_URL })
   const vecHits = await store.asRetriever({ k: 3 }).invoke(q)
   console.log('\n── 向量 top3 ──')
   vecHits.forEach((h, i) => console.log(`  ${i + 1}. [${h.metadata.source}] ${h.pageContent.replace(/\n/g, ' ').slice(0, 60)}`))
@@ -105,22 +108,25 @@ else if (mode === 'eval') {
   ]
   if (!(await client.hasDataset({ datasetName: DS }))) {
     const ds = await client.createDataset(DS, { description: 'S7 检索 hit@3 评估——语料为 langChain 学习文档' })
-    await client.createExamples({
-      datasetId: ds.id,
-      inputs: examples.map((e) => ({ question: e.question })),
-      outputs: examples.map((e) => ({ expected_source: e.expected_source })),
-    })
+    // 弃用链两跳（d.ts 实录）：outputs 参数 → referenceOutputs；props 对象重载 → uploads 数组。
+    // 终态：createExamples(ExampleCreate[])，每例自带 dataset_id + reference_outputs（snake_case）
+    await client.createExamples(
+      examples.map((e) => ({
+        dataset_id: ds.id,
+        inputs: { question: e.question },
+        reference_outputs: { expected_source: e.expected_source },
+      })),
+    )
     console.log(`  [dataset] "${DS}" 已建（${examples.length} 例）`)
   } else console.log(`  [dataset] "${DS}" 已存在，复用`)
 
-  const store = await Chroma.fromExistingIndex(embeddings, { collectionName: COLLECTION, url: CHROMA_URL })
+  const store = await Chroma.fromExistingCollection(embeddings, { collectionName: COLLECTION, url: CHROMA_URL }) // JS 方法名（#68）：非 Python 的 from_existing_index
   const retriever = store.asRetriever({ k: 3 })
 
   // 检索质量评估器：hit@3（期望文档进没进 top3）+ MRR（进了排第几）
-  const extract = (p: any) => ({
-    sources: (p?.prediction?.sources ?? p?.run?.outputs?.sources ?? []) as string[],
-    expected: p?.reference?.expected_source ?? p?.example?.outputs?.expected_source ?? '',
-  })
+  // 坑（报错实锤）：langsmith 0.9 的 evaluators 要【裸函数】(args)=>{key,score}——
+  // 传 {key, evaluate: fn} 对象会走废弃 RunEvaluator 分支（找 .evaluateRun 方法）报
+  // "evaluator is not a function"。args.outputs=target 返回值，args.referenceOutputs=example.outputs
   const results = await evaluate(
     async (input: any) => {
       const hits = await retriever.invoke(input.question)
@@ -132,24 +138,20 @@ else if (mode === 'eval') {
       experimentPrefix: 's7-rag-retriever',
       maxConcurrency: 4,
       evaluators: [
-        {
-          key: 'hit@3',
-          evaluate: async (p: any) => {
-            const { sources, expected } = extract(p)
-            return { key: 'hit@3', score: sources.includes(expected) ? 1 : 0 }
-          },
+        async (args: any) => {
+          const sources: string[] = args.outputs?.sources ?? []
+          const expected = String(args.referenceOutputs?.expected_source ?? '')
+          return { key: 'hit@3', score: sources.includes(expected) ? 1 : 0 }
         },
-        {
-          key: 'mrr',
-          evaluate: async (p: any) => {
-            const { sources, expected } = extract(p)
-            const idx = sources.indexOf(expected)
-            return { key: 'mrr', score: idx === -1 ? 0 : 1 / (idx + 1) }
-          },
+        async (args: any) => {
+          const sources: string[] = args.outputs?.sources ?? []
+          const expected = String(args.referenceOutputs?.expected_source ?? '')
+          const idx = sources.indexOf(expected)
+          return { key: 'mrr', score: idx === -1 ? 0 : 1 / (idx + 1) }
         },
       ],
     },
   )
-  console.log('\n[结果摘要]', JSON.stringify(results?.summaryResults ?? { rows: results?.results?.length }, null, 1).slice(0, 300))
-  console.log('\n验收：LangSmith UI → Datasets → s7-rag-qa → Experiments 看完整实验')
+  const rows = (results as any)?.results ?? []
+  console.log(`\n[完成] ${rows.length} 行评估——完整结果（每问的 hit@3 / MRR feedback）看 LangSmith UI → Datasets → ${DS} → Experiments`)
 } else console.log(`未知模式：${mode}（ingest | ask | eval）`)
