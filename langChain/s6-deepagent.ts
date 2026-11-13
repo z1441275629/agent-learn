@@ -89,6 +89,16 @@ const reviewBreaker = createMiddleware({
     }
     const res = await handler(req)
     if (isCritic) console.log(`  [breaker] critic 第 ${used + 1} 次调用放行（计数 +1）`)
+    // 坑（报错实锤）：handler 的返回值不只是 ToolMessage——deepagents 内置 task 工具跑完子代理
+    // 返回的是 Command（update 里带 files 合并+结果 ToolMessage，即源码的 returnCommandWithStateUpdate）。
+    // 写死 messages:[res] 会把 Command 当消息塞进数组 → "Unable to coerce message from array"。
+    // 护栏要透传两种形状：Command 就展开它的 update 再叠加计数；ToolMessage 才包一层
+    const resIsCommand = res?.lg_name === 'Command' || res instanceof Command
+    if (resIsCommand) {
+      const merged: any = { ...res.update }
+      if (isCritic) merged.criticCalls = 1
+      return new Command({ update: merged })
+    }
     // #66 通道形状：工具结果必须随 Command 带回，否则结果丢失；计数用增量（reducer 求和，S1 同款）
     const update: any = { messages: [res] }
     if (isCritic) update.criticCalls = 1
