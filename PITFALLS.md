@@ -512,3 +512,9 @@
 - 根因：框架的 resume 语义只认「有挂起节点的 checkpoint」——空线程上 Command({resume}) 不当 fresh input 启动图，也不验挂起点存在性，静默落到 END。与 #68「静默 undefined」同族：错位输入不抛错，表象是「跑成功」，锅在框架不验前置条件
 - 修法：resume 前接入方自己 fail-closed 校验——`const st = await graph.getState(cfg); if (!st?.next?.length) 拒绝并指路`。S5 的 requirePause() 即此；残留的 step=-1 checkpoint 实验证明不污染后续 run（同 thread 再挂起照常）
 - 原则：**框架给了暂停点和 resume 通道，「放行策略」里连『resume 的前置条件校验』也没给——任何 resume 请求先验挂起点存在性再透传，这条和超时/兜底拒绝/审计一样是接入方必补项（pa fail-closed 对照）**
+
+## 72. JS 多 agent handoff 三连环坑：.graph 才是 Runnable、ends 白名单、goto 必须带面向接手方的 ToolMessage（2026-11-13，langChain S6）
+- 症状（三连，一坑引出下一坑）：① `addNode('tech', tech)` 抛 "Expected a Runnable, function or object"——createAgent 返回的 ReactAgent 不是 Runnable；② 换 `.graph` 后编译抛 `UnreachableNodeError: Node 'tech' is not reachable`——triage 节点 return Command goto 做动态路由，编译期不认；③ 修完 ends 跑通交棒，但最终回答为空——消息清单实证：transfer 工具 return Command 不带 update → ToolMessage 不落 state → 线程挂悬空 tool_call（别人的调用、接手方还没有这个工具）→ 接手模型回空消息收场；④ update 补写 ToolMessage 后不空了，但接手方续写上一个角色的话题（billing 交棒给 tech，tech 还在答发票）
+- 根因：①JS 方言——Python create_agent 返回编译图可直接当节点，JS 返回包装类 ReactAgent，编译图在 `.graph` 属性（#68 家族）；②动态跳转的静态护栏——节点 return Command goto 必须在 addNode 第三参 `{ ends: [可能目标] }` 声明白名单（与 middleware jumpTo 的 canJumpTo 同一护栏家族）；③#66「工具 return Command 不带 messages = 工具结果丢失」的放大版——丢的不只是工具结果，是接手 agent 的输入完整性；④交棒消息没有对接手方下指令——ToolMessage 写成给发球方的确认（"已交棒给XX"），接手模型看到的话题惯性（上一轮正文）压过角色设定
+- 修法：①addNode 用 `tech.graph`；②`addNode('triage', fn, { ends: ['tech', 'billing'] })`；③④transfer 工具完整形态：`new Command({ goto: 目标, update: { messages: [new ToolMessage({ tool_call_id: runtime.toolCallId, content: 面向接手方的角色指令 })] } })`——toolCallId 从工具第二参数 runtime（ToolRuntime 注入）拿；content 要写「你现在是XX，先找尚未处理的问题，别重复已答」
+- 原则：**handoff 的交棒消息是协议的一部分，不是日志——写给谁看决定 handoff 质量：写给发球方=确认收条（接手方拿不到角色边界），写给接手方=角色指令+任务状态；跨 agent 传递的每条消息都要问「下读到它的人是谁」。goto 只搬控制权，update 才搬干净线程**
