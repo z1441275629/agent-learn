@@ -20,7 +20,7 @@
 import 'dotenv/config'
 import { createAgent, createMiddleware, HumanMessage, SystemMessage, humanInTheLoopMiddleware, tool } from 'langchain'
 import { ChatOpenAI } from '@langchain/openai'
-import { Command, InMemoryStore } from '@langchain/langgraph'
+import { Command, InMemoryStore, MemorySaver } from '@langchain/langgraph'
 import { SqliteSaver } from '@langchain/langgraph-checkpoint-sqlite'
 import Database from 'better-sqlite3'
 import * as fs from 'node:fs'
@@ -37,6 +37,7 @@ const llm = new ChatOpenAI({
 fs.mkdirSync('langChain/.s4-data', { recursive: true })
 const db = new Database('langChain/.s4-data/checkpoints.db')
 const checkpointer = new SqliteSaver(db)
+// const checkpointer = new MemorySaver() // 实验开关：S4 探索期切过它，continue/fork/reset 等 persist 模式必须用 SqliteSaver
 
 // ── Store：跨 thread 长期记忆（InMemory 实现——生命周期教学点：进程即失）──
 const store = new InMemoryStore()
@@ -71,13 +72,16 @@ const update_infoTool = tool(
   async ({ name, likes }: { name: string; likes: string }) => {
     const oldInfo = await store.get(['memories', 'user'], 'profile')
     console.log(`  [update_info] 旧信息 = ${JSON.stringify(oldInfo)}`)
-    await store.put(['memories', 'user'], 'profile', { name , likes })
+    await store.put(['memories', 'user'], 'profile', { name, likes })
     return `已更新信息 = ${JSON.stringify({ name: name || oldInfo?.name, likes: likes || oldInfo?.likes })}`
   },
   {
     name: 'update_info',
     description: '更新信息，需要人工批准',
-    schema: z.object({ name: z.string().describe('用户名').default(''), likes: z.string().describe('喜好').default('') }),
+    schema: z.object({
+      name: z.string().describe('用户名').default(''),
+      likes: z.string().describe('喜好').default(''),
+    }),
   },
 )
 
@@ -90,7 +94,10 @@ const buildAgent = () =>
     checkpointer,
     store,
     tools: [update_infoTool],
-    middleware: [storeMemoryMiddleware, humanInTheLoop],
+    middleware: [
+      storeMemoryMiddleware,
+      humanInTheLoop,
+    ],
   })
 
 const ask = async (agent: any, threadId: string, text: string) => {
@@ -139,7 +146,9 @@ if (mode === 'fork') {
   for await (const snap of agent.getStateHistory({ configurable: { thread_id: 's4-demo' } })) snapshots.push(snap)
   console.log(`[history] s4-demo 共 ${snapshots.length} 个 checkpoint（新→旧）：`)
   for (const s of snapshots)
-    console.log(`   · msgs=${s.values?.messages?.length ?? 0} next=${JSON.stringify(s.next)} ckpt=${String(s.config?.configurable?.checkpoint_id).slice(0, 8)}`)
+    console.log(
+      `   · msgs=${s.values?.messages?.length ?? 0} next=${JSON.stringify(s.next)} ckpt=${String(s.config?.configurable?.checkpoint_id).slice(0, 8)}`,
+    )
 
   // 选「第一轮对话后」的快照（messages 恰好 2 条：一问一答）作为分叉点
   const forkPoint = snapshots.find((s: any) => s.values?.messages?.length === 2)
@@ -171,7 +180,9 @@ if (mode === 'reset') {
   for await (const snap of agent.getStateHistory({ configurable: { thread_id: 's4-fork' } })) snapshots.push(snap)
   console.log(`[history] s4-fork 共 ${snapshots.length} 个 checkpoint（新→旧）：`)
   for (const s of snapshots)
-    console.log(`   · msgs=${s.values?.messages?.length ?? 0} next=${JSON.stringify(s.next)} ckpt=${String(s.config?.configurable?.checkpoint_id).slice(0, 8)}`)
+    console.log(
+      `   · msgs=${s.values?.messages?.length ?? 0} next=${JSON.stringify(s.next)} ckpt=${String(s.config?.configurable?.checkpoint_id).slice(0, 8)}`,
+    )
 
   // 选「第一轮对话后」的快照（messages 恰好 2 条：一问一答）作为分叉点
   const resetPoint = snapshots.find((s: any) => s.values?.messages?.length === 2)
@@ -202,9 +213,8 @@ if (mode === 'interrupt') {
 if (mode === 'approve') {
   console.log('═══ S7 approve：HITL 审批通过 ═══')
   const agent = buildAgent()
-  await agent.invoke(
-    new Command({ resume: { decisions: [{ type: 'approve', }] } }),
-    { configurable: { thread_id: 's4-interrupt' } },
-  )
+  await agent.invoke(new Command({ resume: { decisions: [{ type: 'approve' }] } }), {
+    configurable: { thread_id: 's4-interrupt' },
+  })
   await ask(agent, 's4-interrupt', '我是谁？我最喜欢什么语言？')
 }
