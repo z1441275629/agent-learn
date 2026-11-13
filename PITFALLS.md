@@ -506,3 +506,9 @@
 - 根因：图内部节点和 channel 共用一套字符串标识（路由表、`getState().next`、conditional edges 的目标都在一个命名空间里），重名无法消歧——框架选择 fail-fast 拒绝
 - 修法：命名习惯解耦——节点名动词化（prepare/review/write），state 字段名词化（draft/decision/record）；撞了就改节点名，state 字段名对外是 API 不宜动
 - 原则：**fail-fast 报错是好报错：命名冲突当场炸、信息里直接给出两个角色，没有静默路由错乱；但它也在提醒——图的两套名词（节点=过程、channel=数据）设计时就该分开命名，撞名是设计气味不是运气问题**
+
+## 71. 空线程上 Command resume 静默空转：不报错、不执行节点、返回全 default 状态（2026-11-13，langChain S5）
+- 症状：忘跑挂起步骤直接 resume（线程从没执行过），预期报「无挂起点」或走 responseSchema 校验——实际输出「✓ 完成」：一个节点都没跑、state 全 default、账本空，DB 里只多一个 step=-1 的空 input checkpoint。校验/拒绝/警告全没有
+- 根因：框架的 resume 语义只认「有挂起节点的 checkpoint」——空线程上 Command({resume}) 不当 fresh input 启动图，也不验挂起点存在性，静默落到 END。与 #68「静默 undefined」同族：错位输入不抛错，表象是「跑成功」，锅在框架不验前置条件
+- 修法：resume 前接入方自己 fail-closed 校验——`const st = await graph.getState(cfg); if (!st?.next?.length) 拒绝并指路`。S5 的 requirePause() 即此；残留的 step=-1 checkpoint 实验证明不污染后续 run（同 thread 再挂起照常）
+- 原则：**框架给了暂停点和 resume 通道，「放行策略」里连『resume 的前置条件校验』也没给——任何 resume 请求先验挂起点存在性再透传，这条和超时/兜底拒绝/审计一样是接入方必补项（pa fail-closed 对照）**

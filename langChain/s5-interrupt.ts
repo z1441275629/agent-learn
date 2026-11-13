@@ -93,6 +93,19 @@ const printPaused = async (r: any) => {
   } else console.log(`  ✓ 完成：${JSON.stringify(r).slice(0, 120)}`)
 }
 
+// fail-closed 守卫（本条是 pa 对照的现场演出）：框架对「空线程上 Command resume」
+// 静默空转——不报错、不启动节点、只留一个 step=-1 的空 input checkpoint、返回全 default
+// 状态（实验证实：验收期忘跑 run 直接 resume:fuck，输出「✓ 完成」+ 账本空）。框架只给了
+// resume 通道，不验「挂起点是否存在」——这一步像 pa 确认门一样由接入方 fail-closed 自己补
+const requirePause = async (label: string) => {
+  const st = await graph.getState(cfg)
+  if (!st?.next?.length) {
+    console.log(`  ✗ 线程 ${THREAD} 没有挂起的暂停点——resume「${label}」会被框架静默空转（只留 step=-1 空 checkpoint）`)
+    console.log('  ✓ 正确顺序：先跑 node langChain/s5-interrupt.ts run 挂起，再 resume')
+    process.exit(1)
+  }
+}
+
 const mode = process.argv[2] ?? 'run'
 if (mode === 'run') {
   console.log('═══ S5 run：跑到闸①（审批），线程挂起 ═══')
@@ -100,10 +113,12 @@ if (mode === 'run') {
   console.log('\n下一步：node langChain/s5-interrupt.ts approve（或 reject）')
 } else if (mode === 'approve' || mode === 'reject') {
   console.log(`═══ S5 ${mode}：新进程 resume 闸① ═══`)
+  await requirePause(mode)
   await printPaused(await graph.invoke(new Command({ resume: mode }), cfg))
   if (mode === 'approve') console.log('\n下一步：node langChain/s5-interrupt.ts confirm')
 } else if (mode === 'confirm') {
   console.log('═══ S5 confirm：resume 闸②，写入完成 ═══')
+  await requirePause(mode)
   const r = await graph.invoke(new Command({ resume: 'confirm' }), cfg)
   console.log(`  ✓ record = ${r.record}`)
   console.log(`  账本：${JSON.stringify(r.ledger)}`)
@@ -111,5 +126,6 @@ if (mode === 'run') {
   // 透传任意 resume 值——拿它试 responseSchema 校验：node langChain/s5-interrupt.ts resume:yolo
   const val = mode.slice('resume:'.length)
   console.log(`═══ S5 resume 原始值「${val}」——responseSchema 校验实验 ═══`)
+  await requirePause(val)
   await printPaused(await graph.invoke(new Command({ resume: val }), cfg))
 } else console.log(`未知模式：${mode}（run | approve | reject | confirm）`)
