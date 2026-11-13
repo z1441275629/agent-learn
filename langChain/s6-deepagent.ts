@@ -4,6 +4,7 @@
 //   node langChain/s6-deepagent.ts                    # 默认演示任务（见 ask 默认问题）
 //   node langChain/s6-deepagent.ts ask "你的问题"
 //   node langChain/s6-deepagent.ts approve            # write_file 审批通过（跨进程 resume，S4/S5 同构）
+//   任意模式加 --fresh 开新会话（换 thread_id）：node langChain/s6-deepagent.ts ask "…" --fresh
 //   删 langChain/.s6-data/ 从零重演（首跑会自动 seed 工作区文件）
 //
 // createDeepAgent 比裸 createAgent 多给你什么（JS 实测面，deepagents@1.16.2）：
@@ -61,7 +62,7 @@ if (!fs.existsSync(`${WS}/notes/product-tips.md`)) {
 
 const agent = createDeepAgent({
   model: llm,
-  name: 's6-support-desk3',
+  name: 's6-support-desk4',
   systemPrompt: '你是产品支持台的 deep agent：按技能流程办事，事实从 notes/ 查证（自己读或派 researcher），重要结论让 critic 复核，写入文件前会有人工审批。',
   // 坑（源码实锤 FilesystemBackend.resolvePath）：virtualMode 默认 false 的 legacy 模式里
   // rootDir 不是沙箱——相对路径圈在 rootDir 下，但【绝对路径原样放行】：
@@ -92,7 +93,10 @@ const agent = createDeepAgent({
   checkpointer: new SqliteSaver(new Database('langChain/.s6-data/checkpoints.db')),
 })
 
-const cfg = { configurable: { thread_id: 's6-deep' } }
+// 会话身份 = thread_id（checkpointer 的 key），agent name 只是标签——改名不开新会话。
+// --fresh = 换新 thread_id 从零开始（比删 .s6-data 干净：不动工作区文件，只换会话）
+const fresh = process.argv.includes('--fresh')
+const cfg = { configurable: { thread_id: fresh ? `s6-deep-${Date.now()}` : 's6-deep' } }
 const mode = process.argv[2] ?? 'ask'
 const defaultQ =
   '按 gpu-triage 技能分诊「显卡风扇异响」：让 researcher 去 notes/ 查证事实，结论经 critic 复核后，把「症状→处置」清单写进 fan-fix.md'
