@@ -144,9 +144,10 @@ const mode = process.argv[2] ?? 'ask'
 // breaker 演示强制新线程：criticCalls 计数随 thread 持久化，旧线程的历史计数会直接顶满熔断阈值
 const fresh = process.argv.includes('--fresh') || mode === 'breaker'
 const cfg = { configurable: { thread_id: fresh ? `s6-deep-${Date.now()}` : 's6-deep' } }
-// 记住本次线程：approve 模式自动跟到正确的会话（否则 breaker 新线程的审批会打到旧线程上）
+// 记住本次线程供 approve 跟随：只在【发起任务】的模式写（ask/breaker）——
+// approve 只读不写，否则它自己的默认线程会先覆盖标记，打到旧会话上（本节踩坑实证）
 fs.mkdirSync('langChain/.s6-data', { recursive: true })
-fs.writeFileSync('langChain/.s6-data/last-thread', String(cfg.configurable.thread_id))
+if (mode !== 'approve') fs.writeFileSync('langChain/.s6-data/last-thread', String(cfg.configurable.thread_id))
 const defaultQ =
   '按 gpu-triage 技能分诊「显卡风扇异响」：让 researcher 去 notes/ 查证事实，结论经 critic 复核后，把「症状→处置」清单写进 fan-fix.md'
 
