@@ -184,8 +184,14 @@ if (mode === 'ask') {
   else console.log(`  ✓ 完成：${String(r.messages.at(-1)?.content).slice(0, 200)}`)
   console.log('  验收：查看 langChain/.s6-data/workspace/fan-fix.md 是否落盘')
 } else if (mode === 'breaker') {
-  // 熔断演示：任务核心主张与知识库故意冲突（notes 说保修换新，任务锁死"自己修"），
-  // critic 对照 notes 永远 FAIL → 第 3 次 critic 调用触发熔断 → 降级交付
+  // 熔断演示（最终状态 2026-11-13，三轮任务演化后停止调参）：
+  // ✓ 已验证：护栏非侵入（critic 调用干净穿过拦截层，计数/透传多次实测）；
+  //   Command/ToolMessage 双形状透传（v1 轮两审校全链路）；grounding 正验收（v2 拒写假话）
+  // ✗ 未验证：熔断分支（used>=2 拒发）未被真实触发——v1 critic 折中放行 / v2 主 agent 拒单 /
+  //   v3 agent 给无出处数据标注来源属性后 critic 放行。诚实 agent+职责 critic 会合作 PASS
+  //   任何「如实标注」的内容，熔断在生产里只拦真病态——演示压不过对齐性，停止对抗
+  // 对照结论（面试点）：手写图的熔断（s3 composite 条件边）拓扑强制、可确定性测试；
+  //   模型循环里的熔断（本中间件）只能挂在执行层，触发依赖真实病态——护栏的宿主决定它的可测性
   console.log('═══ S6 breaker：审校熔断护栏（critic 2 次未过 → 拒发第 3 次 → 降级交付）═══')
   const q =
     // v3 任务（两轮演化的教训）：
