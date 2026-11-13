@@ -494,3 +494,9 @@
 - 根因：LangChain JS/Python 双实现 API 形状不一致（返回包装、命名约定各走各的），而训练语料和二手教程大量混用两种语言；`hits?.items?.map()` 可选链对 undefined 全程容忍——错位不抛错，静默失败比崩更难排查（表象在模型行为上，锅在代码形状上）
 - 修法：跨语言写框架代码先单点验证返回形状——wrapModelCall 里返回假 AIMessage 短路可零 token 窥探 request/runtime/store 的真实形状；对第三方数据的读取少用可选链掩盖错位，宁可裸访问让它早炸
 - 原则：**JS/Python 双实现的框架，落笔前默认两边不一样；「该有数据的字段是 undefined」先查 API 方言再查业务逻辑——静默 undefined 是形状错位的标志物，不是逻辑 bug 的症状**
+
+## 69. 臆断 checkpointer「存引用」：原地改 reducer 会污染历史快照——实验证伪，serde 序列化层写时冻结（2026-11-13，langChain S4）
+- 症状：s1 的计数 reducer 原地改 `prev`（`prev[k]=...; return prev`），我臆断 MemorySaver 存对象引用→历史快照与当前值是同一个对象→改它=篡改所有历史，差点建议为不存在的 bug 返工改 s1
+- 根因：臆断未验证。MemorySaver 的 put()（memory.js:219 源码）不存引用——写入前走 serde.dumpsTyped 序列化成 JSON 字符串，读取时 loadsTyped 反序列化出全新对象；与 SqliteSaver 同一条 serde 通路，区别只在落 Map 还是落盘。「内存 saver=存引用」是把存储介质当成了序列化策略
+- 修法：探针定论（s4-snapshot-probe.ts，零 token 纯函数图）：原地改/纯函数 × MemorySaver/SQLite 四组合各跑 3 步计数再回看 getStateHistory——全部历史完好 [1,1,1,2,2,3]（各时点值），无一污染。写时序列化=每份快照是字节拷贝，原地改的是活的 channel 对象，碰不到已存快照
+- 原则：**「会不会污染历史」这类框架行为先验不可靠的，四组合探针一次定论，别拿臆断当代码依据；但「实验证明安全」≠「契约保证安全」——serde 序列化是实现细节，纯函数 reducer 仍是正确写法（换 saver 实现或语言版本不保证重跑出同样结果）**
