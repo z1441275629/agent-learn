@@ -18,9 +18,9 @@
 // node_modules/@langchain/langgraph-checkpoint-sqlite/node_modules 又出现 12.x 嵌套副本（二进制缺失），
 // 删掉该嵌套目录即可——模块解析会落回根的 13（package.json overrides 已尝试钉，lockfile 旧解析偶尔不听话）
 import 'dotenv/config'
-import { createAgent, createMiddleware, HumanMessage, SystemMessage } from 'langchain'
+import { createAgent, createMiddleware, HumanMessage, SystemMessage, humanInTheLoopMiddleware, tool } from 'langchain'
 import { ChatOpenAI } from '@langchain/openai'
-import { InMemoryStore } from '@langchain/langgraph'
+import { Command, InMemoryStore } from '@langchain/langgraph'
 import { SqliteSaver } from '@langchain/langgraph-checkpoint-sqlite'
 import Database from 'better-sqlite3'
 import * as fs from 'node:fs'
@@ -45,8 +45,10 @@ const store = new InMemoryStore()
 const storeMemoryMiddleware = createMiddleware({
   name: 'store-memory',
   wrapModelCall: async (request: any, handler: any) => {
-    const hits = await request.runtime?.store?.search(['memories', 'user'])
-    const memory = hits?.items?.map((i: any) => JSON.stringify(i.value)).join('；')
+    // 注意：JS 版 store.search 返回【裸数组】[{value,key,namespace,...}]，不是 Python 的 {items:[...]}——
+    // 按 Python 形状写 hits.items 会静默拿 undefined（本次踩坑实证）
+    const hits: any[] = await request.runtime?.store?.search(['memories', 'user'])
+    const memory = hits?.map((i) => JSON.stringify(i.value)).join('；')
     if (!memory) return handler(request) // store 空就原样放行（continue 模式里走这条）
     // 注入到请求副本：模型看得见，但 thread 的 messages 不受污染（对照 pa 记忆注入）
     return handler({
@@ -56,14 +58,39 @@ const storeMemoryMiddleware = createMiddleware({
   },
 })
 
+const humanInTheLoop = humanInTheLoopMiddleware({
+  interruptOn: {
+    update_info: {
+      allowedDecisions: ['approve', 'reject'],
+      description: '更新信息需要人工批准',
+    },
+  },
+})
+
+const update_infoTool = tool(
+  async ({ name, likes }: { name: string; likes: string }) => {
+    const oldInfo = await store.get(['memories', 'user'], 'profile')
+    console.log(`  [update_info] 旧信息 = ${JSON.stringify(oldInfo)}`)
+    await store.put(['memories', 'user'], 'profile', { name , likes })
+    return `已更新信息 = ${JSON.stringify({ name: name || oldInfo?.name, likes: likes || oldInfo?.likes })}`
+  },
+  {
+    name: 'update_info',
+    description: '更新信息，需要人工批准',
+    schema: z.object({ name: z.string().describe('用户名').default(''), likes: z.string().describe('喜好').default('') }),
+  },
+)
+
 // 每个模式各自 buildAgent()：新实例 + 同一 DB 文件——「进程重启」的等价物，代码里不共享任何内存状态
 const buildAgent = () =>
   createAgent({
+    name: 's4-persistence',
     model: llm,
     systemPrompt: '你是个简洁的助手，回答保持一两句话。',
     checkpointer,
     store,
-    middleware: [storeMemoryMiddleware],
+    tools: [update_infoTool],
+    middleware: [storeMemoryMiddleware, humanInTheLoop],
   })
 
 const ask = async (agent: any, threadId: string, text: string) => {
@@ -132,4 +159,52 @@ if (mode === 'fork') {
     await ask(agent, 's4-demo', '我最喜欢什么语言？')
     console.log('\n[结论] 同一个分叉点长出两条独立时间线——原线不动，分叉线从过去重新展开（时间旅行）')
   }
+}
+
+// 回滚
+if (mode === 'reset') {
+  console.log('═══ S5 reset：getStateHistory + checkpoint_id 分叉 ═══')
+  const agent = buildAgent()
+
+  // 历史 checkpoint 列表：每个 superstep 一条（执行层快照的粒度实证）
+  const snapshots: any[] = []
+  for await (const snap of agent.getStateHistory({ configurable: { thread_id: 's4-fork' } })) snapshots.push(snap)
+  console.log(`[history] s4-fork 共 ${snapshots.length} 个 checkpoint（新→旧）：`)
+  for (const s of snapshots)
+    console.log(`   · msgs=${s.values?.messages?.length ?? 0} next=${JSON.stringify(s.next)} ckpt=${String(s.config?.configurable?.checkpoint_id).slice(0, 8)}`)
+
+  // 选「第一轮对话后」的快照（messages 恰好 2 条：一问一答）作为分叉点
+  const resetPoint = snapshots.find((s: any) => s.values?.messages?.length === 2)
+  if (!resetPoint) {
+    console.log('[reset] 找不到第一轮后的快照——先跑 fork 建历史')
+  } else {
+    const ckptId = resetPoint.config.configurable.checkpoint_id
+    console.log(`\n[reset] 从 ckpt=${String(ckptId).slice(0, 8)}（第一轮后）回滚`)
+    const r = await agent.invoke(
+      { messages: [new HumanMessage('其实我改主意了，我现在最喜欢 JavaScript。')] },
+      { configurable: { thread_id: 's4-fork', checkpoint_id: ckptId } },
+    )
+    console.log(`  [s4-fork 从回滚点答] ${String(r.messages.at(-1)?.content).slice(0, 80)}`)
+    // 回滚后记 JavaScript
+    await ask(agent, 's4-fork', '我最喜欢什么语言？')
+  }
+}
+
+// 审批中断
+if (mode === 'interrupt') {
+  console.log('═══ S6 interrupt：HITL 审批中断 ═══')
+  const agent = buildAgent()
+
+  await ask(agent, 's4-interrupt', '帮我更新信息：我叫小红，最喜欢 Python。')
+}
+
+// 审批
+if (mode === 'approve') {
+  console.log('═══ S7 approve：HITL 审批通过 ═══')
+  const agent = buildAgent()
+  await agent.invoke(
+    new Command({ resume: { decisions: [{ type: 'approve', }] } }),
+    { configurable: { thread_id: 's4-interrupt' } },
+  )
+  await ask(agent, 's4-interrupt', '我是谁？我最喜欢什么语言？')
 }

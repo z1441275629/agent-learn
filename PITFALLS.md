@@ -488,3 +488,9 @@
 - 根因：条件边/熔断给的是**确定性拓扑**，但路由和审校是图里的 LLM 判定节点——非确定性的注入口。判定节点用默认参数（温度默认、思考未配）时，flash 级模型的分类和核对输出都会抖；拓扑的确定性只到判定节点的输出为止，判定一漂整条路径跟着漂（#61「判官思考档与判断类型错配」在图编排层的复现，换层不换病灶）
 - 修法：判定节点按判断类型配参数并单独建实例——路由=直觉判断（单发分类）：温度 0 + 思考关；审校=逐条核对型：温度 0 + 思考低档（flash 判官关思考产噪声判定）。非标参数经 modelKwargs 直通（对照 pa thinkingParams() 的 openapi 形态）。产出节点（写手/研究员/规划器）保持默认参数——产出要多样性，判定要稳定性，两类节点参数策略相反
 - 原则：**确定性编排的「确定」止于第一个未锁参数的判定节点——图管路径形状，判定节点的参数管路径本身；产出场温度放开、判定场温度锁死+思考档按判断类型选，这是同一张图里两套模型配置的原因**
+
+## 68. LangChain JS/Python API 方言差异：照 Python 形状写 JS，静默拿 undefined 不报错（2026-11-13，langChain S4）
+- 症状：wrapModelCall 里 `store.search(namespace)` 照 Python 文档取 `hits.items`——undefined，记忆注入被静默跳过，表象是「模型不知道长期记忆」；实际 JS 返回裸数组 `[{value,key,namespace,...}]`。同族差异：Python 的 `SqliteSaver.from_filename()` 在 JS 叫 `fromConnString()`；runtime.store 实际是 AsyncBatchedStore 包装
+- 根因：LangChain JS/Python 双实现 API 形状不一致（返回包装、命名约定各走各的），而训练语料和二手教程大量混用两种语言；`hits?.items?.map()` 可选链对 undefined 全程容忍——错位不抛错，静默失败比崩更难排查（表象在模型行为上，锅在代码形状上）
+- 修法：跨语言写框架代码先单点验证返回形状——wrapModelCall 里返回假 AIMessage 短路可零 token 窥探 request/runtime/store 的真实形状；对第三方数据的读取少用可选链掩盖错位，宁可裸访问让它早炸
+- 原则：**JS/Python 双实现的框架，落笔前默认两边不一样；「该有数据的字段是 undefined」先查 API 方言再查业务逻辑——静默 undefined 是形状错位的标志物，不是逻辑 bug 的症状**
