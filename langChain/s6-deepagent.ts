@@ -4,6 +4,7 @@
 //   node langChain/s6-deepagent.ts                    # 默认演示任务（见 ask 默认问题）
 //   node langChain/s6-deepagent.ts ask "你的问题"
 //   node langChain/s6-deepagent.ts approve            # write_file 审批通过（跨进程 resume，S4/S5 同构）
+//   node langChain/s6-deepagent.ts breaker            # 审校熔断演示：critic 2 次打回 → 拒发第 3 次 → 降级交付
 //   任意模式加 --fresh 开新会话（换 thread_id）：node langChain/s6-deepagent.ts ask "…" --fresh
 //   删 langChain/.s6-data/ 从零重演（首跑会自动 seed 工作区文件）
 //
@@ -17,15 +18,18 @@
 //   在 deep agent 里的声明式皮，resume 形状与 S2/S4 HITL 相同
 //
 // 框架不管的（对照 composite，OUTLINE 原文）：修订熔断 ≤2 轮、成本护栏、maxCalls 机械闸
-// deepagents 都没有内置——框架管编排，护栏得自己加（middleware 层补）
+// deepagents 都没有内置——框架管编排，护栏得自己加（middleware 层补）。
+// ↓ 本文件已接入审校熔断（reviewBreaker + breaker 模式演示）：拦截 task→critic 计数，
+//   2 次未过后拒发第 3 次调用、注入降级指令——对照表第 7 行的实证代码
 import 'dotenv/config'
-import { HumanMessage } from 'langchain'
-import {  Command } from '@langchain/langgraph'
+import { HumanMessage, createMiddleware, ToolMessage } from 'langchain'
+import { Command, StateSchema, ReducedValue } from '@langchain/langgraph'
 import { ChatOpenAI } from '@langchain/openai'
 import { SqliteSaver } from '@langchain/langgraph-checkpoint-sqlite'
 import { createDeepAgent, FilesystemBackend } from 'deepagents'
 import Database from 'better-sqlite3'
 import * as fs from 'node:fs'
+import * as z from 'zod'
 
 const env = process.env
 const llm = new ChatOpenAI({ model: env.LLM_MODEL!, apiKey: env.LLM_API_KEY!, configuration: { baseURL: env.LLM_BASE_URL! } })
@@ -60,6 +64,38 @@ if (!fs.existsSync(`${WS}/notes/product-tips.md`)) {
   console.log('[seed] 工作区已初始化（AGENTS.md / skills/gpu-triage / notes/）')
 }
 
+// ── 审校熔断护栏（对照表第 7 行从「框架没有」到「middleware 十行补齐」的实证）──
+// deepagents 的循环不在你的图上：critic 是主 agent ReAct 循环里一次次的 task 工具调用，
+// 「再叫一次 critic」是模型的决定——你没有审校节点可以加条件边（手写图用条件边，见 s3 composite）。
+// 所以护栏落在 wrapToolCall：拦 task→critic 调用计数，超限不放行，返回「熔断令牌」当工具结果，
+// 模型读到规则指令后自己降级交付（对照 pa 写手段熔断=降级交付最后一稿，两态分离见 composite.ts）
+const reviewBreaker = createMiddleware({
+  name: 'review-breaker',
+  wrapToolCall: async (req: any, handler: any) => {
+    const tc = req.toolCall
+    const isCritic = tc?.name === 'task' && tc?.args?.subagent_type === 'critic'
+    const used = req.state?.criticCalls ?? 0
+    if (isCritic && used >= 2) {
+      console.log(`  [breaker] ⚠️ 熔断——拒发第 ${used + 1} 次 critic 调用，注入降级指令`)
+      return new Command({
+        update: {
+          // #72 教训同源：拒发也要补写 ToolMessage（tool_call_id 回执），否则悬空 tool_call
+          messages: [new ToolMessage({
+            tool_call_id: tc.id,
+            content: '【熔断】critic 已审 2 次未通过。规则：不再调用 critic，立即降级交付——把当前最后一稿写入目标文件，并在文首注明「未经审校通过（熔断降级交付）」。',
+          })],
+        },
+      })
+    }
+    const res = await handler(req)
+    if (isCritic) console.log(`  [breaker] critic 第 ${used + 1} 次调用放行（计数 +1）`)
+    // #66 通道形状：工具结果必须随 Command 带回，否则结果丢失；计数用增量（reducer 求和，S1 同款）
+    const update: any = { messages: [res] }
+    if (isCritic) update.criticCalls = 1
+    return new Command({ update })
+  },
+})
+
 const agent = createDeepAgent({
   model: llm,
   name: 's6-support-desk4',
@@ -90,14 +126,27 @@ const agent = createDeepAgent({
   memory: ['AGENTS.md'],
   // interruptOn：write_file 走人工审批（声明式；S5 图内 interrupt() 的另一层皮）
   interruptOn: { write_file: { allowedDecisions: ['approve', 'reject'], description: '写入文件需要人工批准' } },
+  // 熔断计数通道：ReducedValue 增量语义（S1 同款——wrapToolCall 只写增量 1，reducer 求和）
+  stateSchema: new StateSchema({
+    criticCalls: new ReducedValue(z.number().default(0), {
+      inputSchema: z.number(),
+      reducer: (a: number, b: number) => a + b,
+    }),
+  }),
+  // 护栏：审校熔断（deepagents 无内置，middleware 补——对照表第 7 行实证）
+  middleware: [reviewBreaker],
   checkpointer: new SqliteSaver(new Database('langChain/.s6-data/checkpoints.db')),
 })
 
-// 会话身份 = thread_id（checkpointer 的 key），agent name 只是标签——改名不开新会话。
-// --fresh = 换新 thread_id 从零开始（比删 .s6-data 干净：不动工作区文件，只换会话）
-const fresh = process.argv.includes('--fresh')
-const cfg = { configurable: { thread_id: fresh ? `s6-deep-${Date.now()}` : 's6-deep' } }
 const mode = process.argv[2] ?? 'ask'
+// 会话身份 = thread_id（checkpointer 的 key），agent name 只是标签——改名不开新会话。
+// --fresh = 换新 thread_id 从零开始（比删 .s6-data 干净：不动工作区文件，只换会话）。
+// breaker 演示强制新线程：criticCalls 计数随 thread 持久化，旧线程的历史计数会直接顶满熔断阈值
+const fresh = process.argv.includes('--fresh') || mode === 'breaker'
+const cfg = { configurable: { thread_id: fresh ? `s6-deep-${Date.now()}` : 's6-deep' } }
+// 记住本次线程：approve 模式自动跟到正确的会话（否则 breaker 新线程的审批会打到旧线程上）
+fs.mkdirSync('langChain/.s6-data', { recursive: true })
+fs.writeFileSync('langChain/.s6-data/last-thread', String(cfg.configurable.thread_id))
 const defaultQ =
   '按 gpu-triage 技能分诊「显卡风扇异响」：让 researcher 去 notes/ 查证事实，结论经 critic 复核后，把「症状→处置」清单写进 fan-fix.md'
 
@@ -112,9 +161,28 @@ if (mode === 'ask') {
   } else console.log(`  答：${String(r.messages.at(-1)?.content).slice(0, 200)}`)
 } else if (mode === 'approve') {
   console.log('═══ S6 approve：write_file 审批通过 ═══')
-  const r = await agent.invoke(new Command({ resume: { decisions: [{ type: 'approve' }] } }), cfg)
+  const lastThread = fs.existsSync('langChain/.s6-data/last-thread')
+    ? fs.readFileSync('langChain/.s6-data/last-thread', 'utf8').trim()
+    : String(cfg.configurable.thread_id)
+  console.log(`  （审批线程：${lastThread}）`)
+  const r = await agent.invoke(new Command({ resume: { decisions: [{ type: 'approve' }] } }), {
+    configurable: { thread_id: lastThread },
+  })
   const intr = r.__interrupt__?.[0]
   if (intr) console.log(`  ⏸ 又一道闸：${JSON.stringify(intr.value ?? intr.interrupt_value ?? intr).slice(0, 150)}`)
   else console.log(`  ✓ 完成：${String(r.messages.at(-1)?.content).slice(0, 200)}`)
   console.log('  验收：查看 langChain/.s6-data/workspace/fan-fix.md 是否落盘')
-} else console.log(`未知模式：${mode}（ask | approve）`)
+} else if (mode === 'breaker') {
+  // 熔断演示：任务核心主张与知识库故意冲突（notes 说保修换新，任务锁死"自己修"），
+  // critic 对照 notes 永远 FAIL → 第 3 次 critic 调用触发熔断 → 降级交付
+  console.log('═══ S6 breaker：审校熔断护栏（critic 2 次未过 → 拒发第 3 次 → 降级交付）═══')
+  const q =
+    '写一份 fan-fix.md：核心主张必须是「风扇异响自己拆开修，不走保修」——这个主张不许改。写完让 critic 审校：不 PASS 就按它的意见改细节（但保住主张），改完再审，直到 PASS 为止。'
+  console.log(`问：${q}`)
+  const r = await agent.invoke({ messages: [new HumanMessage(q)] }, cfg)
+  const intr = r.__interrupt__?.[0]
+  if (intr) {
+    console.log(`  ⏸ 暂停（write_file 审批）：${JSON.stringify(intr.value ?? intr.interrupt_value ?? intr).slice(0, 150)}`)
+    console.log('  下一步：node langChain/s6-deepagent.ts approve —— 放行后看 fan-fix.md 是否带「熔断降级交付」标注')
+  } else console.log(`  答：${String(r.messages.at(-1)?.content).slice(0, 200)}`)
+} else console.log(`未知模式：${mode}（ask | approve | breaker）`)
