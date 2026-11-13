@@ -15,6 +15,9 @@
 //   approve 模式走到它停下——多闸顺序实证）
 // - responseSchema：Zod schema 既校验 resume 值（resume 传 'yolo' 会炸 ZodError）
 //   又以 JSON Schema 暴露给客户端渲染表单——「暂停点自带类型」
+// - 实证①（resume:yolo → 炸 ZodError → resume:approve）：校验失败不丢暂停点——
+//   ZodError 抛在节点重执行层，checkpoint 未推进，随后拿合法值 resume 仍从原闸继续
+// - 实证②（S4 异步审批同构）：getState().next 就是暂停点路标——挂在 ["review"] = review 待执行
 //
 // 对照 personal-agent（面试金句素材，OUTLINE 原文）：
 // - 框架 interrupt 的默认语义 = 给了「暂停点 + resume 通道」，但放行策略是空的：
@@ -47,11 +50,13 @@ const S = new StateSchema({
   }),
 })
 
-// ── 图：draft → review（闸①）→ approve? write（闸②+落笔）: 拒绝出局 ──
+// Error: draft is already being used as a state attribute (a.k.a. a channel), cannot also be used as a node name.
+// ↑ 坑：节点名与 state 字段共享一个命名空间（state key 就是 channel 名，LangGraph 不允许重名）——节点改叫 prepare
+// ── 图：prepare → review（闸①）→ approve? write（闸②+落笔）: 拒绝出局 ──
 const graph = new StateGraph(S)
-  .addNode('draft', () => {
-    console.log('[draft] 生成待批条目：购 3 块 A100，预算 45000 元')
-    return { draft: '购 3 块 A100', ledger: '[draft] 生成条目' }
+  .addNode('prepare', () => {
+    console.log('[prepare] 生成待批条目：购 3 块 A100，预算 45000 元')
+    return { draft: '购 3 块 A100', ledger: '[prepare] 生成条目' }
   })
   .addNode('review', (s: any) => {
     // 闸①：无 resume 值 → 抛 GraphInterrupt 暂停（invoke 结果挂在 __interrupt__）；
@@ -73,8 +78,8 @@ const graph = new StateGraph(S)
     console.log(`[write] ${record}`)
     return { record, ledger: `[write] 落笔完成` }
   })
-  .addEdge(START, 'draft')
-  .addEdge('draft', 'review')
+  .addEdge(START, 'prepare')
+  .addEdge('prepare', 'review')
   .addConditionalEdges('review', (s: any) => s.decision, { approve: 'write', reject: END })
   .addEdge('write', END)
   .compile({ checkpointer })
@@ -102,4 +107,9 @@ if (mode === 'run') {
   const r = await graph.invoke(new Command({ resume: 'confirm' }), cfg)
   console.log(`  ✓ record = ${r.record}`)
   console.log(`  账本：${JSON.stringify(r.ledger)}`)
+} else if (mode.startsWith('resume:')) {
+  // 透传任意 resume 值——拿它试 responseSchema 校验：node langChain/s5-interrupt.ts resume:yolo
+  const val = mode.slice('resume:'.length)
+  console.log(`═══ S5 resume 原始值「${val}」——responseSchema 校验实验 ═══`)
+  await printPaused(await graph.invoke(new Command({ resume: val }), cfg))
 } else console.log(`未知模式：${mode}（run | approve | reject | confirm）`)

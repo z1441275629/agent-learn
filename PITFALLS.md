@@ -500,3 +500,9 @@
 - 根因：臆断未验证。MemorySaver 的 put()（memory.js:219 源码）不存引用——写入前走 serde.dumpsTyped 序列化成 JSON 字符串，读取时 loadsTyped 反序列化出全新对象；与 SqliteSaver 同一条 serde 通路，区别只在落 Map 还是落盘。「内存 saver=存引用」是把存储介质当成了序列化策略
 - 修法：探针定论（s4-snapshot-probe.ts，零 token 纯函数图）：原地改/纯函数 × MemorySaver/SQLite 四组合各跑 3 步计数再回看 getStateHistory——全部历史完好 [1,1,1,2,2,3]（各时点值），无一污染。写时序列化=每份快照是字节拷贝，原地改的是活的 channel 对象，碰不到已存快照
 - 原则：**「会不会污染历史」这类框架行为先验不可靠的，四组合探针一次定论，别拿臆断当代码依据；但「实验证明安全」≠「契约保证安全」——serde 序列化是实现细节，纯函数 reducer 仍是正确写法（换 saver 实现或语言版本不保证重跑出同样结果）**
+
+## 70. StateGraph 节点名与 state 字段共享命名空间：addNode 撞名当场炸（2026-11-13，langChain S5）
+- 症状：`addNode('draft')` 抛 "draft is already being used as a state attribute (a.k.a. a channel), cannot also be used as a node name"——节点名和 state 字段名想当然取了同一个词（节点产出同名字段是最自然的命名冲动）
+- 根因：图内部节点和 channel 共用一套字符串标识（路由表、`getState().next`、conditional edges 的目标都在一个命名空间里），重名无法消歧——框架选择 fail-fast 拒绝
+- 修法：命名习惯解耦——节点名动词化（prepare/review/write），state 字段名词化（draft/decision/record）；撞了就改节点名，state 字段名对外是 API 不宜动
+- 原则：**fail-fast 报错是好报错：命名冲突当场炸、信息里直接给出两个角色，没有静默路由错乱；但它也在提醒——图的两套名词（节点=过程、channel=数据）设计时就该分开命名，撞名是设计气味不是运气问题**
