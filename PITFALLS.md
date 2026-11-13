@@ -518,3 +518,9 @@
 - 根因：①JS 方言——Python create_agent 返回编译图可直接当节点，JS 返回包装类 ReactAgent，编译图在 `.graph` 属性（#68 家族）；②动态跳转的静态护栏——节点 return Command goto 必须在 addNode 第三参 `{ ends: [可能目标] }` 声明白名单（与 middleware jumpTo 的 canJumpTo 同一护栏家族）；③#66「工具 return Command 不带 messages = 工具结果丢失」的放大版——丢的不只是工具结果，是接手 agent 的输入完整性；④交棒消息没有对接手方下指令——ToolMessage 写成给发球方的确认（"已交棒给XX"），接手模型看到的话题惯性（上一轮正文）压过角色设定
 - 修法：①addNode 用 `tech.graph`；②`addNode('triage', fn, { ends: ['tech', 'billing'] })`；③④transfer 工具完整形态：`new Command({ goto: 目标, update: { messages: [new ToolMessage({ tool_call_id: runtime.toolCallId, content: 面向接手方的角色指令 })] } })`——toolCallId 从工具第二参数 runtime（ToolRuntime 注入）拿；content 要写「你现在是XX，先找尚未处理的问题，别重复已答」
 - 原则：**handoff 的交棒消息是协议的一部分，不是日志——写给谁看决定 handoff 质量：写给发球方=确认收条（接手方拿不到角色边界），写给接手方=角色指令+任务状态；跨 agent 传递的每条消息都要问「下读到它的人是谁」。goto 只搬控制权，update 才搬干净线程**
+
+## 73. deepagents FilesystemBackend 的 rootDir 不是沙箱：virtualMode 默认 false，绝对路径原样放行（2026-11-13，langChain S6）
+- 症状（两表象一根因）：① deep agent 的 ls 列出来的是宿主机 E 盘内容而非工作区；② createDeepAgent 传 skills: ['/skills/'] 报 "No files found in '/skills'"——技能没注册成 skill，agent 只能靠 glob 把 SKILL.md 当普通文件绕路读（验收假阳性：任务完成≠技能机制走通）
+- 根因（src 源码实锤 resolvePath）：virtualMode 默认 false 的 legacy 模式下，相对路径 resolve 到 rootDir 下，但 `path.isAbsolute(key) ? 原样返回 key`——绝对路径不圈禁。①模型爱猜绝对路径（E:/...）直接穿透；②Windows 上 '/skills' 是"当前盘根相对"= 绝对路径 → 解析成 E:\skills → 不存在。文档示例 skills:['/skills/'] 与 FilesystemBackend 同框出现时隐含虚拟路径语义，没写明
+- 修法：`new FilesystemBackend({ rootDir, virtualMode: true })`——传入路径一律视为 rootDir 下的虚拟绝对路径 + 强制圈禁（`..` 穿越/出界抛 "outside root directory"）。安全要求高的场景文档原话：要么 sandbox 要么给文件操作挂 HITL 审批（本例同时挂了 interruptOn write_file）
+- 原则：**backend 的"根目录"参数先问是不是沙箱——默认实现对绝对路径的放行 = agent 可读宿主机任意路径；带 '/' 的配置路径在 Windows 上天生是绝对路径，跨平台配虚拟路径必须显式开虚拟模式；另外「任务跑通」≠「机制走通」——验收要认日志里的机制证据（技能注册）而不是只看产物**

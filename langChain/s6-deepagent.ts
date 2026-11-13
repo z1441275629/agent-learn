@@ -18,7 +18,8 @@
 // 框架不管的（对照 composite，OUTLINE 原文）：修订熔断 ≤2 轮、成本护栏、maxCalls 机械闸
 // deepagents 都没有内置——框架管编排，护栏得自己加（middleware 层补）
 import 'dotenv/config'
-import { HumanMessage, Command } from 'langchain'
+import { HumanMessage } from 'langchain'
+import {  Command } from '@langchain/langgraph'
 import { ChatOpenAI } from '@langchain/openai'
 import { SqliteSaver } from '@langchain/langgraph-checkpoint-sqlite'
 import { createDeepAgent, FilesystemBackend } from 'deepagents'
@@ -60,9 +61,16 @@ if (!fs.existsSync(`${WS}/notes/product-tips.md`)) {
 
 const agent = createDeepAgent({
   model: llm,
-  name: 's6-support-desk',
+  name: 's6-support-desk3',
   systemPrompt: '你是产品支持台的 deep agent：按技能流程办事，事实从 notes/ 查证（自己读或派 researcher），重要结论让 critic 复核，写入文件前会有人工审批。',
-  backend: new FilesystemBackend({ rootDir: WS }),
+  // 坑（源码实锤 FilesystemBackend.resolvePath）：virtualMode 默认 false 的 legacy 模式里
+  // rootDir 不是沙箱——相对路径圈在 rootDir 下，但【绝对路径原样放行】：
+  //   ① 模型 ls 猜绝对路径（E:/...）→ 直接列了宿主机 E 盘
+  //   ② skills: ['/skills/'] 在 Windows 是"绝对路径"（盘根相对）→ 解析成 E:\skills → No files found，
+  //      技能没注册成 skill，agent 只能靠 glob 把 SKILL.md 当普通文件读
+  // virtualMode: true = 虚拟路径模式：传入路径一律视为 rootDir 下的虚拟绝对路径 + 强制圈禁
+  // （.. 穿越/出界抛错）——文档示例 skills:['/skills/'] 暗含的就是这个模式
+  backend: new FilesystemBackend({ rootDir: WS, virtualMode: true }),
   // 验收：2 个自定义 subagent
   subagents: [
     {
