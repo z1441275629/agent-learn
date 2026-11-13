@@ -4,12 +4,13 @@
 //
 // 无头语义（没人守着界面，三条都从 chat 路由的对等语义推下来）：
 //   - 确认门：allow 清单外的 write 工具当场拒绝（SSE 门是「没人应答按拒绝」，无头门不白等超时）
-//   - 推送：任务没人盯着，成功与失败都要通知到人（toast），产物进会话（收件箱）
+//   - 推送：任务没人盯着，成功与失败都要通知到人（toast + 配 pushFile 时 Server酱全文进微信），产物进会话（收件箱）
 //   - 成本护栏：plan/composite/normal 各自的内部护栏照常生效（CEILING/maxCalls/熔断），这里不再加一层
 import { execFile } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { runToolLoop, type ToolDef, type ToolTrace } from '../core/agent.ts'
 import { runPlan } from '../core/plan.ts'
 import { planTask } from '../core/planner.ts'
@@ -87,6 +88,20 @@ export function notifyWindows(title: string, body: string): void {
   } catch {
     /* 通知挂了就挂了——任务结果在收件箱会话里，丢的只是一声铃 */
   }
+}
+
+// ---------- Server酱推送（fire-and-forget，同 toast 纪律：通知是增强不是依赖） ----------
+// 起子进程跑 scripts/push-review.mjs：脚本自包含（自己读 .env 拿 SCT_SENDKEY、自己定位仓库根解析相对路径），
+// 这里只负责「任务跑完推哪个文件」——pushFile 支持 {{date}} 占位（当天 YYYY-MM-DD，按任务计划时刻的日期）。
+function pushServerChan(job: JobDef): void {
+  if (!job.pushFile) return
+  const file = job.pushFile.replace(/\{\{date\}\}/g, slotToday(job, new Date()).slice(0, 10))
+  const script = fileURLToPath(new URL('../scripts/push-review.mjs', import.meta.url))
+  execFile(process.execPath, [script, '--file', file], { timeout: 20_000, windowsHide: true }, (err, stdout, stderr) => {
+    // 成败都只进日志：缺 key 时脚本自己是 no-op；收件箱会话才是任务主通道
+    if (err) console.warn(`[pa] Server酱推送失败（忽略）：${err?.message}`)
+    for (const line of `${stdout ?? ''}\n${stderr ?? ''}`.split(/\r?\n/).filter(Boolean)) console.log(`  ${line}`)
+  })
 }
 
 // ---------- 无头执行：一次任务 = 一条会话（收件箱） ----------
@@ -258,6 +273,7 @@ export async function runJobNow(
     }
     notifyWindows(`定时任务：${job.name}`, `${state.lastStatus} · 产出已在会话「${deriveTitle(userText, false)}」`)
     console.log(`[pa] 定时任务「${job.name}」${trigger} 完成 · ${state.lastStatus} · session ${sid}`)
+    pushServerChan(job) // 配了 pushFile 才推（复盘全文进微信）；推送挂了不影响已落盘的状态/会话
     persistJobState(deps, job.id, state)
     return state
   } catch (err: any) {

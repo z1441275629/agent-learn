@@ -36,7 +36,7 @@ try {
   body = fs.readFileSync(absFile, 'utf8').trim()
 } catch (err) {
   console.error(`[push-review] 读不到文件：${relFile}（${err?.code ?? err?.message}）`)
-  process.exit(1)
+  process.exit(1) // 此时还没开任何网络句柄，硬 exit 安全且必须——阻止空 body 继续往下跑
 }
 if (!body) {
   console.error(`[push-review] 文件是空的：${relFile}`)
@@ -84,6 +84,8 @@ if (keys.length === 0) {
 const maskKey = (k) => (k.length > 6 ? `${k.slice(0, 6)}…` : k)
 
 // ---------- 发送（逐 key 并行独立，失败不连坐） ----------
+// 注意收尾一律用 process.exitCode 而不是 process.exit()：fetch/undici 的句柄还在异步关闭中，
+// Windows 上立刻 exit 会撞 libuv 断言（实测 2026-11-13：消息已发出但进程崩在 async.c——消息成了日志却是失败）
 async function sendToOne(key) {
   try {
     const res = await fetch(`https://sctapi.ftqq.com/${key}.send`, {
@@ -105,4 +107,4 @@ console.log(
   `[push-review] 「${title}」${Buffer.byteLength(body, 'utf8')}B · sent ${results.length - failed.length}/${results.length}` +
     (failed.length ? '（有失败，见上）' : ''),
 )
-process.exit(failed.length === results.length ? 1 : 0)
+process.exitCode = failed.length === results.length ? 1 : 0

@@ -23,6 +23,11 @@ export interface JobDef {
    * *直接拒绝*（fail closed，拒绝会记进会话让人看到），而不是挂 2 分钟等超时
    */
   allow: string[]
+  /**
+   * 任务成功跑完后把这个文件推到微信（Server酱 全文，scripts/push-review.mjs）。相对路径按仓库根解析；
+   * '{{date}}' 替换成当天 YYYY-MM-DD（复盘文件名跟日期走）。缺省不推；.env 缺 SCT_SENDKEY 时脚本静默 no-op
+   */
+  pushFile?: string
 }
 
 /** 任务运行状态（data/jobs-state.json）：防重启重触发 + 补跑判定 + 面板展示 */
@@ -126,6 +131,7 @@ export function normalizeJobDef(raw: any, warn: (msg: string) => void): JobDef |
     ...(days && days.length ? { days } : {}),
     text: typeof raw.text === 'string' ? raw.text : '',
     allow: Array.isArray(raw.allow) ? raw.allow.filter((a: any) => typeof a === 'string') : [],
+    ...(typeof raw.pushFile === 'string' && raw.pushFile.trim() ? { pushFile: raw.pushFile.trim() } : {}),
   }
 }
 
