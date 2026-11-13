@@ -68,3 +68,5 @@ tmp/
 # langChain S4 运行数据（checkpointer 的 SQLite 库——含对话内容，不入库；重置=删目录）
 langChain/.s4-data/
 langChain/.s5-data/
+# langChain S6 运行数据（deep agent 工作区+checkpoint，含生成内容）
+langChain/.s6-data/
