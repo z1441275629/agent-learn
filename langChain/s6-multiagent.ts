@@ -160,7 +160,10 @@ else if (mode === 'handoff') {
     console.log(`   · ${m.getType?.() ?? '?'}${tc}: ${JSON.stringify(m.content).slice(0, 80)}`)
   }
   console.log(
-    '[要点] 交棒后对话在专家手里，用户直接被专家答复——对照 composite：那里跳转由条件边（代码）决定，这里由模型调工具（判断）触发',
+    '[要点] 交棒后对话在专家手里，专家直接对用户说话——对照 composite：那里跳转由条件边（代码）决定，这里由模型调工具（判断）触发',
+  )
+  console.log(
+    '[要点] handoff 没有收口人：billing 答完发票才交棒，tech 答键盘——两个答案都在消息流里，最后一条 ≠ 最终答案（subagents/supervisor 模式的最后一条才是：有主 agent/主管收口）。消费端三选一：流式全量回放（S8 streamMode 正好接上，生产客服转人工的做法）/ 最后一个 agent 的 systemPrompt 加收尾职责 / 图尾加收口节点',
   )
 }
 
