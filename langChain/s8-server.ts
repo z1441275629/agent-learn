@@ -52,8 +52,11 @@ const shouldUseTools = (s: typeof MessagesAnnotation.State) => {
 const graph = new StateGraph(MessagesAnnotation)
   .addNode('respond', async (s: typeof MessagesAnnotation.State) => ({ messages: [await llm.bindTools([stationInfo]).invoke(s.messages)] }))
   .addNode('use_tools', async (s: typeof MessagesAnnotation.State) => {
-    const results = s.messages.at(-1)!.tool_calls!.map(
-      (tc) => new ToolMessage({ tool_call_id: tc.id!, name: tc.name, content: String(stationInfo.invoke(tc.args)) }),
+    // 坑（#75）：工具 invoke 是异步契约（Runnable），String(promise) 静默变 "[object Promise]"
+    const results = await Promise.all(
+      ((s.messages.at(-1) as AIMessage).tool_calls ?? []).map(
+        async (tc) => new ToolMessage({ tool_call_id: tc.id!, name: tc.name, content: String(await stationInfo.invoke(tc.args as { station: string })) }),
+      ),
     )
     await dispatchCustomEvent('tool-done', { tools: results.map((r) => r.name) }) // custom 通道演示：旁路事件不进 state
     return { messages: results }

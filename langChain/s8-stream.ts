@@ -95,8 +95,13 @@ const shouldUseTools = (s: typeof MessagesAnnotation.State) => {
 const graphB = new StateGraph(MessagesAnnotation)
   .addNode('respond', async (s: typeof MessagesAnnotation.State) => ({ messages: [await llm.bindTools([stationInfo]).invoke(s.messages)] }))
   .addNode('use_tools', async (s: typeof MessagesAnnotation.State) => ({
-    messages: s.messages.at(-1)!.tool_calls!.map(
-      (tc) => new ToolMessage({ tool_call_id: tc.id!, content: String(stationInfo.invoke(tc.args)) }),
+    // 坑（实测 #75）：langchain 工具是 Runnable，invoke 契约是异步——底层函数哪怕是同步的也返回
+    // Promise。String(promise) 不抛错，静默产出 "[object Promise]" 喂给模型（模型重试三次后道歉
+    // 说工具坏了——它没说错）。手动执行框架工具 = 异步 RPC，必须 await；并发多工具调用包 Promise.all
+    messages: await Promise.all(
+      ((s.messages.at(-1) as AIMessage).tool_calls ?? []).map(
+        async (tc) => new ToolMessage({ tool_call_id: tc.id!, name: tc.name, content: String(await stationInfo.invoke(tc.args as { station: string })) }),
+      ),
     ),
   }))
   .addEdge(START, 'respond')

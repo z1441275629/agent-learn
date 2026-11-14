@@ -530,3 +530,9 @@
 - 根因：①langsmith 0.9 的 evaluators 契约是裸函数 (args:{run,example,outputs,referenceOutputs})=>{key,score}，对象形态走废弃 RunEvaluator 分支（找 .evaluateRun 方法）；②③#68 方言家族——跨语言方法名不同义（index≠Collection）+ 创建语义藏在名字里；④参数名换代（outputs→referenceOutputs）之后整个 props 重载也被弃（→ uploads 数组，字段还换 snake_case reference_outputs）
 - 修法：①评估器写裸函数，target 返回值在 args.outputs、参考答案在 args.referenceOutputs；②③JS 用 fromExistingCollection，且**先 ingest 再查**——怀疑空结果先 col.count() 对账（pa vector-lane 的对账自愈就是防这个的）；④createExamples(ExampleCreate[])，每例自带 dataset_id
 - 原则：**eval/检索链路的「静默空」比报错难排查一个量级（空结果=0 分实验照常跑完，分数才会露馅）——数据面操作前先对账条数；JS/Python 双实现框架的静态方法名不可迁移，落笔前查 d.ts**
+
+## 75. 手动执行 langchain 工具拿到 "[object Promise]"：Runnable 的 invoke 是异步契约，String() 强转不报错（2026-11-13，langChain S8）
+- 症状：手写 use_tools 节点里执行工具 `String(stationInfo.invoke(tc.args))` 塞进 ToolMessage——模型收到的工具结果永远是 "[object Promise]"。模型端表现：重试同一工具三次（结果都一样）、最后道歉说"station_info 工具似乎出了问题"——它没说错，坏的是执行层
+- 根因：langchain 的 tool() 返回 Runnable，invoke 的契约是**异步**（Promise<RunOutput>），哪怕底层函数是同步的。String(promise) 不抛错，静默产出垃圾字符串——#68 静默家族新成员：**强转不报错比报错更坏**，垃圾直接进了对话历史，模型基于它推理
+- 修法：手动执行框架工具一律当异步 RPC 对待——await（并发多工具调用包 Promise.all）；或把执行体抽成裸函数，tool() 只当 schema 注册用（LLM 面与执行面分离）。给 ToolMessage 塞结果前 typeof 验一次
+- 原则：**框架替你执行工具时（createAgent/ToolNode）这些契约被吃掉，一旦自己写执行节点就全暴露——"框架内正常、手写必踩"是所有 Runnable 系工具的共同边界；静默垃圾比异常难一个量级（模型只会绕着它编故事）**
