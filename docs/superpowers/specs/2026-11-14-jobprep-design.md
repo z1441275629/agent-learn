@@ -33,11 +33,11 @@
 
 ## 3. 约束
 
-- 语言/运行时：TS + Node 直接跑（延续 langChain/ 站点件模式），依赖用根 package.json（已装齐）
-- 模型：方舟 GLM（.env LLM_* 三件套）；嵌入走 LLM_EMBED_*（S7 同款）
-- 预算：2 周 10~16h——**任何阶段停下都必须留下一个能跑的增量**（建设顺序保证）
-- PII：简历文件是个人隐私——上传目录 gitignore，处理全程本地，不进 LangSmith（简历 agent 的 tracing 策略见 §5.4）
-- 测试纪律：基本测试 = mock LLM 的图拓扑测试（路由/熔断/轮换逻辑），不跑全量金字塔（用户长期纪律）
+- **项目形态（2026-11-14 用户升级要求）**：正规工程，独立顶层目录 `jobprep/`（与 personal-agent/ 同级），**独立 npm 包**（自己的 package.json/tsconfig/node_modules）、可编译（tsc）、有测试框架（vitest）、README 按 README 标准（架构/运行/测试/Roadmap）——目标：**面试作品集 + 入职后长期维护**，不是随手的练习件。构建由 AI 主导生成，不再逐项询问（用户明确授权），构建侧取舍由 AI 定并在代码/README 标注
+- 语言/运行时：TS + Node 24；模型方舟 GLM（env 三件套，`.env` 读取链：`jobprep/.env` 优先、回落仓库根 `../.env`——密钥保持单一来源）
+- 预算：v1 两周一稿——**任何阶段停下都必须留下一个能跑的增量**（建设顺序保证）
+- PII：简历文件本地处理，uploads 与产物目录 gitignore，简历链路不上传 LangSmith
+- 测试纪律：vitest 单测覆盖图拓扑逻辑（mock LLM 的路由/轮换/审批门），不跑全量金字塔
 
 ## 4. 用户已拍板的决定
 
@@ -52,31 +52,34 @@
 ### 5.1 目录与形态【我的决定】
 
 ```
-langChain/s9-jobprep/
-  server.ts          # 入口：HTTP + SSE 桥（S8 底盘升级）+ 会话路由
-  agents/
-    practice.ts      # 陪练图（核心件）
-    train.ts         # 培训（复用陪练底盘的讲解模式）
-    resume.ts        # 简历文档流
-  bank/
-    loader.ts        # 题库装载：解析 reviews/*.md §3/§4 + PITFALLS 条目
-  web/
-    index.html       # 单文件前端（三功能页签，S8 同款骨架）
-  data/              # 运行数据（gitignore）：sqlite + uploads/（简历 PII）
-  README.md
+jobprep/                     # 顶层独立包（与 personal-agent/ 同级）
+  package.json               # 独立依赖：langchain / @langchain/langgraph / -sqlite / openai / zod / dotenv
+  tsconfig.json              # strict，NodeNext，build→dist
+  vitest.config.ts           # 图拓扑测试（mock LLM）
+  .env.example  .gitignore   # data/（sqlite+uploads）与 .env 不进库
+  README.md                  # 架构图 + 工程决定 + 运行/测试 + Roadmap
+  src/
+    env.ts                   # env 读取链（本地 .env → 根 ../.env）
+    server.ts                # HTTP + SSE 桥（S8 帧协议升级）
+    bank/loader.ts           # 题库装载（reviews §3/§4 配对 + PITFALLS 排障题）
+    agents/practice.ts       # 陪练图（核心件）
+    agents/train.ts          # 培训（P2）
+    agents/resume.ts         # 简历（P3）
+    web/index.html           # 三页签单文件前端
+  data/                      # 运行数据（gitignore）
 ```
 
-不建独立 npm 包（共享根依赖）；不引入前端框架（S8 单文件验证过够用，Vue 是 V2 选项）。
+前端不引框架（v1 单文件够用，Vue 化是 Roadmap 项）。
 
-### 5.2 调度：triage 路由，不上 supervisor【我的决定】
+### 5.2 入口路由：显式页签直选，不做 LLM triage【我的决定·2026-11-14 修订】
 
-`triage` LLM 判定节点（温度 0 + 思考关，#67 纪律）+ 条件边路由到三个 agent 子图（S3/S6 已验模式）。supervisor 的「主管外呼汇总」在本项目没有场景——用户一次只用一个功能。**这是面试讲的第一个工程决定：控制面按真实交互模式选型，不堆机制。**
+三个功能页签 = 三个确定性入口，用户点哪个进哪个 agent。**入口是路由失败零容忍的地方，用 UI 显式选择而不是 LLM 语义判定**——LLM triage 留给需要模糊分流的场景（本项目没有）。面试讲法照旧成立（这反而是更硬的工程决定）：控制面按真实交互模式选型，机制不堆。
 
 ### 5.3 陪练 agent（核心件）
 
 StateGraph：`pick_question → ask(interrupt) → grade → record → loop|finish`
 - **题库**：loader 解析 reviews 的 §3 题目 + §4 答案（按序号配对），PITFALLS 条目转「场景排障题」（症状即题面，修法即答案）。每题元数据带 source 文件+条目号（可溯源，反目标保障）
-- **抽题**：BM25（community 包 BM25Retriever 或按 pa 二元组动机自切，中文题面默认空白分词弱——S7 实证）按用户近期弱点主题加权 + 均匀轮换，**不走向量**（题库小且全量在内存，检索是伪需求，均匀性才是真需求）
+- **抽题**：v1 纯内存策略——错题优先重出（间隔 >1 轮）+ 未做题均匀轮换，**不走向量也不上 BM25**（题库百级且全量在内存，检索是伪需求，均匀性与错题轮换才是真需求；中文 BM25 还得分词，见 S7 实证）。主题加权进 Roadmap
 - **作答**：`interrupt()` 等用户输入（S5 已验：responseSchema 校验、暂停点无损）；跨进程 resume（Web 会话断线重连可续答）
 - **批改**：LLM 判官（温度 0）+ 参考答案锚定 + 评分维度（要点命中/遗漏/表达）；判官 prompt 要求引用题库 source——**批改必须可溯源，防判官幻觉**
 - **记录与轮换**：SqliteSaver（答题历史随 thread）；错题轮换 = state channel 记 `wrongIds`，下次抽题优先重出（间隔 >1 轮）
@@ -96,17 +99,28 @@ StateGraph：`pick_question → ask(interrupt) → grade → record → loop|fin
 
 S8 的 SSE 桥 + 帧协议原样升级：`delta/tool/custom/done` 四帧；`custom` 通道跑批改进度/轮换通知（getWriter() 姿势，#76）。前端单文件三页签，`fetch + ReadableStream` 切帧（S8 已验）。会话：浏览器 localStorage 存 thread_id，断线重连续答题（checkpointer 兜底）。
 
-### 5.7 建设顺序（每步留下能跑的增量）
+### 5.7 建设顺序（每步留下能跑的增量；builder check 后 2026-11-14 修订：简历提前到 P2）
 
 | 阶段 | 内容 | 停下时的可用态 |
 |---|---|---|
-| P0 脊柱 | server + triage 路由 + 三 stub agent + 前端骨架 | 入口能开、路由能中、帧能流 |
+| P0 脊柱 | server + SSE 桥 + 三 agent 桩 + 前端骨架 | 入口能开、帧能流 |
 | P1 陪练 | 题库 loader + 陪练图全闭环 | 核心体验完整（可日常用） |
-| P2 培训 | 讲解模式复用件 | 三件套其二 |
-| P3 简历 | 上传/引导 + diff 审批流 | 三件套齐（v1 完整） |
+| P2 简历 | 上传/引导 + diff 审批流 | 最紧迫的交付物可用 |
+| P3 培训 | 讲解模式（复用陪练零件） | 三件套齐 |
 | P4 收口 | README + 拓扑测试 + 弱点报告打磨 | 作品集可展示 |
 
-**最小可用里程碑是 P1 结束**——之后每阶段都是加分项而非必需品，2 周预算的兜底。
+顺序理由：陪练最快到日用价值且铺好 interrupt/checkpointer/题库底盘（简历的审批流直接复用）；简历是面试前最紧迫的**交付物**；培训最不紧迫（日常学习仪式已覆盖其一半价值）。
+
+### 5.8 builder check 落定（AI 主导生成授权下的构建侧拍板，2026-11-14）
+
+- **会话路由**：每功能独立 thread 命名空间（`practice:{sessionId}` / `train:{…}` / `resume:{…}`），页签=确定性入口，答案经 `/api/practice` 直达 resume——不存在「切功能丢弃挂起点」的交叉（triage 已在 §5.2 移除）
+- **deepagents 有意不出场**：三个功能都是强流程（出题循环/审批门/文档流），StateGraph 的拓扑确定性 > harness 的探索灵活性；deepagents 适合开放探索任务。README 工程决定第三条
+- **嵌入移出 v1 约束**（原 §3 残留条款）：全设计无消费者；培训主题检索/题目相似去重留 Roadmap
+- **陪练终局**：固定 N 题（默认 5）+ 前端随时开新会话；responseSchema 保持裸答案串，stop/skip 枚举留 V2
+- **答题账本**：thread state（checkpointer）即账本，弱点报告从当前 thread 累计；不另立 sqlite 表（YAGNI，日频量级可接受）
+- **测试清单措辞**：v1 无熔断节点（陪练不打回重写）——拓扑测试覆盖路由条件边/抽题轮换/审批门（P2）
+
+
 
 ## 6. 验收
 

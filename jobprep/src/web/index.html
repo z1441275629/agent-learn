@@ -1,0 +1,152 @@
+<!doctype html>
+<!-- jobprep 前端：三页签单文件（零构建）。SSE 消费与 pa 工作台/S8 前端同款骨架：fetch POST + ReadableStream 按 \n\n 切帧 -->
+<html lang="zh">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>AI 面试备战台</title>
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: system-ui, 'Microsoft YaHei', sans-serif; max-width: 860px; margin: 0 auto; padding: 16px; background: #f6f7f9; color: #222; }
+  header { display: flex; align-items: baseline; gap: 12px; margin-bottom: 12px; }
+  h1 { font-size: 20px; margin: 0; }
+  #bank { color: #888; font-size: 12px; }
+  nav { display: flex; gap: 6px; margin-bottom: 12px; }
+  nav button { padding: 6px 18px; border: 1px solid #ccc; background: #fff; border-radius: 16px; cursor: pointer; }
+  nav button.active { background: #222; color: #fff; border-color: #222; }
+  .pane { display: none; }
+  .pane.active { display: block; }
+  .msg { margin: 8px 0; padding: 10px 14px; border-radius: 10px; white-space: pre-wrap; line-height: 1.6; font-size: 14px; }
+  .q { background: #fff; border: 1px solid #ddd; }
+  .meta { color: #999; font-size: 12px; margin-bottom: 4px; }
+  .grade { background: #f0f7ff; border: 1px solid #bcd8f5; }
+  .grade .score { font-weight: 600; }
+  .summary { background: #f4fff0; border: 1px solid #bfe5b0; font-weight: 600; }
+  .sys { color: #888; font-size: 12px; text-align: center; }
+  .bar { display: flex; gap: 8px; margin-top: 10px; }
+  textarea { flex: 1; min-height: 72px; padding: 8px; font: inherit; border: 1px solid #ccc; border-radius: 8px; }
+  .bar button, #start, #reconnect { padding: 8px 18px; border: none; background: #222; color: #fff; border-radius: 8px; cursor: pointer; }
+  .bar button:disabled, #start:disabled { background: #aaa; }
+  .placeholder { color: #999; padding: 40px 0; text-align: center; }
+</style>
+</head>
+<body>
+<header><h1>AI 面试备战台</h1><span id="bank"></span></header>
+<nav>
+  <button data-pane="practice" class="active">陪练</button>
+  <button data-pane="train">培训</button>
+  <button data-pane="resume">简历</button>
+</nav>
+
+<section id="practice" class="pane active">
+  <div class="bar" style="margin-bottom:10px">
+    <button id="start">开一场（5 题）</button>
+    <button id="reconnect">继续挂起的一场</button>
+  </div>
+  <div id="p-log"></div>
+  <div class="bar" id="answer-bar" style="display:none">
+    <textarea id="answer" placeholder="口述你的回答（就当面试官在对面）……"></textarea>
+    <button id="submit">交卷</button>
+  </div>
+</section>
+
+<section id="train" class="pane"><div class="placeholder">P3 开放——讲解模式（同一题库，讲给你听 + 单题即测）</div></section>
+<section id="resume" class="pane"><div class="placeholder">P2 开放——上传旧简历重定位改写 / 引导生成（diff 预览 + 审批落盘）</div></section>
+
+<script>
+const $ = (id) => document.getElementById(id)
+let sessionId = null
+let busy = false
+
+// 页签
+document.querySelectorAll('nav button').forEach((b) => b.addEventListener('click', () => {
+  document.querySelectorAll('nav button, .pane').forEach((x) => x.classList.remove('active'))
+  b.classList.add('active')
+  $(b.dataset.pane).classList.add('active')
+}))
+
+// 题库规模
+fetch('/api/bank').then((r) => r.json()).then((s) => { $('bank').textContent = `题库 ${s.total} 题` })
+
+const append = (cls, html) => {
+  const d = document.createElement('div')
+  d.className = 'msg ' + cls
+  d.innerHTML = html
+  $('p-log').appendChild(d)
+  d.scrollIntoView({ behavior: 'smooth' })
+  return d
+}
+const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]))
+const stars = (n) => '★'.repeat(n) + '☆'.repeat(2 - n)
+
+async function postPractice(extra) {
+  if (busy) return
+  busy = true
+  $('submit').disabled = true
+  try {
+    const res = await fetch('/api/practice', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ sessionId, ...extra }),
+    })
+    const reader = res.body.getReader()
+    const dec = new TextDecoder()
+    let buf = ''
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buf += dec.decode(value, { stream: true })
+      let i
+      while ((i = buf.indexOf('\n\n')) >= 0) {
+        const line = buf.slice(0, i); buf = buf.slice(i + 2)
+        if (!line.startsWith('data: ')) continue
+        handleFrame(JSON.parse(line.slice(6)))
+      }
+    }
+  } catch (e) { append('sys', '连接出错：' + esc(e.message)) }
+  busy = false
+  $('submit').disabled = false
+}
+
+function handleFrame(f) {
+  if (f.type === 'custom') {
+    if (f.event === 'graded') {
+      append('grade', `<div class="meta">批改 · ${esc(f.id)}</div><div class="score">${stars(f.score)}（${f.score}/2）</div>`
+        + (f.comment ? `<div>${esc(f.comment)}</div>` : '')
+        + (f.misses?.length ? `<div class="meta">遗漏要点：${esc(f.misses.join('；'))}</div>` : ''))
+    } else if (f.event === 'summary') {
+      append('summary', `本场小结：${esc(f.summary)}${f.wrongCount ? ` · 错题 ${f.wrongCount} 道进轮换` : ' · 无错题'}`)
+      $('answer-bar').style.display = 'none'
+    }
+  } else if (f.type === 'question') {
+    append('q', `<div class="meta">${esc(f.source)} · ${esc(f.id)} · ${esc(f.kind === 'pitfall' ? '排障' : '问答')}</div>${esc(f.question)}`)
+    $('answer-bar').style.display = 'flex'
+    $('answer').focus()
+  } else if (f.type === 'done') {
+    if (f.error) append('sys', '出错了：' + esc(f.error))
+    if (f.note !== 'reconnect') $('answer-bar').style.display = 'none'
+  }
+}
+
+$('start').addEventListener('click', () => {
+  sessionId = crypto.randomUUID()
+  localStorage.setItem('jobprep-session', sessionId)
+  $('p-log').innerHTML = ''
+  $('answer-bar').style.display = 'none'
+  postPractice({})
+})
+$('reconnect').addEventListener('click', () => {
+  sessionId = localStorage.getItem('jobprep-session')
+  if (!sessionId) { append('sys', '没有挂起中的场次'); return }
+  $('p-log').innerHTML = ''
+  postPractice({})
+})
+$('submit').addEventListener('click', () => {
+  const text = $('answer').value.trim()
+  if (!text) return
+  $('answer').value = ''
+  $('answer-bar').style.display = 'none'
+  postPractice({ text })
+})
+</script>
+</body>
+</html>
