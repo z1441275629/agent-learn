@@ -1,0 +1,67 @@
+<!doctype html>
+<!-- S8 流式站 part2 配套：50 行精神的单文件前端（零构建、无依赖）
+     消费 s8-server.ts 的 SSE 帧：delta（token 流）/ tool（工具事件）/ custom / done
+     对照 pa 工作台前端：同样是 fetch POST + ReadableStream reader 按 \n\n 切帧——两代前端同款骨架 -->
+<html lang="zh">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>S8：LangGraph 流式前端</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 720px; margin: 24px auto; padding: 0 16px; background: #fafafa; }
+  .msg { margin: 8px 0; padding: 8px 12px; border-radius: 8px; white-space: pre-wrap; }
+  .user { background: #dcf8c6; margin-left: 20%; }
+  .assistant { background: #fff; border: 1px solid #e0e0e0; }
+  .tool { background: #fff8e1; border: 1px dashed #ffca28; font-size: 13px; }
+  .event { color: #888; font-size: 12px; }
+  #bar { display: flex; gap: 8px; margin-top: 16px; }
+  #q { flex: 1; padding: 8px; }
+</style>
+</head>
+<body>
+<h3>S8：多通道流 → pa 风格帧（delta / tool / custom / done）</h3>
+<div id="log"></div>
+<div id="bar">
+  <input id="q" value="用 station_info 查一下 S8 站的验收标准，然后一句话总结" />
+  <button onclick="send()">发</button>
+</div>
+<script>
+const log = document.getElementById('log')
+const append = (cls, text) => {
+  const d = document.createElement('div')
+  d.className = 'msg ' + cls
+  d.textContent = text
+  log.appendChild(d)
+  return d
+}
+async function send() {
+  const input = document.getElementById('q')
+  const q = input.value.trim()
+  if (!q) return
+  append('user', q)
+  input.value = ''
+  const bubble = append('assistant', '')
+  const res = await fetch('/api/chat', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ q }) })
+  const reader = res.body.getReader()
+  const dec = new TextDecoder()
+  let buf = ''
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buf += dec.decode(value, { stream: true })
+    let i
+    while ((i = buf.indexOf('\n\n')) >= 0) {
+      const line = buf.slice(0, i)
+      buf = buf.slice(i + 2)
+      if (!line.startsWith('data: ')) continue
+      const f = JSON.parse(line.slice(6))
+      if (f.type === 'delta') bubble.textContent += f.text
+      else if (f.type === 'tool') append('tool', '🔧 ' + f.name + ' → ' + f.result)
+      else if (f.type === 'custom') append('event', '⚙ ' + JSON.stringify(f))
+      else if (f.type === 'done') append('event', '✓ done ' + (f.ms ? f.ms + 'ms' : '') + (f.error ? ' 出错：' + f.error : ''))
+    }
+  }
+}
+</script>
+</body>
+</html>
