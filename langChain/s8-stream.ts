@@ -16,17 +16,18 @@
 //   交错边界由通道标识解决——不用自己在帧里塞 type 判别
 // - pa 每帧自带语义（type 字段）vs 框架每个通道语义单一——合成给前端的帧是翻译层的活（s8-server）
 //
-// custom 通道（JS 实测面，langgraph 1.5.3）：
-// - dispatchCustomEvent 从 @langchain/core/callbacks/dispatch 导入（不在 langgraph 主入口！）
-// - 只能在节点/工具执行链路内调用（async_hooks 推断 config），循环外调不进流
-// - 载荷形状以跑出来为准（本骨架按官方 example：payload 原样出现在 custom 通道）
+// custom 通道（实测 #76，langgraph 1.5.3 零 token 探针三姿势实证）：
+// - dispatchCustomEvent（@langchain/core）是【core 回调系统】的自定义事件——进 streamEvents 的
+//   on_custom_event，与 LangGraph 的 custom 流通道无关，名字像系统不同
+// - 1.5.3 的 writer() 导出函数只读 config.configurable.writer——Pregel 实际挂的是顶层 config.writer
+//   → 可选链静默空转（零报错零事件）；getWriter() 或节点第二参 config.writer 才活
+// - 载荷形状：chunk 原样出现在 custom 通道（探针实证）
 
 import 'dotenv/config'
-import { StateGraph, MessagesAnnotation, START, END, Annotation } from '@langchain/langgraph'
+import { StateGraph, MessagesAnnotation, START, END, Annotation, getWriter } from '@langchain/langgraph'
 import { AIMessage, AIMessageChunk } from '@langchain/core/messages'
 import { ChatOpenAI } from '@langchain/openai'
 import { tool, ToolMessage } from 'langchain'
-import { dispatchCustomEvent } from '@langchain/core/callbacks/dispatch'
 import * as z from 'zod'
 
 // ═══ 图A：零 token 纯函数图——values / updates / custom 的粒度语义 ═══
@@ -37,11 +38,11 @@ const AState = Annotation.Root({
 })
 const graphA = new StateGraph(AState)
   .addNode('prepare', async () => {
-    await dispatchCustomEvent('progress', { at: 'prepare', note: '旁路事件：准备阶段开始' })
+    getWriter()?.({ event: 'progress', at: 'prepare', note: '旁路事件：准备阶段开始' }) // custom 通道写入姿势见头注 #76
     return { stage: '准备完', steps: ['prepare'] }
   })
   .addNode('enrich', async () => {
-    await dispatchCustomEvent('progress', { at: 'enrich', note: '旁路事件：加工阶段开始' })
+    getWriter()?.({ event: 'progress', at: 'enrich', note: '旁路事件：加工阶段开始' })
     return { stage: '加工完', steps: ['enrich'] }
   })
   .addEdge(START, 'prepare')

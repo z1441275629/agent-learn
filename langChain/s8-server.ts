@@ -21,11 +21,10 @@
 import 'dotenv/config'
 import * as http from 'node:http'
 import * as fs from 'node:fs'
-import { StateGraph, MessagesAnnotation, START, END } from '@langchain/langgraph'
+import { StateGraph, MessagesAnnotation, START, END, getWriter } from '@langchain/langgraph'
 import { AIMessage, AIMessageChunk } from '@langchain/core/messages'
 import { ChatOpenAI } from '@langchain/openai'
 import { tool, ToolMessage } from 'langchain'
-import { dispatchCustomEvent } from '@langchain/core/callbacks/dispatch'
 import * as z from 'zod'
 
 const env = process.env
@@ -58,7 +57,9 @@ const graph = new StateGraph(MessagesAnnotation)
         async (tc) => new ToolMessage({ tool_call_id: tc.id!, name: tc.name, content: String(await stationInfo.invoke(tc.args as { station: string })) }),
       ),
     )
-    await dispatchCustomEvent('tool-done', { tools: results.map((r) => r.name) }) // custom 通道演示：旁路事件不进 state
+    // custom 通道写入（#76）：dispatchCustomEvent 是 core 回调系统（streamEvents 的 on_custom_event）
+    // 不进 custom 流通道；1.5.3 的 writer() 导出只读 configurable.writer 静默空转——getWriter() 才活
+    getWriter()?.({ event: 'tool-done', tools: results.map((r) => r.name) }) // 旁路事件不进 state
     return { messages: results }
   })
   .addEdge(START, 'respond')

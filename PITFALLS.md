@@ -536,3 +536,9 @@
 - 根因：langchain 的 tool() 返回 Runnable，invoke 的契约是**异步**（Promise<RunOutput>），哪怕底层函数是同步的。String(promise) 不抛错，静默产出垃圾字符串——#68 静默家族新成员：**强转不报错比报错更坏**，垃圾直接进了对话历史，模型基于它推理
 - 修法：手动执行框架工具一律当异步 RPC 对待——await（并发多工具调用包 Promise.all）；或把执行体抽成裸函数，tool() 只当 schema 注册用（LLM 面与执行面分离）。给 ToolMessage 塞结果前 typeof 验一次
 - 原则：**框架替你执行工具时（createAgent/ToolNode）这些契约被吃掉，一旦自己写执行节点就全暴露——"框架内正常、手写必踩"是所有 Runnable 系工具的共同边界；静默垃圾比异常难一个量级（模型只会绕着它编故事）**
+
+## 76. LangGraph JS custom 流通道写入姿势三连坑：dispatchCustomEvent 不进通道、writer() 导出静默空转、getWriter() 才活（2026-11-13，langChain S8）
+- 症状：节点里 dispatchCustomEvent('x', {...}) 后 streamMode:'custom' 一条事件都没有——零报错零事件；换成官方顶层导出的 writer(chunk) 还是没有。前端永远看不到 custom 帧
+- 根因（源码+零 token 探针三姿势实证）：① dispatchCustomEvent（@langchain/core）是**core 回调系统**的自定义事件，进 streamEvents 的 on_custom_event，与 LangGraph 的 **custom 流通道**是两个系统——名字像，不通；② custom 通道的写入器挂在 config **顶层**（config.writer，在 inheritable keys 列表里随执行传播），而 1.5.3 的 writer() 导出函数只读 config.configurable.writer——Pregel 从不写那里 → 可选链 `?.` 静默空转；③ 活路是 getWriter()（顶层 || configurable 兜底）或节点第二参 config.writer 直呼（探针：两种各进一条，writer() 导出零条）
+- 修法：节点里 `getWriter()?.({ event: 'progress', ... })`，或 `(state, config) => config.writer?.({...})`；载荷就是 chunk 原样出现在 custom 通道
+- 原则：**「静默无事件」与 #74 静默空同族且更隐蔽——事件系统没有对账手段（收没收到只有消费端知道），自定义事件的验收必须消费端实证；同名机制（custom event vs custom stream mode）名字一样系统不同，落笔前先分清是哪家的 custom**
