@@ -25,14 +25,14 @@ test('四锚全过的合格简报 → 零违约', () => {
 test('条数 2 → 条数违约（下界拦截）', () => {
 	const v = digestCheck('【主线】一条 7（出处：§1）\n两条 42（出处：§2）', 6)
 	assert.equal(v.length, 1)
-	assert.match(v[0]!, /条数/)
+	assert.match(v[0]!, /条不在 3~5 契约内/)
 })
 
 test('条数 6 → 条数违约（上界同样拦——多了也是违约）', () => {
 	const six = Array.from({ length: 6 }, (_, i) => `要点 ${i + 1}（出处：§${(i % 6) + 1}）`).join('\n')
 	const v = digestCheck(six.replace('要点 1', '【主线】要点 1'), 6)
 	assert.equal(v.length, 1)
-	assert.match(v[0]!, /条数/)
+	assert.match(v[0]!, /条不在 3~5 契约内/)
 })
 
 test('首行无【主线】标注 → 违约（契约字面：主线放第一行）', () => {

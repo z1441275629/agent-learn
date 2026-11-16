@@ -542,3 +542,9 @@
 - 根因（源码+零 token 探针三姿势实证）：① dispatchCustomEvent（@langchain/core）是**core 回调系统**的自定义事件，进 streamEvents 的 on_custom_event，与 LangGraph 的 **custom 流通道**是两个系统——名字像，不通；② custom 通道的写入器挂在 config **顶层**（config.writer，在 inheritable keys 列表里随执行传播），而 1.5.3 的 writer() 导出函数只读 config.configurable.writer——Pregel 从不写那里 → 可选链 `?.` 静默空转；③ 活路是 getWriter()（顶层 || configurable 兜底）或节点第二参 config.writer 直呼（探针：两种各进一条，writer() 导出零条）
 - 修法：节点里 `getWriter()?.({ event: 'progress', ... })`，或 `(state, config) => config.writer?.({...})`；载荷就是 chunk 原样出现在 custom 通道
 - 原则：**「静默无事件」与 #74 静默空同族且更隐蔽——事件系统没有对账手段（收没收到只有消费端知道），自定义事件的验收必须消费端实证；同名机制（custom event vs custom stream mode）名字一样系统不同，落笔前先分清是哪家的 custom**
+
+## 77. 回归锁断言匹配措辞而非语义：门检文案改版后 2 条用例假红（2026-11-16，10-multi-agent）
+- 症状：digestCheck「条数违约」两条单测失败——断言 `assert.match(v[0]!, /条数/)`，而实现文案早已改成「要点 X 条不在 3~5 契约内」，两字不再连续出现，`/条数/` 失配
+- 根因：回归锁断言咬的是**实现措辞的字面**（「条数」俩字），不是**契约语义**（3~5 条）；实现把文案改清楚时锁没跟着改 → 措辞一变锁假红，且假红长在测试里容易让人误判「实现坏了」
+- 修法：断言改成锚定契约字面的稳定正则 `/条不在 3~5 契约内/`；更稳是断言 `v.length` 与问题类别，不咬死文案字符串
+- 原则：**回归锁锁的是行为不是措辞——断言写「什么算违约」的契约字面，别写「违约长什么样」的实现文案；测试假红与假绿都是信号，先分清是实现漂了还是断言漂了**
