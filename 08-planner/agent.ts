@@ -18,13 +18,13 @@ import { MemoryManager, registerMergeStrategy, writeMemoryTool } from './memory.
 import { registry, buildToolsParam } from './tools.ts'
 
 // GLM Coding Plan 套餐专用端点（按量付费改 https://open.bigmodel.cn/api/paas/v4）
-const BASE_URL = 'https://open.bigmodel.cn/api/coding/paas/v4'
-export const MODEL = 'glm-5.3'
+const BASE_URL = process.env.LLM_BASE_URL
+export const MODEL = process.env.LLM_MODEL || 'glm-4.6'
 export const BUDGET_TOKENS = 6000
 
-const apiKey = process.env.GLM_API_KEY
+const apiKey = process.env.LLM_API_KEY
 if (!apiKey) {
-	console.error('没找到 GLM_API_KEY。请在 ai-agent-lab/.env 里配置')
+	console.error('没找到 LLM_API_KEY。请在 ai-agent-lab/.env 里配置')
 	process.exit(1)
 }
 const client = new OpenAI({ apiKey, baseURL: BASE_URL })
