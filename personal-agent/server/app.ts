@@ -5,6 +5,7 @@ import path from 'node:path'
 import Koa from 'koa'
 import { fileURLToPath } from 'node:url'
 import { router as chatRouter } from './routes/chat.ts'
+import { router as chatStreamRouter } from './routes/chat-stream.ts'
 import { router as sessionsRouter } from './routes/sessions.ts'
 import { router as memoriesRouter } from './routes/memories.ts'
 import { router as kbRouter } from './routes/kb.ts'
@@ -90,6 +91,7 @@ export function createApp(): Koa {
   })
 
   app.use(chatRouter.routes())
+  app.use(chatStreamRouter.routes())
   app.use(sessionsRouter.routes())
   app.use(memoriesRouter.routes())
   app.use(kbRouter.routes())
