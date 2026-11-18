@@ -189,7 +189,7 @@ console.log('Q6 会话存储（根目录可配置、原子写、图片与 JSON �
   check('新会话 id 合法且标题默认', /^[A-Za-z0-9_-]+$/.test(doc.id) && doc.title === '新对话')
   check(
     '空会话列表包含它',
-    (await store.list()).some((s) => s.id === doc.id),
+    (await store.list()).sessions.some((s) => s.id === doc.id),
   )
 
   const PNG =
@@ -205,7 +205,7 @@ console.log('Q6 会话存储（根目录可配置、原子写、图片与 JSON �
   const loadedDoc = await store.load(doc.id)
   check('追加后消息成对且带自增 id', loadedDoc?.messages.length === 2 && loadedDoc.messages[1].id === 2)
   check('标题只由第一条 user 消息设定', loadedDoc?.title === '第一条标题')
-  const summary = (await store.list()).find((s) => s.id === doc.id)
+  const summary = (await store.list()).sessions.find((s) => s.id === doc.id)
   check('列表返回标题与消息数', summary?.title === '第一条标题' && summary.messageCount === 2)
 
   await store.setSummary(doc.id, '前情摘要正文', 2)
@@ -213,7 +213,7 @@ console.log('Q6 会话存储（根目录可配置、原子写、图片与 JSON �
   check('摘要与截止点可落盘/重读', withSummary?.summary === '前情摘要正文' && withSummary?.summaryUntil === 2)
 
   await store.remove(doc.id)
-  check('删除后列表不再包含它', !(await store.list()).some((s) => s.id === doc.id))
+  check('删除后列表不再包含它', !(await store.list()).sessions.some((s) => s.id === doc.id))
   await fs.rm(tmp, { recursive: true, force: true })
 }
 

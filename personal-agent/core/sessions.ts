@@ -12,6 +12,7 @@
 
 import fs from 'node:fs/promises'
 import path from 'node:path'
+import { createSessionIndex } from './session-index.ts'
 
 export interface StoredImage {
   /** 相对会话图片目录的文件名（随机生成，不含用户输入） */
@@ -104,7 +105,8 @@ export function newSessionId(): string {
 
 export interface SessionStore {
   readonly sessionsDir: string
-  list(): Promise<SessionSummary[]>
+  /** 分页列表：走 SQLite 索引（O(1)），不再全量 parse 消息文件；不带参数默认 limit=50 */
+  list(opts?: { limit?: number; offset?: number }): Promise<{ sessions: SessionSummary[]; total: number }>
   create(title?: string): Promise<SessionDoc>
   load(id: string): Promise<SessionDoc | null>
   save(doc: SessionDoc): Promise<void>
@@ -118,6 +120,15 @@ export interface SessionStore {
 
 export function createSessionStore(dataDir: string): SessionStore {
   const sessionsDir = path.join(dataDir, 'sessions')
+  // 列表索引（SQLite）：与账本文件并存，写路径单点维护（save 一个 upsert 覆盖全部写）
+  const index = createSessionIndex(path.join(dataDir, 'sessions.index.db'))
+  // 惰性对账：首次 list 前跑一次（promise 缓存防重复）；进程生命周期内文件只由本进程写，
+  // 之后靠 save/remove 增量维护即可
+  let reconcilePromise: Promise<void> | null = null
+  const ensureReconcile = (): Promise<void> => {
+    reconcilePromise ??= index.reconcile(sessionsDir, load)
+    return reconcilePromise
+  }
 
   const fileFor = (id: string) => path.join(sessionsDir, `${id}.json`)
   const imagesDirFor = (id: string) => path.join(sessionsDir, id, 'images')
@@ -144,30 +155,35 @@ export function createSessionStore(dataDir: string): SessionStore {
     const tmp = file + '.tmp'
     await fs.writeFile(tmp, JSON.stringify(doc))
     await fs.rename(tmp, file) // 原子替换：崩溃最多丢当前这次写，不会留半截档
+    // 索引单点维护：create/append/setSummary 全部汇经 save，这里一处 upsert 全覆盖。
+    // stat 失败不碍事——索引暂旧，下次 reconcile 按指纹补齐
+    try {
+      const st = await fs.stat(file)
+      index.upsert({
+        id: doc.id,
+        title: doc.title,
+        updatedAt: doc.updatedAt,
+        messageCount: doc.messages.length,
+        mtimeMs: Math.round(st.mtimeMs),
+        size: st.size,
+      })
+    } catch {
+      /* 索引暂旧可容忍 */
+    }
   }
 
   return {
     sessionsDir,
 
-    async list() {
-      let names: string[]
-      try {
-        names = await fs.readdir(sessionsDir)
-      } catch {
-        return []
+    async list(opts = {}) {
+      await ensureReconcile()
+      const limit = Math.min(Math.max(Math.trunc(opts.limit ?? 50), 1), 500)
+      const offset = Math.max(Math.trunc(opts.offset ?? 0), 0)
+      const { rows, total } = index.list(limit, offset)
+      return {
+        sessions: rows.map((r) => ({ id: r.id, title: r.title, updatedAt: r.updatedAt, messageCount: r.messageCount })),
+        total,
       }
-      const docs = await Promise.all(
-        names.filter((n) => n.endsWith('.json')).map((n) => load(n.slice(0, -'.json'.length))),
-      )
-      return docs
-        .filter((d): d is SessionDoc => !!d)
-        .map((d) => ({
-          id: d.id,
-          title: d.title,
-          updatedAt: d.updatedAt,
-          messageCount: d.messages.length,
-        }))
-        .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
     },
 
     async create(title = '新对话') {
@@ -259,6 +275,7 @@ export function createSessionStore(dataDir: string): SessionStore {
       if (!ID_RE.test(id)) return
       await fs.rm(fileFor(id), { force: true })
       await fs.rm(imagesDirFor(id), { recursive: true, force: true })
+      index.remove(id) // 索引行跟着走（孤儿行 reconcile 也会清，这里显式删保持即时一致）
     },
   }
 }
