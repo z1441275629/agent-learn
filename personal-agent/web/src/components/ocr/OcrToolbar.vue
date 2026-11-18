@@ -14,46 +14,37 @@ const engines: { key: Engine; label: string; title: string }[] = [
 </script>
 
 <template>
-  <div class="toolbar">
-    <div class="seg" role="group" aria-label="识别引擎">
-      <button
-        v-for="item in engines"
-        :key="item.key"
-        class="seg-btn"
-        :class="{ on: engine === item.key }"
-        :title="item.title"
-        @click="engine = item.key"
-      >
+  <div class="toolbar-row">
+    <el-radio-group v-model="engine" size="small">
+      <el-radio-button v-for="item in engines" :key="item.key" :value="item.key" :title="item.title">
         {{ item.label }}
-      </button>
-    </div>
-    <label class="toggle">
-      <input v-model="translate" type="checkbox" />
-      翻译成中文
-    </label>
-    <button :disabled="!canCopy" @click="emit('copy')">复制全文</button>
-    <button :disabled="!canClear" @click="emit('clear')">清空</button>
+      </el-radio-button>
+    </el-radio-group>
+    <el-switch v-model="translate" size="small" />
+    <span class="sw-label" @click="translate = !translate">翻译成中文</span>
+    <span class="spacer" />
+    <el-button size="small" :disabled="!canCopy" @click="emit('copy')">复制全文</el-button>
+    <el-button size="small" :disabled="!canClear" @click="emit('clear')">清空</el-button>
   </div>
 </template>
 
 <style scoped>
-.seg {
-  display: inline-flex;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  overflow: hidden;
+.toolbar-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 12px;
 }
 
-.seg-btn {
-  border: 0 !important;
-  border-radius: 0 !important;
-  padding: 6px 12px;
-  background: #fff;
+.sw-label {
+  font-size: 13px;
   color: var(--muted);
+  cursor: pointer;
+  user-select: none;
+  margin-left: -4px;
 }
 
-.seg-btn.on {
-  background: var(--accent);
-  color: #fff;
+.spacer {
+  flex: 1;
 }
 </style>

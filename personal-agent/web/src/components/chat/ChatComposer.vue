@@ -224,6 +224,9 @@ onBeforeUnmount(() => document.removeEventListener('paste', onPaste))
   font: inherit;
   font-size: 14px;
   cursor: pointer;
+  /* flex 收缩下 CJK 的 min-content 是单字宽度——不锁死就会被挤成「发/送」两行 */
+  flex: none;
+  white-space: nowrap;
 }
 
 .primary:disabled {

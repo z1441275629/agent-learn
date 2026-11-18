@@ -79,10 +79,15 @@ const highlightStyle = computed(() => {
     @dragleave.prevent="dragging = false"
     @drop.prevent="onDrop"
   >
-    <div v-if="!imageUrl" class="hint">粘贴 / 拖入 / 点击选择截图</div>
+    <div v-if="!imageUrl" class="hint">
+      <div class="hint-icon">✂️</div>
+      <div class="hint-main">粘贴 / 拖入 / 点击选择截图</div>
+      <div class="hint-sub">Ctrl+V 直接贴，或把图片文件拖进来</div>
+    </div>
     <div v-else class="imgwrap">
       <img ref="imgEl" :src="imageUrl" alt="截图预览" />
       <div class="hl" :style="highlightStyle"></div>
+      <div class="replace-mask">点击更换截图</div>
     </div>
     <input ref="fileInput" type="file" accept="image/*" hidden @change="onPick" />
   </div>
@@ -90,29 +95,52 @@ const highlightStyle = computed(() => {
 
 <style scoped>
 .drop {
-  border: 2px dashed #cbd5e1;
-  border-radius: 10px;
-  min-height: 180px;
+  border: 2px dashed #d3d9e3;
+  border-radius: 12px;
+  min-height: 200px;
+  background: #fafbfd;
   display: flex;
   align-items: center;
   justify-content: center;
   text-align: center;
-  color: var(--muted);
   cursor: pointer;
   transition: 0.15s;
   padding: 16px;
 }
 
+.drop:not(.has-img):hover {
+  border-color: #b9c2d0;
+}
+
 .drop.hover {
   border-color: var(--accent);
   background: var(--accent-soft);
-  color: var(--accent);
 }
 
 .drop.has-img {
   border-style: solid;
   border-color: transparent;
   padding: 0;
+  background: transparent;
+}
+
+/* 空态三层：图标 / 主文案 / 次级提示——比一行灰字有层级 */
+.hint-icon {
+  font-size: 28px;
+  margin-bottom: 8px;
+  opacity: 0.8;
+}
+
+.hint-main {
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.hint-sub {
+  color: var(--muted);
+  font-size: 12px;
+  margin-top: 4px;
 }
 
 .imgwrap {
@@ -125,6 +153,26 @@ const highlightStyle = computed(() => {
   max-width: 100%;
   display: block;
   border-radius: 8px;
+}
+
+/* 悬停整图浮现「点击更换」——比藏起来更可发现 */
+.replace-mask {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgb(15 23 42 / 45%);
+  color: #fff;
+  font-size: 13px;
+  border-radius: 8px;
+  opacity: 0;
+  transition: 0.15s;
+  pointer-events: none;
+}
+
+.imgwrap:hover .replace-mask {
+  opacity: 1;
 }
 
 .hl {

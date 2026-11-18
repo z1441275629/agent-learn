@@ -18,9 +18,11 @@ const emit = defineEmits<{
 
 <template>
   <div v-if="busy" class="empty"><span class="spin"></span>识别中…</div>
-  <div v-else-if="lines.length === 0" class="empty">
-    {{ hasResult ? '没识别到文字——试试更清晰/更大字号的截图' : '识别结果会出现在这里' }}
-  </div>
+  <el-empty
+    v-else-if="lines.length === 0"
+    :image-size="60"
+    :description="hasResult ? '没识别到文字——试试更清晰/更大字号的截图' : '识别结果会出现在这里'"
+  />
   <div v-else class="lines">
     <OcrLineItem
       v-for="line in lines"
@@ -37,7 +39,7 @@ const emit = defineEmits<{
 .lines {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;
 }
 
 .empty {
