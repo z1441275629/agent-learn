@@ -61,8 +61,18 @@ const RECONNECT_BACKOFF_MS = [1000, 2000, 4000, 8000]
 const PROBE_INTERVAL_MS = 15000
 /** 探针地平线：与默认 PA_GRACE_MS(90s) 对齐再留 30s；服务端改 PA_GRACE_MS 需同步这里 */
 const PROBE_HORIZON_MS = 120000
+/** 整梯（快速4次+慢探针120s）跑几轮仍断流才放弃对齐：续上又断的场景不死心，重走重连梯 */
+const LADDER_PASSES = 3
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
+
+/** requestId 生成：crypto.randomUUID 只在安全上下文（https/localhost）存在——
+ * PA_HOST=0.0.0.0 的手机访问是 http，没有它；退化成时间戳+随机串（只做重放识别，够用） */
+export function newRequestId(): string {
+  const c = globalThis.crypto
+  if (c && typeof c.randomUUID === 'function') return c.randomUUID()
+  return 'req-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10)
+}
 
 /** 可被「页面变可见/窗口聚焦」提前唤醒的 sleep：合盖唤醒后立即插一次探针 */
 function sleepAware(ms: number): Promise<void> {
@@ -116,7 +126,7 @@ function createSseParser(onFrame: (id: number | null, data: string) => void) {
 type ConsumeOutcome = "completed" | "dropped" | "idle" | "stopped"
 
 export async function streamChat(body: ChatRequest, handlers: StreamHandlers, signal?: AbortSignal): Promise<StreamResult> {
-  const req: ChatRequest = { ...body, requestId: body.requestId ?? crypto.randomUUID() }
+  const req: ChatRequest = { ...body, requestId: body.requestId ?? newRequestId() }
   handlers.onStatus('connecting')
   let sid: string | null = body.sessionId ?? null
   let lastEventId = 0
@@ -150,63 +160,74 @@ export async function streamChat(body: ChatRequest, handlers: StreamHandlers, si
     return 'dropped'
   }
 
-  /** 断线续接：快速重连 4 次 → 慢探针到地平线。成功=续流结果；地平线耗尽=idle（走对齐） */
+  /** 断线续接：快速重连 4 次 → 慢探针到地平线，这算一整梯。中途再次断流不算终局——
+   * 重走重连梯直到终帧/abort/梯数耗尽（耗尽=idle 走对齐，拉账本不丢内容） */
   async function attachLoop(): Promise<ConsumeOutcome> {
     if (!sid) return 'idle'
     handlers.onStatus('reconnecting')
     const url = () => `/api/chat/${encodeURIComponent(sid!)}/stream?lastEventId=${lastEventId}`
-    for (const ms of RECONNECT_BACKOFF_MS) {
+    /** 一次续接尝试：终帧原样上交；连接层失败/读到再断流都返回 null（继续重连） */
+    async function attempt(): Promise<ConsumeOutcome | null> {
       if (signal?.aborted) return 'stopped'
-      await sleep(ms)
       try {
-        return await streamLoop(await fetch(url(), { signal }))
-      } catch (e) {
-        if (signal?.aborted) return 'stopped'
+        const out = await streamLoop(await fetch(url(), { signal }))
+        return out === 'dropped' ? null : out
+      } catch {
+        return signal?.aborted ? 'stopped' : null
       }
     }
-    const deadline = Date.now() + PROBE_HORIZON_MS
-    while (Date.now() < deadline) {
-      await sleepAware(Math.min(PROBE_INTERVAL_MS, deadline - Date.now()))
-      if (signal?.aborted) return 'stopped'
-      try {
-        return await streamLoop(await fetch(url(), { signal }))
-      } catch (e) {
+    for (let pass = 0; pass < LADDER_PASSES; pass++) {
+      for (const ms of RECONNECT_BACKOFF_MS) {
         if (signal?.aborted) return 'stopped'
+        await sleep(ms)
+        const out = await attempt()
+        if (out) return out
+      }
+      const deadline = Date.now() + PROBE_HORIZON_MS
+      while (Date.now() < deadline) {
+        await sleepAware(Math.min(PROBE_INTERVAL_MS, deadline - Date.now()))
+        const out = await attempt()
+        if (out) return out
       }
     }
     return 'idle'
   }
 
   // --- 发起段：POST 预流连接层失败幂等重试；JSON 响应 = 幂等命中（转续接/对齐） ---
+  // 计划原文协议：只对「一个字节都没收到」的连接层失败重试；服务端返回任何 JSON/HTTP
+  // 错误码都不重试直接展示——409（在跑）/404（深链失效）重发只会白传三遍 body 还晚 3.5s 报错
   let first: Response | null = null
   for (let attempt = 0; ; attempt++) {
+    let r: Response
     try {
-      const r = await fetch('/api/chat', {
+      r = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(req),
         signal,
       })
-      if (!r.ok) throw new Error(await readError(r))
-      const ct = r.headers.get('content-type') ?? ''
-      if (ct.includes('application/json')) {
-        // 幂等命中：服务端已在处理同一个 requestId
-        const j = (await r.json()) as { sessionId?: string; done?: boolean }
-        if (j.sessionId) sid = String(j.sessionId)
-        if (j.done) {
-          handlers.onStatus('aligning')
-          return { sessionId: sid ?? '', outcome: 'aligned' }
-        }
-        first = null // 在跑：直接进续接循环
-      } else {
-        first = r
-      }
-      break
     } catch (e) {
+      // 连接层失败（fetch 本身拒绝）才走幂等重试
       if (signal?.aborted) throw e
       if (attempt >= PRE_STREAM_BACKOFF_MS.length) throw e
       await sleep(PRE_STREAM_BACKOFF_MS[attempt])
+      continue
     }
+    if (!r.ok) throw new Error(await readError(r))
+    const ct = r.headers.get('content-type') ?? ''
+    if (ct.includes('application/json')) {
+      // 幂等命中：服务端已在处理同一个 requestId
+      const j = (await r.json()) as { sessionId?: string; done?: boolean }
+      if (j.sessionId) sid = String(j.sessionId)
+      if (j.done) {
+        handlers.onStatus('aligning')
+        return { sessionId: sid ?? '', outcome: 'aligned' }
+      }
+      first = null // 在跑：直接进续接循环
+    } else {
+      first = r
+    }
+    break
   }
 
   let out: ConsumeOutcome

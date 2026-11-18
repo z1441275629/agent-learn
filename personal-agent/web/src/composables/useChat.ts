@@ -7,7 +7,7 @@
 // 会话在服务端：客户端只发「新消息」，历史由 /api/sessions 的账本维护。
 
 import { computed, reactive, ref } from 'vue'
-import { confirmToolCall, fetchModels, fetchRunningSessions, getSession, listSessions, stopSession, streamChat } from '../api'
+import { confirmToolCall, fetchModels, fetchRunningSessions, getSession, listSessions, newRequestId, stopSession, streamChat } from '../api'
 import router from '../router'
 import type { ConfirmCard, DisplayMessage, ModelEntry, PendingAttachment, SessionSummary } from '../types'
 import { toast } from '../utils/toast'
@@ -117,22 +117,71 @@ function newChat(): void {
   void router.push('/chat')
 }
 
+// ---------- 在跑对账（刷新后恢复「进行中」标记，跑完自动摘） ----------
+// 客户端刷新会丢掉本地的 runs/streamChat 句柄，服务端却还在续跑：/running 是唯一事实源。
+// 轮询到会话从清单消失（服务端已收尾落盘）时摘标记；消失的是当前打开的会话就重拉账本——
+// 后台跑完的那条回答要上屏，不能让用户对着刷新前的旧缓存
+
+let runningPollTimer: ReturnType<typeof setInterval> | null = null
+
+function stopRunningPoll(): void {
+  if (runningPollTimer) {
+    clearInterval(runningPollTimer)
+    runningPollTimer = null
+  }
+}
+
+function startRunningPoll(): void {
+  if (runningPollTimer) return
+  runningPollTimer = setInterval(() => {
+    void (async () => {
+      let running: string[]
+      try {
+        running = await fetchRunningSessions()
+      } catch {
+        return // 这轮拉不到就跳过，下轮再对
+      }
+      const gone: string[] = []
+      for (const sid of streamingSessions) if (!running.includes(sid)) gone.push(sid)
+      for (const sid of gone) {
+        streamingSessions.delete(sid)
+        if (sid === activeSid.value) {
+          // 当前会话的后台跑完了：服务端账本已落终稿，重拉覆盖本地缓存
+          try {
+            const detail = await getSession(sid)
+            messagesBySid.set(sid, detail.messages.map((m) => ({ ...m })))
+          } catch {
+            /* 下次切换会话时 openSession 还会拉，不致命 */
+          }
+        }
+        void refreshSessions()
+      }
+      if (streamingSessions.size === 0) stopRunningPoll()
+    })()
+  }, 5000)
+}
+
+async function syncRunning(): Promise<void> {
+  try {
+    for (const sid of await fetchRunningSessions()) streamingSessions.add(sid)
+  } catch {
+    return // 拉不到不打紧——标记只是暂时少一个
+  }
+  startRunningPoll()
+}
+
 async function init(): Promise<void> {
   await loadModels()
   try {
     const payload = await listSessions()
     sessions.value = payload.sessions
+    // 在跑对账放在深链早退之前：刷新落在深链上时「进行中」标记不能丢
+    await syncRunning()
     // 深链定位：路由带合法 id 时 watcher 已打开（openSession 直接拉详情，不依赖列表）——不再重复打开
     const wanted = String(router.currentRoute.value.params.id ?? '')
     if (wanted && payload.sessions.some((s) => s.id === wanted)) return
     if (wanted) void router.replace('/chat')
     if (payload.sessions.length > 0) await openSession(payload.sessions[0].id)
-    // 在跑清单：宽限期续跑的会话在刷新后仍亮「进行中」标记
-    try {
-      for (const rsid of await fetchRunningSessions()) streamingSessions.add(rsid)
-    } catch {
-      // 拉不到不打紧——标记只是暂时少一个
-    }
   } catch (e: any) {
     toast('会话列表加载失败：' + (e?.message ?? e))
   }
@@ -220,7 +269,7 @@ async function send(text: string): Promise<void> {
     const result = await streamChat(
       {
         sessionId: key,
-        requestId: crypto.randomUUID(),
+        requestId: newRequestId(),
         message: { text: content, images: sentImages },
         modelId: modelId.value,
         thinking: thinking.value,
