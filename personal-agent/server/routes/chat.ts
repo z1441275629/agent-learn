@@ -19,7 +19,12 @@ import {
   skills,
   store,
   tools,
+  PA_GRACE_MS,
+  requestIds,
+  REQUEST_ID_TTL_MS,
+  streamBuffers,
 } from '../state.ts'
+import type { StreamBuffer } from '../state.ts'
 import { routeMessage } from '../../core/router.ts'
 import { runBlogComposite } from '../../core/composite.ts'
 import { planTask } from '../../core/planner.ts'
@@ -42,11 +47,27 @@ router.post('/api/chat', async (ctx) => {
   if (rawImages.length > 0 && !entry.vision)
     return json(ctx, 400, { error: `「${entry.label} · ${entry.model}」不支持图片输入——请切换到视觉模型` })
 
+  // 幂等闸门（动存储之前）：同 requestId 重放 → 返回既有会话让客户端转 GET /stream 续接，
+  // 不新建会话、不重复落盘。resumed+done 由缓冲是否存在判定（在跑=没 done）
+  const rid = typeof body.requestId === 'string' && body.requestId ? body.requestId : null
+  if (rid) {
+    const seen = requestIds.get(rid)
+    if (seen) {
+      const running = streamBuffers.has(seen.sid)
+      return json(ctx, 200, { ok: true, sessionId: seen.sid, resumed: true, done: !running })
+    }
+  }
+
   const existing = body.sessionId ? await store.load(body.sessionId) : await store.create()
   if (!existing) return json(ctx, 404, { error: '会话不存在' })
   const sid = existing.id
   if (runningSessions.has(sid)) return json(ctx, 409, { error: '这个会话还在回答，先停止或等它结束' })
   runningSessions.add(sid)
+  if (rid) {
+    const now = Date.now()
+    for (const [k, v] of requestIds) if (now - v.at > REQUEST_ID_TTL_MS) requestIds.delete(k)
+    requestIds.set(rid, { sid, at: now })
+  }
 
   try {
     const storedImages: StoredImage[] = []
@@ -79,14 +100,33 @@ router.post('/api/chat', async (ctx) => {
     // 仍走 Koa 正常的 JSON 错误路径，别让 respond=false 把错误帧也吞了
     ctx.respond = false
     const res = ctx.res
+    // 缓冲结构在第一帧前就绪；abort 提前创建（宽限期/显式停止都用它）
+    const ac = new AbortController()
+    const buf: StreamBuffer = {
+      frames: [],
+      clients: new Set([res]),
+      postRes: res,
+      abort: ac,
+      graceTimer: null,
+      nextId: 1,
+    }
+    streamBuffers.set(sid, buf)
     res.writeHead(200, {
       'Content-Type': 'text/event-stream; charset=utf-8',
       'Cache-Control': 'no-cache',
       Connection: 'keep-alive',
       'X-Accel-Buffering': 'no',
     })
+    // 帧写缓冲 + 广播到所有客户端（带自增 id 行——GET /stream 重连按 lastEventId 去重回放）
     const send = (o: unknown) => {
-      if (!res.destroyed && !res.writableEnded) res.write(`data: ${JSON.stringify(o)}\n\n`)
+      if (streamBuffers.get(sid) !== buf) return
+      const id = buf.nextId++
+      const jsonStr = JSON.stringify(o)
+      buf.frames.push({ id, json: jsonStr })
+      const line = 'id: ' + id + '\ndata: ' + jsonStr + '\n\n'
+      for (const c of buf.clients) {
+        if (!c.destroyed && !c.writableEnded) c.write(line)
+      }
     }
     // 第一帧就告诉前端会话 id/标题：新会话由服务端创建，前端据此刷新列表
     send({ type: 'session', sessionId: sid, title: doc.title })
@@ -123,11 +163,22 @@ router.post('/api/chat', async (ctx) => {
 
     // 客户端断开/点停止 → abort 上游，别让没人看的长回答继续烧 token；半截回答仍要落盘；
     // 还没应答的确认卡按拒绝收尾（门不能比流活得久）
-    const ac = new AbortController()
+    // 客户端断开 ≠ 立即停：POST 连接断开进宽限期（继续生成+缓冲，确认卡存活等人回来）；
+    // GET tail 断开只减客户端。宽限期到仍无人重连才 abort——落盘与收尾由主流程 aborted 分支统一做
     res.on('close', () => {
-      if (!res.writableEnded) {
-        ac.abort()
-        for (const p of pendingConfirms.values()) if (p.sid === sid) p.settle(false, 'denied')
+      if (streamBuffers.get(sid) !== buf) return
+      if (res !== buf.postRes) {
+        buf.clients.delete(res)
+        return
+      }
+      if (!res.writableEnded && !buf.graceTimer) {
+        console.log('[pa] chat 客户端断开，宽限 ' + Math.round(PA_GRACE_MS / 1000) + 's 续跑 · session ' + sid)
+        buf.graceTimer = setTimeout(() => {
+          if (streamBuffers.get(sid) !== buf) return
+          console.log('[pa] chat 宽限期无人重连，停止生成 · session ' + sid)
+          ac.abort()
+          for (const p of pendingConfirms.values()) if (p.sid === sid) p.settle(false, 'denied')
+        }, PA_GRACE_MS)
       }
     })
     const t0 = Date.now()
@@ -150,6 +201,16 @@ router.post('/api/chat', async (ctx) => {
         })
       }
       console.log(`[pa] chat 已停止 · ${streamedText.length} 字 · session ${sid}`)
+    }
+    /** 收尾：清宽限计时、摘缓冲、关所有客户端（幂等——重复调用无害） */
+    const finish = () => {
+      if (buf.graceTimer) clearTimeout(buf.graceTimer)
+      buf.graceTimer = null
+      streamBuffers.delete(sid)
+      for (const c of buf.clients) {
+        if (!c.destroyed && !c.writableEnded) c.end()
+      }
+      buf.clients.clear()
     }
     try {
       // 单 agent 主路径抽成局部函数：normal 直跑 + plan 解析失败回落，同一段代码不复制
@@ -178,6 +239,7 @@ router.post('/api/chat', async (ctx) => {
         if (result.aborted || ac.signal.aborted) {
           // 关键实测：OpenAI SDK 的上游流被 abort 时常常是「正常结束」而不是抛错，
           // 所以不能只靠 catch 判断用户是否点了停止——循环结束后必须再看一次信号。
+          send({ type: 'stopped' })
           await saveInterrupted(elapsedMs)
         } else {
           await safeAppend(sid, {
@@ -259,6 +321,7 @@ router.post('/api/chat', async (ctx) => {
             total_tokens: r.promptTokens + r.completionTokens + outcome.promptTokens + outcome.completionTokens,
           }
           if (ac.signal.aborted) {
+            send({ type: 'stopped' })
             await safeAppend(sid, {
               role: 'assistant',
               text: r.finalText || '（任务被中止，无产出）',
@@ -335,6 +398,7 @@ router.post('/api/chat', async (ctx) => {
               : `${comp.finalBlog}\n\n未解决项：\n${comp.openIssues.map((s, i) => `${i + 1}. ${s}`).join('\n')}`
         const traceAll = [...comp.trace, ...(writeTrace ? [writeTrace] : [])]
         if (ac.signal.aborted) {
+          send({ type: 'stopped' })
           // 中止：把已产出的部分按 interrupted 落盘（streamedText 在 composite 分支恒空，不走 saveInterrupted）
           await safeAppend(sid, {
             role: 'assistant',
@@ -376,6 +440,7 @@ router.post('/api/chat', async (ctx) => {
     } catch (err: any) {
       const elapsedMs = Date.now() - t0
       if (ac.signal.aborted) {
+        send({ type: 'stopped' })
         // 用户主动停止：把已经生成的部分存进账本，下次进来还能接着聊
         await saveInterrupted(elapsedMs)
       } else {
@@ -393,7 +458,7 @@ router.post('/api/chat', async (ctx) => {
         send({ type: 'error', error: msg })
       }
     }
-    res.end()
+    finish()
   } finally {
     runningSessions.delete(sid)
   }

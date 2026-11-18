@@ -18,6 +18,7 @@ import { describeScreenshot } from '../shot-vision.ts'
 import { MODELS } from '../models.ts'
 import { thinkingParams } from '../models.ts'
 import { decodeImage } from './http.ts'
+import type { ServerResponse } from 'node:http'
 import fs from 'node:fs'
 import path from 'node:path'
 
@@ -100,6 +101,28 @@ export const pendingConfirms = new Map<string, PendingConfirm>()
 // 会话级「总是允许」：确认卡上勾了才进这里（内存态，重启即清——长期授权是危险品，
 // 刻意不给它落盘）；本会话内同工具的后续调用直接放行，不再出卡
 export const sessionAllows = new Map<string, Set<string>>()
+
+// ---------- SSE 续跑：帧缓冲 / 多客户端广播 / 断开宽限期 / 发送幂等 ----------
+/** 客户端断开后服务端继续生成的宽限期；期间无人经 GET /stream 重连才真正停止 */
+export const PA_GRACE_MS = Number(process.env.PA_GRACE_MS || 90_000)
+export interface StreamFrame {
+  id: number
+  json: string
+}
+export interface StreamBuffer {
+  frames: StreamFrame[]
+  /** 活着的 SSE 客户端（POST 自身的 res 是初始成员；GET /stream 重连的往里加） */
+  clients: Set<ServerResponse>
+  /** POST 的 res——close 事件里区分「发起连接断了」（进宽限期）还是「tail 断了」（只减客户端） */
+  postRes: ServerResponse
+  abort: AbortController
+  graceTimer: NodeJS.Timeout | null
+  nextId: number
+}
+export const streamBuffers = new Map<string, StreamBuffer>()
+/** 发送幂等：同 requestId 重放时返回既有会话（重发安全靠协议，不靠「没收到首帧」的猜测） */
+export const requestIds = new Map<string, { sid: string; at: number }>()
+export const REQUEST_ID_TTL_MS = 10 * 60_000
 
 // ---------- 记忆抽取钩子：回答完成后异步跑，绝不阻塞/弄崩对话 ----------
 // 课程 07 的教训在这条链上全用得上：

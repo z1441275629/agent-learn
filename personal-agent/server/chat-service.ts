@@ -17,6 +17,8 @@ import { config, store, memories, kb, skills } from './state.ts'
 
 export interface ChatBody {
   sessionId?: string | null
+  /** 客户端生成的发送幂等键：连接层失败重发时服务端返回既有会话而非再开一轮 */
+  requestId?: string
   message?: { text?: string; images?: { dataUrl?: string; name?: string }[] }
   modelId?: string
   thinking?: string
