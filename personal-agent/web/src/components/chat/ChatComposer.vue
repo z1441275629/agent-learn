@@ -187,25 +187,6 @@ onBeforeUnmount(() => document.removeEventListener('paste', onPaste))
   gap: 8px;
 }
 
-textarea {
-  flex: 1;
-  resize: none;
-  max-height: 180px;
-  min-height: 40px;
-  padding: 9px 12px;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  font: inherit;
-  font-size: 14px;
-  line-height: 1.5;
-  background: #fafbfc;
-}
-
-textarea:focus {
-  outline: 2px solid var(--accent-soft);
-  border-color: var(--accent);
-}
-
 .icon {
   width: 38px;
   height: 38px;
