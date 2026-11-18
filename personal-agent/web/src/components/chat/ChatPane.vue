@@ -27,6 +27,7 @@ const {
   asrModel,
   sessions,
   sessionId,
+  streamingSessions,
   messages,
   pending,
   streaming,
@@ -81,7 +82,13 @@ function answerPending(approve: boolean, always: boolean): void {
 
 <template>
   <div class="chat-pane pane">
-    <SessionSidebar :sessions="sessions" :session-id="sessionId" @open="openSession" @new-chat="newChat" />
+    <SessionSidebar
+      :sessions="sessions"
+      :session-id="sessionId"
+      :streaming-sessions="streamingSessions"
+      @open="openSession"
+      @new-chat="newChat"
+    />
     <div class="chat-main">
       <ChatToolbar
         v-model:model-id="modelId"

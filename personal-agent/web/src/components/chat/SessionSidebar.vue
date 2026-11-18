@@ -4,6 +4,8 @@ import type { SessionSummary } from '../../types'
 defineProps<{
   sessions: SessionSummary[]
   sessionId: string | null
+  /** 进行中的流式会话集合（useChat 模块单例），驱动条目上的呼吸点标记 */
+  streamingSessions: Set<string>
 }>()
 const emit = defineEmits<{ open: [id: string]; newChat: [] }>()
 
@@ -36,7 +38,10 @@ function shortTime(iso: string): string {
         @click="emit('open', s.id)"
       >
         <span class="title">{{ s.title }}</span>
-        <span class="time">{{ shortTime(s.updatedAt) }}</span>
+        <span class="row">
+          <span class="time">{{ shortTime(s.updatedAt) }}</span>
+          <span v-if="streamingSessions.has(s.id)" class="run-dot" title="回答进行中"></span>
+        </span>
       </button>
       <p v-if="!sessions.length" class="empty">还没有历史会话</p>
     </div>
@@ -117,9 +122,33 @@ function shortTime(iso: string): string {
   font-weight: 600;
 }
 
+.row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .time {
   font-size: 11px;
   color: var(--muted);
+}
+
+.run-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 1;
+  }
 }
 
 .empty {
