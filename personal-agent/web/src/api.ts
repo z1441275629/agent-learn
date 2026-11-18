@@ -41,43 +41,204 @@ export async function getSession(id: string): Promise<SessionDetail> {
   return j.session as SessionDetail
 }
 
-/**
- * POST /api/chat，按 SSE 增量回调。
- * 服务端帧：{type:'delta',text} → {type:'done',text,usage,...}；出错为 {type:'error',error}。
- * 用 fetch reader 而不是 EventSource：EventSource 不能带 POST body。
- */
-export async function streamChat(
-  body: ChatRequest,
-  onChunk: (chunk: ChatChunk) => void,
-  signal?: AbortSignal,
-): Promise<void> {
-  const res = await fetch('/api/chat', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-    signal,
-  })
-  if (!res.ok || !res.body) throw new Error(await readError(res))
+// ---------- 流式对话：预流幂等重试 / 断线重连（快速+慢探针）/ idle 对齐 ----------
 
-  const reader = res.body.getReader()
-  const decoder = new TextDecoder()
-  let buf = ''
-  while (true) {
-    const { done, value } = await reader.read()
-    if (done) break
-    buf += decoder.decode(value, { stream: true })
-    let idx: number
-    while ((idx = buf.indexOf('\n\n')) >= 0) {
-      const raw = buf.slice(0, idx)
-      buf = buf.slice(idx + 2)
-      const line = raw.split('\n').find((l) => l.startsWith('data: '))
-      if (!line) continue
-      const chunk = JSON.parse(line.slice(6)) as ChatChunk
-      if (chunk.type === 'error') throw new Error(chunk.error ?? '模型出错')
-      onChunk(chunk)
+export type StreamStatus = "connecting" | "streaming" | "reconnecting" | "aligning"
+export interface StreamHandlers {
+  onChunk: (chunk: ChatChunk) => void
+  onStatus: (status: StreamStatus) => void
+}
+export interface StreamResult {
+  sessionId: string
+  outcome: 'done' | 'aligned' | 'stopped'
+}
+
+/** 预流重试退避：只对连接层失败（一个字节都没收到）生效——服务端已受理的错误绝不重发 */
+const PRE_STREAM_BACKOFF_MS = [500, 1000, 2000]
+/** 断线后快速重连退避 */
+const RECONNECT_BACKOFF_MS = [1000, 2000, 4000, 8000]
+/** 快速重连穷尽后的慢探针间隔 */
+const PROBE_INTERVAL_MS = 15000
+/** 探针地平线：与默认 PA_GRACE_MS(90s) 对齐再留 30s；服务端改 PA_GRACE_MS 需同步这里 */
+const PROBE_HORIZON_MS = 120000
+
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
+
+/** 可被「页面变可见/窗口聚焦」提前唤醒的 sleep：合盖唤醒后立即插一次探针 */
+function sleepAware(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    let settle = () => {}
+    const t = setTimeout(() => {
+      cleanup()
+      settle()
+    }, ms)
+    const onWake = () => {
+      clearTimeout(t)
+      cleanup()
+      settle()
     }
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') onWake()
+    }
+    function cleanup() {
+      document.removeEventListener('visibilitychange', onVisibility)
+      window.removeEventListener('focus', onWake)
+    }
+    document.addEventListener('visibilitychange', onVisibility)
+    window.addEventListener('focus', onWake)
+    settle = resolve
+  })
+}
+
+/** SSE 帧解析：喂字节按空行切帧；id: 行记录续接位置，data: 行交回调 */
+function createSseParser(onFrame: (id: number | null, data: string) => void) {
+  let buf = ''
+  return {
+    feed(chunkText: string): void {
+      buf += chunkText
+      let idx: number
+      while ((idx = buf.indexOf('\n\n')) >= 0) {
+        const raw = buf.slice(0, idx)
+        buf = buf.slice(idx + 2)
+        let id: number | null = null
+        let data: string | null = null
+        for (const line of raw.split('\n')) {
+          if (line.startsWith('id: ')) id = Number.parseInt(line.slice(4), 10) || 0
+          else if (line.startsWith('data: ')) data = line.slice(6)
+        }
+        if (data !== null) onFrame(id, data)
+      }
+    },
   }
 }
+
+/** 消费一条 SSE 响应到终帧/EOF。终帧决定返回值；无终帧 EOF = 断流；error 帧原样抛出 */
+type ConsumeOutcome = "completed" | "dropped" | "idle" | "stopped"
+
+export async function streamChat(body: ChatRequest, handlers: StreamHandlers, signal?: AbortSignal): Promise<StreamResult> {
+  const req: ChatRequest = { ...body, requestId: body.requestId ?? crypto.randomUUID() }
+  handlers.onStatus('connecting')
+  let sid: string | null = body.sessionId ?? null
+  let lastEventId = 0
+
+  async function streamLoop(res: Response): Promise<ConsumeOutcome> {
+    if (!res.ok || !res.body) throw new Error(await readError(res))
+    handlers.onStatus('streaming')
+    let doneFrame = false
+    let stoppedFrame = false
+    let idleFrame = false
+    const reader = res.body.getReader()
+    const decoder = new TextDecoder()
+    const parser = createSseParser((id, data) => {
+      if (id !== null) lastEventId = id
+      const chunk = JSON.parse(data) as ChatChunk
+      if (chunk.type === 'session' && chunk.sessionId) sid = chunk.sessionId
+      if (chunk.type === 'done') doneFrame = true
+      if (chunk.type === 'stopped') stoppedFrame = true
+      if (chunk.type === 'idle') idleFrame = true
+      if (chunk.type === 'error') throw new Error(chunk.error ?? '模型出错')
+      handlers.onChunk(chunk)
+    })
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      parser.feed(decoder.decode(value, { stream: true }))
+    }
+    if (doneFrame) return 'completed'
+    if (stoppedFrame) return 'stopped'
+    if (idleFrame) return 'idle'
+    return 'dropped'
+  }
+
+  /** 断线续接：快速重连 4 次 → 慢探针到地平线。成功=续流结果；地平线耗尽=idle（走对齐） */
+  async function attachLoop(): Promise<ConsumeOutcome> {
+    if (!sid) return 'idle'
+    handlers.onStatus('reconnecting')
+    const url = () => `/api/chat/${encodeURIComponent(sid!)}/stream?lastEventId=${lastEventId}`
+    for (const ms of RECONNECT_BACKOFF_MS) {
+      if (signal?.aborted) return 'stopped'
+      await sleep(ms)
+      try {
+        return await streamLoop(await fetch(url(), { signal }))
+      } catch (e) {
+        if (signal?.aborted) return 'stopped'
+      }
+    }
+    const deadline = Date.now() + PROBE_HORIZON_MS
+    while (Date.now() < deadline) {
+      await sleepAware(Math.min(PROBE_INTERVAL_MS, deadline - Date.now()))
+      if (signal?.aborted) return 'stopped'
+      try {
+        return await streamLoop(await fetch(url(), { signal }))
+      } catch (e) {
+        if (signal?.aborted) return 'stopped'
+      }
+    }
+    return 'idle'
+  }
+
+  // --- 发起段：POST 预流连接层失败幂等重试；JSON 响应 = 幂等命中（转续接/对齐） ---
+  let first: Response | null = null
+  for (let attempt = 0; ; attempt++) {
+    try {
+      const r = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(req),
+        signal,
+      })
+      if (!r.ok) throw new Error(await readError(r))
+      const ct = r.headers.get('content-type') ?? ''
+      if (ct.includes('application/json')) {
+        // 幂等命中：服务端已在处理同一个 requestId
+        const j = (await r.json()) as { sessionId?: string; done?: boolean }
+        if (j.sessionId) sid = String(j.sessionId)
+        if (j.done) {
+          handlers.onStatus('aligning')
+          return { sessionId: sid ?? '', outcome: 'aligned' }
+        }
+        first = null // 在跑：直接进续接循环
+      } else {
+        first = r
+      }
+      break
+    } catch (e) {
+      if (signal?.aborted) throw e
+      if (attempt >= PRE_STREAM_BACKOFF_MS.length) throw e
+      await sleep(PRE_STREAM_BACKOFF_MS[attempt])
+    }
+  }
+
+  let out: ConsumeOutcome
+  if (first) {
+    out = await streamLoop(first)
+    if (out === 'dropped') out = await attachLoop()
+  } else {
+    out = await attachLoop()
+  }
+  if (!sid) throw new Error('连接中断且会话未知——请重试')
+  if (out === 'dropped' || out === 'idle') {
+    // 续跑不可能或已结束：拉服务端账本对齐（半截回答/错误信息都已在账本）
+    handlers.onStatus('aligning')
+    return { sessionId: sid, outcome: 'aligned' }
+  }
+  return { sessionId: sid, outcome: out === 'completed' ? 'done' : 'stopped' }
+}
+
+/** 在跑会话清单（刷新后恢复列表「进行中」标记） */
+export async function fetchRunningSessions(): Promise<string[]> {
+  const res = await fetch('/api/chat/running')
+  if (!res.ok) throw new Error(await readError(res))
+  const j = await res.json()
+  return (j.sessionIds ?? []) as string[]
+}
+
+/** 显式停止某会话的生成（服务端 abort+落盘；404 = 已结束） */
+export async function stopSession(sid: string): Promise<void> {
+  const res = await fetch(`/api/chat/${encodeURIComponent(sid)}/stop`, { method: 'POST' })
+  if (!res.ok) throw new Error(await readError(res))
+}
+
 
 export async function runOcr(req: OcrRequest): Promise<OcrResponse> {
   const res = await fetch('/api/ocr' + (req.translate ? '' : '?translate=0'), {

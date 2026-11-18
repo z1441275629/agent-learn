@@ -55,6 +55,8 @@ export interface DisplayMessage {
   confirms?: ConfirmCard[]
   /** 仅前端：正在流式接收 */
   streaming?: boolean
+  /** 仅前端：连接中断，服务端续跑中、客户端重连里 */
+  reconnecting?: boolean
 }
 
 export interface SessionSummary {
@@ -138,6 +140,8 @@ export interface OcrRequest {
 /** 客户端只发「新消息」；历史在服务端账本里 */
 export interface ChatRequest {
   sessionId: string | null
+  /** 发送幂等键（缺省由 api 层生成）：预流连接层失败重发时服务端按它去重 */
+  requestId?: string
   message: {
     text: string
     images: { dataUrl: string; name: string }[]
@@ -152,7 +156,7 @@ export interface ChatRequest {
 }
 
 export interface ChatChunk {
-  type: 'session' | 'delta' | 'tool' | 'confirm' | 'done' | 'error'
+  type: 'session' | 'delta' | 'tool' | 'confirm' | 'done' | 'error' | 'stopped' | 'idle'
   sessionId?: string
   title?: string
   text?: string

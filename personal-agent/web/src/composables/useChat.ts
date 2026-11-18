@@ -7,7 +7,7 @@
 // 会话在服务端：客户端只发「新消息」，历史由 /api/sessions 的账本维护。
 
 import { computed, reactive, ref } from 'vue'
-import { confirmToolCall, fetchModels, getSession, listSessions, streamChat } from '../api'
+import { confirmToolCall, fetchModels, fetchRunningSessions, getSession, listSessions, stopSession, streamChat } from '../api'
 import router from '../router'
 import type { ConfirmCard, DisplayMessage, ModelEntry, PendingAttachment, SessionSummary } from '../types'
 import { toast } from '../utils/toast'
@@ -127,6 +127,12 @@ async function init(): Promise<void> {
     if (wanted && payload.sessions.some((s) => s.id === wanted)) return
     if (wanted) void router.replace('/chat')
     if (payload.sessions.length > 0) await openSession(payload.sessions[0].id)
+    // 在跑清单：宽限期续跑的会话在刷新后仍亮「进行中」标记
+    try {
+      for (const rsid of await fetchRunningSessions()) streamingSessions.add(rsid)
+    } catch {
+      // 拉不到不打紧——标记只是暂时少一个
+    }
   } catch (e: any) {
     toast('会话列表加载失败：' + (e?.message ?? e))
   }
@@ -211,9 +217,10 @@ async function send(text: string): Promise<void> {
   runs.set(key, { controller, placeholder })
   try {
     let acc = ''
-    await streamChat(
+    const result = await streamChat(
       {
         sessionId: key,
+        requestId: crypto.randomUUID(),
         message: { text: content, images: sentImages },
         modelId: modelId.value,
         thinking: thinking.value,
@@ -221,7 +228,8 @@ async function send(text: string): Promise<void> {
         kbSearch: kbSearch.value,
         tools: toolsOn.value,
       },
-      (chunk) => {
+      {
+        onChunk: (chunk) => {
         if (chunk.type === 'session') {
           const sid = chunk.sessionId
           if (sid && sid !== key) {
@@ -267,10 +275,48 @@ async function send(text: string): Promise<void> {
           placeholder.model = chunk.model
           if (chunk.tools?.length) placeholder.tools = chunk.tools
         }
+        },
+        onStatus: (status) => {
+          // 重连/对齐期在气泡上提示「连接中断，服务端仍在生成」；续上即灭
+          placeholder.reconnecting = status === 'reconnecting' || status === 'aligning'
+        },
       },
       controller.signal,
     )
-    if (!placeholder.content) throw new Error('模型没有返回内容')
+    if (result.outcome === 'aligned') {
+      // 服务端账本为准：全量覆盖本地缓存（半截/终稿/错误都已在账本），placeholder 被真实消息替换
+      placeholder.streaming = false
+      const detail = await getSession(result.sessionId)
+      const prev = messagesBySid.get(key)
+      const pi = prev?.indexOf(placeholder) ?? -1
+      if (prev && pi >= 0) prev.splice(pi, 1)
+      if (key !== result.sessionId) {
+        // 对齐时才知道真实 sid（session 帧没来得及到）：缓存/句柄/缓存序从旧键搬到 sid
+        messagesBySid.delete(key)
+        const run = runs.get(key)
+        runs.delete(key)
+        if (run) runs.set(result.sessionId, run)
+        cacheOrder.value = cacheOrder.value.map((k) => (k === key ? result.sessionId : k))
+        if (activeSid.value === key) activeSid.value = result.sessionId
+        if (key) streamingSessions.delete(key)
+        streamingSessions.add(result.sessionId)
+        key = result.sessionId
+        void router.replace('/chat/' + result.sessionId)
+      }
+      messagesBySid.set(result.sessionId, detail.messages.map((m) => ({ ...m })))
+      if (detail.modelId && models.value.some((m) => m.id === detail.modelId)) modelId.value = detail.modelId
+      if (detail.thinking) thinking.value = detail.thinking
+      void refreshSessions()
+    } else if (result.outcome === 'stopped') {
+      // 服务端宣告停止（别的页签点的停/显式停）：本地按 interrupted 收尾
+      if (placeholder.content) placeholder.interrupted = true
+      else {
+        const i2 = list.indexOf(placeholder)
+        if (i2 >= 0) list.splice(i2, 1)
+      }
+    } else if (!placeholder.content) {
+      throw new Error('模型没有返回内容')
+    }
   } catch (e: any) {
     if (controller.signal.aborted) {
       if (placeholder.content) {
@@ -291,7 +337,10 @@ async function send(text: string): Promise<void> {
 }
 
 function stop(): void {
-  const run = runs.get(activeSid.value)
+  const key = activeSid.value
+  // 服务端显式停（abort+半截落盘+stopped 帧）；送不到时本地 abort 兜底（断开进宽限期，不丢已生成内容）
+  if (key) void stopSession(key).catch(() => {})
+  const run = runs.get(key)
   run?.controller.abort()
 }
 

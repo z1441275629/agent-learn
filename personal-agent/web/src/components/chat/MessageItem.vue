@@ -42,6 +42,7 @@ function skillNameOf(t: ToolTraceInfo): string | null {
     <div class="avatar">{{ message.role === 'user' ? '我' : 'AI' }}</div>
     <div class="bubble" :class="{ error: !!message.error }">
       <template v-if="message.error">{{ message.error }}</template>
+      <div v-else-if="message.reconnecting" class="reconnect-hint"><span class="spin"></span>连接中断，服务端仍在生成，自动重连中…</div>
 
       <template v-else-if="message.role === 'user'">
         <div v-if="message.content" class="user-text">{{ message.content }}</div>
