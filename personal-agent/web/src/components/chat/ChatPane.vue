@@ -1,6 +1,6 @@
 <script setup lang="ts">
 defineOptions({ name: 'ChatPane' })
-import { computed, watch } from 'vue'
+import { watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useChat } from '../../composables/useChat'
 import { useSessionRoute } from '../../composables/useSessionRoute'
@@ -9,7 +9,6 @@ import { useMemories } from '../../composables/useMemories'
 import { useSkills } from '../../composables/useSkills'
 import ChatComposer from './ChatComposer.vue'
 import ChatToolbar from './ChatToolbar.vue'
-import ConfirmDialog from './ConfirmDialog.vue'
 import KbPanel from './KbPanel.vue'
 import MemoryPanel from './MemoryPanel.vue'
 import SkillPanel from './SkillPanel.vue'
@@ -49,7 +48,6 @@ const {
   removePending,
   send,
   stop,
-  answerConfirm,
 } = useChat()
 
 const {
@@ -72,22 +70,6 @@ watch(streaming, (now, was) => {
   if (was && !now) setTimeout(() => void loadMemories(), 2500)
 })
 
-// 待决策的确认卡：只在流式进行中的消息里找——交互由弹窗接管，内联卡只留审计记录。
-// 不扫历史消息：服务端中途崩溃可能留下无 outcome 的陈旧卡，复活弹窗会点不动也关不掉（流已断，没有 outcome 帧来收场）
-// 注意 script 里 Ref 必须取 .value（tsc 不查 .vue，写成 messages.length 会静默 undefined，弹窗永远不弹）
-const pendingConfirm = computed(() => {
-  const list = messages.value
-  for (let i = list.length - 1; i >= 0; i--) {
-    if (!list[i].streaming) continue
-    const card = list[i].confirms?.find((c) => !c.outcome)
-    if (card) return card
-  }
-  return null
-})
-
-function answerPending(approve: boolean, always: boolean): void {
-  if (pendingConfirm.value) void answerConfirm(pendingConfirm.value, approve, always)
-}
 </script>
 
 <template>
@@ -136,8 +118,6 @@ function answerPending(approve: boolean, always: boolean): void {
         />
       </div>
     </div>
-    <!-- 写入确认弹窗：decision 后 outcome 落定，v-if 自动收起。放根节点内（App.vue 对本组件用 v-show，须单根） -->
-    <ConfirmDialog v-if="pendingConfirm" :card="pendingConfirm" @answer="answerPending" />
   </div>
 </template>
 

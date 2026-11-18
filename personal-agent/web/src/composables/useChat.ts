@@ -355,6 +355,19 @@ async function answerConfirm(card: ConfirmCard, approve: boolean, always = false
 }
 
 const sessionId = activeSid
+/** 全局确认卡：任何流式会话里待决策的写入卡都算——后台会话的卡也要能被看见/应答 */
+const globalConfirm = computed<{ sid: string; title: string; card: ConfirmCard } | null>(() => {
+  for (const sid of streamingSessions) {
+    const list = messagesBySid.get(sid)
+    if (!list) continue
+    for (let i = list.length - 1; i >= 0; i--) {
+      if (!list[i].streaming) continue
+      const card = list[i].confirms?.find((c) => !c.outcome)
+      if (card) return { sid, title: sessions.value.find((s) => s.id === sid)?.title ?? sid, card }
+    }
+  }
+  return null
+})
 
 export function useChat() {
   return {
@@ -368,6 +381,7 @@ export function useChat() {
     asrModel,
     sessions,
     activeSid,
+    globalConfirm,
     sessionId,
     messagesBySid,
     streamingSessions,

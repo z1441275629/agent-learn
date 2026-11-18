@@ -2,8 +2,8 @@
 import { ref } from 'vue'
 import type { ConfirmCard } from '../../types'
 
-defineProps<{ card: ConfirmCard }>()
-const emit = defineEmits<{ answer: [approve: boolean, always: boolean] }>()
+defineProps<{ card: ConfirmCard; sessionTitle?: string }>()
+const emit = defineEmits<{ answer: [approve: boolean, always: boolean]; goto: [] }>()
 
 // 「本会话内总是允许」勾选（卡片一张一张出，单值够用；只在点允许时读）
 const alwaysAllow = ref(false)
@@ -24,6 +24,7 @@ function prettyArgs(args: string): string {
   <div class="confirm-overlay">
     <div class="confirm-dialog" role="alertdialog" aria-modal="true" aria-label="写入操作确认">
       <div class="head">⚠️ 写入操作需要确认</div>
+      <div v-if="sessionTitle" class="from-session">来自会话 <a title="跳到该会话" @click="emit('goto')">{{ sessionTitle }}</a></div>
       <div class="tool">工具 <code>{{ card.name }}</code> 请求执行：</div>
       <pre class="args">{{ prettyArgs(card.args) }}</pre>
       <label class="always" title="只对当前会话生效（存在服务端内存，重启即失效）；对生面孔工具别勾">
@@ -64,6 +65,18 @@ function prettyArgs(args: string): string {
   font-weight: 700;
   font-size: 15px;
   margin-bottom: 10px;
+}
+
+.from-session {
+  font-size: 12px;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+
+.from-session a {
+  color: var(--accent);
+  cursor: pointer;
+  text-decoration: underline;
 }
 
 .tool {

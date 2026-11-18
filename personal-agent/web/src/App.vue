@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import AppHeader from './components/common/AppHeader.vue'
+import ConfirmHost from './components/chat/ConfirmHost.vue'
 </script>
 
 <template>
@@ -12,4 +13,5 @@ import AppHeader from './components/common/AppHeader.vue'
       </keep-alive>
     </router-view>
   </div>
+  <ConfirmHost />
 </template>
