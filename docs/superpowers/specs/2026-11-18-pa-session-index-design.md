@@ -67,9 +67,10 @@ export interface SessionIndex {
 
 - `api.ts`：`listSessions(limit?, offset?)` → `{ sessions, total }` 类型更新
 - `useChat.ts`：
-  - `sessions`、`hasMore`、`total` 状态；`refreshSessions()` 拉第一页；`loadMoreSessions()` 追加下一页
-  - `deleteSession(id)`：调 DELETE → 成功后刷新列表；删的是当前打开会话 → `newChat()`；409 → toast 提示先停止
-  - **深链修正**（分页后必须做）：`init()` 不再拿首页列表验证 wanted id——直接 `openSession(id)`，openSession 的 404 分支接手「toast + 回 /chat + 开最近会话」
+  - `sessions`、`hasMore`、`total` 状态；`loadMoreSessions()` 追加下一页
+  - **refresh 语义（builder check 裁定，设计者的）**：`refreshSessions()` 重拉 `[0, 已加载数)` 整窗替换——发送/流完/后台跑完/删除都会触发 refresh，绝不折叠回第一页；刚跑完的会话跳到顶部是排序的预期行为，窗口内行平移无重复无丢失；删除后整窗重拉，边界多补一行无害
+  - `deleteSession(id)`：调 DELETE → 成功后整窗重拉；删的是当前打开会话 → `newChat()`；409 → toast 提示先停止
+  - **深链修正**（分页后必须做）：`init()` 不再拿首页列表验证 wanted id——直接 `openSession(id)`，openSession 的 404 分支接手「toast + 回最近会话」（路由 replace 直达 /chat/<recent>，保持路由是唯一事实源）
 - `SessionSidebar.vue`：每项 hover 浮出删除图标（EP Delete）；在跑会话（streamingSessions）删除图标禁用；底部 `total > 已加载数` 时显示「加载更多（n/total）」按钮
 
 ### 迁移
