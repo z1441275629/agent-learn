@@ -1,6 +1,6 @@
 # AI Agent 实验室
 
-从零手写 Agent 全链路：不依赖框架，从 Function Calling 的消息流一路写到每天都在用的个人 Agent 工作台。TypeScript 单语言，纪律是「先手写理解原理，再用框架对照验证」。
+从零手写 Agent 全链路：不依赖框架，从 Function Calling 的消息流一路写到已上线的个人 Agent 工作台。以 TypeScript 为主，纪律是「先手写理解原理，再用框架对照验证」。
 
 ## 亮点
 
@@ -9,7 +9,7 @@
 - **零 token 测试金字塔**：单测层不发起任何 LLM 调用——vitest 8 用例（[jobprep/tests/](jobprep/tests/)）+ node:test 28 用例（[10-multi-agent/](10-multi-agent/)）+ 回归用例集（[tests/regression/](tests/regression/)）
 - **面试题库 99 题（必背 62）**：9 章，每题背诵要点 + 追问链，答案落到本仓库的真实证据 → [docs/interview/](docs/interview/)
 - **踩坑实录 65 条**：症状 → 根因 → 修法 → 原则，全部亲手踩过 → [PITFALLS.md](PITFALLS.md)
-- **个人 Agent 工作台（在用）**：shot2text 截图取字——本地 tesseract OCR + LLM 翻译，端到端约 3 秒，零 token 探针 15/15 → [personal-agent/](personal-agent/)
+- **个人 Agent 工作台**：shot2text 截图取字——本地 tesseract OCR + LLM 翻译，2026-11-03 上线，端到端约 3 秒，零 token 探针 15/15 → [personal-agent/](personal-agent/)
 
 ## 三阶段路线
 
