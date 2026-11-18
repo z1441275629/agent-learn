@@ -69,10 +69,14 @@ export function createApp(): Koa {
     }
   })
 
-  // 前端静态资源（Vue 构建产物）；/api/* 交给下面的路由
+  // 前端静态资源（Vue 构建产物）；/api/* 交给下面的路由。
+  // 文件没找到且路径最后一段无扩展名 → 回 index.html：vue-router history 模式的深链
+  // （/chat/:id、/memory 这类）磁盘上不存在，必须落到前端入口交给路由接管；
+  // 带扩展名的（/assets/app.js、/favicon.ico）找不到仍然是 404，不吞真丢的资源
   app.use(async (ctx, next) => {
     if (ctx.method === 'GET' && !ctx.path.startsWith('/api')) {
-      const file = await readStatic(ctx.path)
+      let file = await readStatic(ctx.path)
+      if (!file && !path.basename(ctx.path).includes('.')) file = await readStatic('/')
       if (file) {
         ctx.status = 200
         ctx.type = file.mime
