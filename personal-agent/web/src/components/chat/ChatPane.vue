@@ -30,6 +30,8 @@ const {
   sessions,
   sessionId,
   streamingSessions,
+  total,
+  hasMore,
   messages,
   pending,
   streaming,
@@ -39,6 +41,8 @@ const {
   removePending,
   send,
   stop,
+  loadMoreSessions,
+  deleteSession,
 } = useChat()
 
 void init()
@@ -50,8 +54,12 @@ void init()
       :sessions="sessions"
       :session-id="sessionId"
       :streaming-sessions="streamingSessions"
+      :has-more="hasMore"
+      :total="total"
       @open="openFromList"
       @new-chat="router.push('/chat')"
+      @delete="deleteSession"
+      @load-more="loadMoreSessions"
     />
     <div class="chat-main">
       <ChatToolbar
