@@ -8,6 +8,7 @@
 
 import { computed, reactive, ref } from 'vue'
 import { confirmToolCall, fetchModels, getSession, listSessions, streamChat } from '../api'
+import router from '../router'
 import type { ConfirmCard, DisplayMessage, ModelEntry, PendingAttachment, SessionSummary } from '../types'
 import { toast } from '../utils/toast'
 import { speechRecognitionSupported } from '../utils/voice'
@@ -113,6 +114,7 @@ async function openSession(id: string): Promise<void> {
 function newChat(): void {
   activeSid.value = null
   pending.value = []
+  void router.push('/chat')
 }
 
 async function init(): Promise<void> {
@@ -120,6 +122,10 @@ async function init(): Promise<void> {
   try {
     const payload = await listSessions()
     sessions.value = payload.sessions
+    // 深链定位：路由带合法 id 时 watcher 已打开（openSession 直接拉详情，不依赖列表）——不再重复打开
+    const wanted = String(router.currentRoute.value.params.id ?? '')
+    if (wanted && payload.sessions.some((s) => s.id === wanted)) return
+    if (wanted) void router.replace('/chat')
     if (payload.sessions.length > 0) await openSession(payload.sessions[0].id)
   } catch (e: any) {
     toast('会话列表加载失败：' + (e?.message ?? e))
@@ -231,6 +237,8 @@ async function send(text: string): Promise<void> {
             key = sid
             if (wasActive) activeSid.value = sid
             streamingSessions.add(sid)
+            // 会话获得真实 id：同步进 URL（replace 不留历史），watcher 的 openSession 走缓存命中无害
+            if (wasActive) void router.replace('/chat/' + sid)
             void refreshSessions()
           }
         } else if (chunk.type === 'delta') {

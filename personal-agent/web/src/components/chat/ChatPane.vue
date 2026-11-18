@@ -1,7 +1,9 @@
 <script setup lang="ts">
 defineOptions({ name: 'ChatPane' })
 import { computed, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import { useChat } from '../../composables/useChat'
+import { useSessionRoute } from '../../composables/useSessionRoute'
 import { useKb } from '../../composables/useKb'
 import { useMemories } from '../../composables/useMemories'
 import { useSkills } from '../../composables/useSkills'
@@ -15,6 +17,14 @@ import MessageList from './MessageList.vue'
 import SessionSidebar from './SessionSidebar.vue'
 
 defineProps<{ active: boolean }>()
+
+const router = useRouter()
+// 路由 ↔ 会话绑定：路由参数是唯一事实源，侧栏点击/新对话都改成导航，由 watcher 翻译成打开动作
+useSessionRoute()
+
+function openFromList(id: string): void {
+  void router.push('/chat/' + id)
+}
 
 const {
   models,
@@ -86,8 +96,8 @@ function answerPending(approve: boolean, always: boolean): void {
       :sessions="sessions"
       :session-id="sessionId"
       :streaming-sessions="streamingSessions"
-      @open="openSession"
-      @new-chat="newChat"
+      @open="openFromList"
+      @new-chat="router.push('/chat')"
     />
     <div class="chat-main">
       <ChatToolbar
