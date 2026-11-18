@@ -1,4 +1,5 @@
 <script setup lang="ts">
+defineOptions({ name: 'ChatPane' })
 import { computed, watch } from 'vue'
 import { useChat } from '../../composables/useChat'
 import { useKb } from '../../composables/useKb'

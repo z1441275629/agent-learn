@@ -1,13 +1,6 @@
-import { ref } from 'vue'
+import { ElMessage } from 'element-plus'
 
-/** 全局轻提示：任何组件 toast('...')，由 App 里的 ToastHost 统一渲染 */
-export const toastText = ref('')
-let timer: ReturnType<typeof setTimeout> | undefined
-
+/** 全局轻提示：ElMessage 门面——调用方（useChat 等）的 toast('...') 签名不变 */
 export function toast(msg: string): void {
-  toastText.value = msg
-  clearTimeout(timer)
-  timer = setTimeout(() => {
-    toastText.value = ''
-  }, 1600)
+  ElMessage({ message: msg, duration: 2600 })
 }

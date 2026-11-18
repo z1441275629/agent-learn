@@ -35,41 +35,48 @@ const voiceEngine = defineModel<'browser' | 'asr'>('voiceEngine', { required: tr
 
     <span class="divider"></span>
 
-    <select v-model="modelId" class="picker" title="模型">
-      <option v-for="m in models" :key="m.id" :value="m.id">
-        {{ m.label }} · {{ m.model }}{{ m.vision ? ' · 视觉' : '' }}
-      </option>
-    </select>
-    <select v-model="thinking" class="picker" title="思考强度（部分平台只区分开关）">
-      <option value="off">思考：关</option>
-      <option value="low">思考：低</option>
-      <option value="medium">思考：中</option>
-      <option value="high">思考：高</option>
-    </select>
-    <select
+    <el-select v-model="modelId" class="picker" size="small" title="模型">
+      <el-option
+        v-for="m in models"
+        :key="m.id"
+        :value="m.id"
+        :label="`${m.label} · ${m.model}${m.vision ? ' · 视觉' : ''}`"
+      />
+    </el-select>
+    <el-select v-model="thinking" class="picker" size="small" title="思考强度（部分平台只区分开关）">
+      <el-option value="off" label="思考：关" />
+      <el-option value="low" label="思考：低" />
+      <el-option value="medium" label="思考：中" />
+      <el-option value="high" label="思考：高" />
+    </el-select>
+    <el-select
       v-if="asrModel"
       v-model="voiceEngine"
       class="picker"
+      size="small"
       title="语音输入引擎：浏览器原生（免费、边说边出字，需 Chrome/Edge）vs 大模型转写（录音上传 /api/asr，说完约 1~2 秒出结果，按量计费）"
     >
-      <option value="browser" :disabled="!speechRecognitionSupported()">语音：浏览器</option>
-      <option value="asr">语音：大模型</option>
-    </select>
-    <label class="toggle" title="聊天 API 无状态：历史图片每轮都会重新计费。开启后旧图替换成文字占位">
-      <input v-model="elide" type="checkbox" />
-      图片仅最近一轮
-    </label>
-    <label class="toggle" title="让模型调用工具（现在几点 / 检索知识库）。开启后知识库由模型自主检索，不再自动注入">
-      <input v-model="tools" type="checkbox" />
-      工具调用
-    </label>
-    <label
-      class="toggle"
-      title="提问时按关键词检索知识库，命中的笔记片段作为参考注入（本地 BM25，零 API 成本）。工具调用开启时此开关不生效"
-    >
-      <input v-model="kbSearch" type="checkbox" />
-      知识库检索
-    </label>
+      <el-option value="browser" label="语音：浏览器" :disabled="!speechRecognitionSupported()" />
+      <el-option value="asr" label="语音：大模型" />
+    </el-select>
+    <el-tooltip content="聊天 API 无状态：历史图片每轮都会重新计费。开启后旧图替换成文字占位" placement="top">
+      <label class="toggle">
+        <el-switch v-model="elide" size="small" />
+        <span>图片仅最近一轮</span>
+      </label>
+    </el-tooltip>
+    <el-tooltip content="让模型调用工具（现在几点 / 检索知识库）。开启后知识库由模型自主检索，不再自动注入" placement="top">
+      <label class="toggle">
+        <el-switch v-model="tools" size="small" />
+        <span>工具调用</span>
+      </label>
+    </el-tooltip>
+    <el-tooltip content="提问时按关键词检索知识库，命中的笔记片段作为参考注入（本地 BM25，零 API 成本）。工具调用开启时此开关不生效" placement="top">
+      <label class="toggle">
+        <el-switch v-model="kbSearch" size="small" />
+        <span>知识库检索</span>
+      </label>
+    </el-tooltip>
   </div>
 </template>
 
@@ -85,14 +92,7 @@ const voiceEngine = defineModel<'browser' | 'asr'>('voiceEngine', { required: tr
 }
 
 .picker {
-  font: inherit;
-  font-size: 13px;
-  padding: 5px 8px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: #fff;
-  color: var(--text);
-  max-width: 260px;
+  width: 220px;
 }
 
 .divider {
@@ -110,6 +110,16 @@ const voiceEngine = defineModel<'browser' | 'asr'>('voiceEngine', { required: tr
   padding: 5px 10px;
   font: inherit;
   font-size: 13px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--muted);
   cursor: pointer;
   white-space: nowrap;
 }

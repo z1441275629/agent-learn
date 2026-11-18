@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import type { PendingAttachment } from '../../types'
 import { toast } from '../../utils/toast'
 import { useVoiceInput } from '../../composables/useVoiceInput'
@@ -26,7 +26,6 @@ const emit = defineEmits<{
 }>()
 
 const draft = ref('')
-const textarea = ref<HTMLTextAreaElement | null>(null)
 const imageInput = ref<HTMLInputElement | null>(null)
 const docInput = ref<HTMLInputElement | null>(null)
 
@@ -54,13 +53,6 @@ function onMic(): void {
 /** 草稿只读：任一引擎在收音时，手打的内容会被下一次识别结果覆盖 */
 const draftLocked = computed(() => micActive.value)
 
-function resize(): void {
-  const el = textarea.value
-  if (!el) return
-  el.style.height = 'auto'
-  el.style.height = Math.min(el.scrollHeight, 180) + 'px'
-}
-
 async function submit(): Promise<void> {
   if (props.streaming) return
   if (listening.value) finalizeVoice() // 边说边发：先定格（撤掉未定段的转写），再取文本
@@ -68,9 +60,6 @@ async function submit(): Promise<void> {
   if (!text && props.pending.length === 0) return
   emit('send', text)
   draft.value = ''
-  // v-model 清空要到下一帧才落到 DOM：同步量高度量到的还是多行的 scrollHeight，框会卡在高处不还原
-  await nextTick()
-  resize()
 }
 
 function onKeydown(e: KeyboardEvent): void {
@@ -121,10 +110,10 @@ onBeforeUnmount(() => document.removeEventListener('paste', onPaste))
       />
     </div>
     <div class="input-row">
-      <textarea
-        ref="textarea"
+      <el-input
         v-model="draft"
-        rows="1"
+        type="textarea"
+        :autosize="{ minRows: 1, maxRows: 6 }"
         :readonly="draftLocked"
         :placeholder="
           micBusy
@@ -136,8 +125,7 @@ onBeforeUnmount(() => document.removeEventListener('paste', onPaste))
               : '输入消息，Enter 发送，Shift+Enter 换行'
         "
         @keydown="onKeydown"
-        @input="resize"
-      ></textarea>
+      />
       <button class="icon" title="上传图片" @click="imageInput?.click()">🖼</button>
       <button class="icon" title="上传文本附件" @click="docInput?.click()">📎</button>
       <button

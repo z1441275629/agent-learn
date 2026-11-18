@@ -1,4 +1,5 @@
 <script setup lang="ts">
+defineOptions({ name: 'OcrPane' })
 import { useOcr } from '../../composables/useOcr'
 import { copyText } from '../../utils/clipboard'
 import { toast } from '../../utils/toast'
