@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { Loading, Microphone, Paperclip, Picture } from '@element-plus/icons-vue'
 import type { PendingAttachment } from '../../types'
 import { toast } from '../../utils/toast'
 import { useVoiceInput } from '../../composables/useVoiceInput'
@@ -35,7 +36,6 @@ const { state: micState, toggle: toggleMic } = useMicRecorder(draft)
 
 const micActive = computed(() => (props.voiceEngine === 'browser' ? listening.value : micState.value === 'recording'))
 const micBusy = computed(() => props.voiceEngine === 'asr' && micState.value === 'transcribing')
-const micIcon = computed(() => (micBusy.value ? '⏳' : micActive.value ? '⏹' : '🎤'))
 const micAvailable = computed(() => (props.voiceEngine === 'asr' ? !!props.asrModel : voiceSupported))
 
 function onMic(): void {
@@ -126,8 +126,12 @@ onBeforeUnmount(() => document.removeEventListener('paste', onPaste))
         "
         @keydown="onKeydown"
       />
-      <button class="icon" title="上传图片" @click="imageInput?.click()">🖼</button>
-      <button class="icon" title="上传文本附件" @click="docInput?.click()">📎</button>
+      <button class="icon" title="上传图片" @click="imageInput?.click()">
+        <el-icon :size="17"><Picture /></el-icon>
+      </button>
+      <button class="icon" title="上传文本附件" @click="docInput?.click()">
+        <el-icon :size="17"><Paperclip /></el-icon>
+      </button>
       <button
         v-if="micAvailable"
         class="icon mic"
@@ -144,7 +148,10 @@ onBeforeUnmount(() => document.removeEventListener('paste', onPaste))
         "
         @click="onMic"
       >
-        {{ micIcon }}
+        <el-icon :size="17" :class="{ 'spin-ico': micBusy }">
+          <Loading v-if="micBusy" />
+          <Microphone v-else />
+        </el-icon>
       </button>
       <button class="primary" :disabled="!streaming && micActive" @click="streaming ? emit('stop') : submit()">
         {{ streaming ? '停止' : '发送' }}
@@ -202,6 +209,17 @@ onBeforeUnmount(() => document.removeEventListener('paste', onPaste))
   background: #e11d48;
   color: #fff;
   animation: mic-pulse 1.2s ease-in-out infinite;
+}
+
+/* 转写等待中的旋转图标（scoped 块内声明 keyframes，引用全局的同名会被改写） */
+@keyframes ico-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.spin-ico {
+  animation: ico-spin 0.9s linear infinite;
 }
 
 @keyframes mic-pulse {
