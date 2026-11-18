@@ -19,12 +19,14 @@ import {
   skills,
   store,
   tools,
-  PA_GRACE_MS,
   requestIds,
   REQUEST_ID_TTL_MS,
   streamBuffers,
+  armGraceIfIdle,
+  cancelGrace,
 } from '../state.ts'
 import type { StreamBuffer } from '../state.ts'
+import type { ServerResponse } from 'node:http'
 import { routeMessage } from '../../core/router.ts'
 import { runBlogComposite } from '../../core/composite.ts'
 import { planTask } from '../../core/planner.ts'
@@ -47,76 +49,113 @@ router.post('/api/chat', async (ctx) => {
   if (rawImages.length > 0 && !entry.vision)
     return json(ctx, 400, { error: `「${entry.label} · ${entry.model}」不支持图片输入——请切换到视觉模型` })
 
-  // 幂等闸门（动存储之前）：同 requestId 重放 → 返回既有会话让客户端转 GET /stream 续接，
-  // 不新建会话、不重复落盘。resumed+done 由缓冲是否存在判定（在跑=没 done）
+  // 幂等闸门（动存储之前）：同 requestId 重放 → 等首请求「校验→建会话→入缓冲」跑完
+  // （requestIds 里预留的就是这份 promise，首请求在任何 await 之前同步预留），再按缓冲
+  // 是否存在判定 done。重放与预留之间没有水窗：重放拿到同一份结果，不新建会话、不重复落盘
   const rid = typeof body.requestId === 'string' && body.requestId ? body.requestId : null
   if (rid) {
     const seen = requestIds.get(rid)
     if (seen) {
-      const running = streamBuffers.has(seen.sid)
-      return json(ctx, 200, { ok: true, sessionId: seen.sid, resumed: true, done: !running })
+      try {
+        const seenSid = (await seen.ready).sid
+        return json(ctx, 200, { ok: true, sessionId: seenSid, resumed: true, done: !streamBuffers.has(seenSid) })
+      } catch (e: any) {
+        return json(ctx, Number(e?.status) || 400, { error: String(e?.message ?? e) })
+      }
     }
   }
 
-  const existing = body.sessionId ? await store.load(body.sessionId) : await store.create()
-  if (!existing) return json(ctx, 404, { error: '会话不存在' })
-  const sid = existing.id
-  if (runningSessions.has(sid)) return json(ctx, 409, { error: '这个会话还在回答，先停止或等它结束' })
-  runningSessions.add(sid)
+  // 工具模式（默认开）：模型可调工具——只读的直接跑，写入的（remember）先过确认门；
+  // 知识库此时走工具检索，自动注入只在工具关闭时做（同一内容不双份进上下文）
+  const toolsOn = body.tools !== false
+  // 「校验 → 建会话 → 落用户消息 → 缓冲入表」整体作为一个 promise：这中间的每个 await
+  // 都是重放可能落进的水窗（重试间隔 500ms，带图时 saveImage 能把它等出来）。任何一步失败：
+  // 清掉已占的互斥位/缓冲再上抛，首请求与重放拿到同一个明确错误
+  let setupBuf: StreamBuffer | null = null
+  const ready = (async () => {
+    const existing = body.sessionId ? await store.load(body.sessionId) : await store.create()
+    if (!existing) throw Object.assign(new Error('会话不存在'), { status: 404 })
+    const sid = existing.id
+    if (runningSessions.has(sid)) throw Object.assign(new Error('这个会话还在回答，先停止或等它结束'), { status: 409 })
+    runningSessions.add(sid)
+    try {
+      const storedImages: StoredImage[] = []
+      for (const image of rawImages) {
+        if (!image || typeof image.dataUrl !== 'string') throw Object.assign(new Error('图片缺 dataUrl'), { status: 400 })
+        storedImages.push(await store.saveImage(sid, image.dataUrl, image.name))
+      }
+      const doc = await store.append(
+        sid,
+        { role: 'user', text, images: storedImages },
+        {
+          title: deriveTitle(text, storedImages.length > 0),
+          modelId: entry.id,
+          thinking: body.thinking ?? 'off',
+        },
+      )
+
+      // 工具模式（默认开）：模型可调工具——只读的直接跑，写入的（remember）先过确认门；
+      // 知识库此时走工具检索，自动注入只在工具关闭时做（同一内容不双份进上下文）
+      // 模块 16 总控路由三态：plan（多步任务 planner-executor）/ composite（写博客编排）/ normal。
+      // 工具关闭时不路由——编排各角色都要工具面
+      const mode = toolsOn ? routeMessage(text) : 'normal'
+      const kbBlock = !toolsOn && mode === 'normal' && body.kbSearch !== false ? await kbContextFor(doc) : null
+      // plan 也建主循环上下文：规划师解析失败要回落单 agent 主路径（纯组装不烧 token）；
+      // composite 不建——编排自带各角色上下文
+      const messages = mode !== 'composite' ? await prepareContext(doc, entry, body.imageElision !== false, kbBlock, toolsOn) : []
+
+      // 从这里开始应答全是 SSE：接管原生 res（Koa 不再替我们收尾）——上面的校验/落账失败
+      // 仍走 Koa 正常的 JSON 错误路径，别让 respond=false 把错误帧也吞了
+      ctx.respond = false
+      const res = ctx.res
+      // 缓冲结构在第一帧前就绪；abort 提前创建（宽限期/显式停止都用它）
+      const ac = new AbortController()
+      const buf: StreamBuffer = {
+        frames: [],
+        clients: new Set([res]),
+        postRes: res,
+        abort: ac,
+        graceTimer: null,
+        nextId: 1,
+      }
+      setupBuf = buf
+      streamBuffers.set(sid, buf)
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream; charset=utf-8',
+        'Cache-Control': 'no-cache',
+        Connection: 'keep-alive',
+        'X-Accel-Buffering': 'no',
+      })
+      // 客户端断开：从广播集合摘掉 + 真正没人看了才武装宽限计时（生命周期统一在 state.ts）。
+      // 监听在缓冲入表后立刻挂上——发起段的 await 期间断开也不漏
+      res.on('close', () => {
+        if (streamBuffers.get(sid) !== buf) return
+        buf.clients.delete(res)
+        armGraceIfIdle(sid, buf)
+      })
+      return { sid, buf, ac, res, doc, mode, messages }
+    } catch (e) {
+      runningSessions.delete(sid)
+      if (setupBuf) {
+        cancelGrace(setupBuf)
+        streamBuffers.delete(sid)
+      }
+      throw e
+    }
+  })()
   if (rid) {
     const now = Date.now()
     for (const [k, v] of requestIds) if (now - v.at > REQUEST_ID_TTL_MS) requestIds.delete(k)
-    requestIds.set(rid, { sid, at: now })
+    requestIds.set(rid, { ready, at: now })
   }
+  const settled = await ready.catch((e: any) => ({ error: e }))
+  if ('error' in settled) {
+    const err = settled.error as { status?: number; message?: string }
+    return json(ctx, Number(err?.status) || 400, { error: String(err?.message ?? err) })
+  }
+  const { sid, buf, ac, res, doc, mode, messages } = settled
 
   try {
-    const storedImages: StoredImage[] = []
-    for (const image of rawImages) {
-      if (!image || typeof image.dataUrl !== 'string') return json(ctx, 400, { error: '图片缺 dataUrl' })
-      storedImages.push(await store.saveImage(sid, image.dataUrl, image.name))
-    }
-    const doc = await store.append(
-      sid,
-      { role: 'user', text, images: storedImages },
-      {
-        title: deriveTitle(text, storedImages.length > 0),
-        modelId: entry.id,
-        thinking: body.thinking ?? 'off',
-      },
-    )
-
-    // 工具模式（默认开）：模型可调工具——只读的直接跑，写入的（remember）先过确认门；
-    // 知识库此时走工具检索，自动注入只在工具关闭时做（同一内容不双份进上下文）
-    const toolsOn = body.tools !== false
-    // 模块 16 总控路由三态：plan（多步任务 planner-executor）/ composite（写博客编排）/ normal。
-    // 工具关闭时不路由——编排各角色都要工具面
-    const mode = toolsOn ? routeMessage(text) : 'normal'
-    const kbBlock = !toolsOn && mode === 'normal' && body.kbSearch !== false ? await kbContextFor(doc) : null
-    // plan 也建主循环上下文：规划师解析失败要回落单 agent 主路径（纯组装不烧 token）；
-    // composite 不建——编排自带各角色上下文
-    const messages = mode !== 'composite' ? await prepareContext(doc, entry, body.imageElision !== false, kbBlock, toolsOn) : []
-
-    // 从这里开始应答全是 SSE：接管原生 res（Koa 不再替我们收尾）——上面的校验/落账失败
-    // 仍走 Koa 正常的 JSON 错误路径，别让 respond=false 把错误帧也吞了
-    ctx.respond = false
-    const res = ctx.res
-    // 缓冲结构在第一帧前就绪；abort 提前创建（宽限期/显式停止都用它）
-    const ac = new AbortController()
-    const buf: StreamBuffer = {
-      frames: [],
-      clients: new Set([res]),
-      postRes: res,
-      abort: ac,
-      graceTimer: null,
-      nextId: 1,
-    }
-    streamBuffers.set(sid, buf)
-    res.writeHead(200, {
-      'Content-Type': 'text/event-stream; charset=utf-8',
-      'Cache-Control': 'no-cache',
-      Connection: 'keep-alive',
-      'X-Accel-Buffering': 'no',
-    })
     // 帧写缓冲 + 广播到所有客户端（带自增 id 行——GET /stream 重连按 lastEventId 去重回放）
     const send = (o: unknown) => {
       if (streamBuffers.get(sid) !== buf) return
@@ -161,26 +200,7 @@ router.post('/api/chat', async (ctx) => {
         console.log(`[pa] 等待确认 ${req.name} ${cardArgs.slice(0, 80)} · session ${sid}`)
       })
 
-    // 客户端断开/点停止 → abort 上游，别让没人看的长回答继续烧 token；半截回答仍要落盘；
-    // 还没应答的确认卡按拒绝收尾（门不能比流活得久）
-    // 客户端断开 ≠ 立即停：POST 连接断开进宽限期（继续生成+缓冲，确认卡存活等人回来）；
-    // GET tail 断开只减客户端。宽限期到仍无人重连才 abort——落盘与收尾由主流程 aborted 分支统一做
-    res.on('close', () => {
-      if (streamBuffers.get(sid) !== buf) return
-      if (res !== buf.postRes) {
-        buf.clients.delete(res)
-        return
-      }
-      if (!res.writableEnded && !buf.graceTimer) {
-        console.log('[pa] chat 客户端断开，宽限 ' + Math.round(PA_GRACE_MS / 1000) + 's 续跑 · session ' + sid)
-        buf.graceTimer = setTimeout(() => {
-          if (streamBuffers.get(sid) !== buf) return
-          console.log('[pa] chat 宽限期无人重连，停止生成 · session ' + sid)
-          ac.abort()
-          for (const p of pendingConfirms.values()) if (p.sid === sid) p.settle(false, 'denied')
-        }, PA_GRACE_MS)
-      }
-    })
+    // （断开处理已在启动 promise 里挂好：断开=摘出广播集合，没人看了才武装宽限计时——state.ts 统一逻辑）
     const t0 = Date.now()
     // 服务端自己留一份已流出文本：runToolLoop 抛错（网络等）时半截内容还在手里，能落盘
     let streamedText = ''
@@ -204,8 +224,7 @@ router.post('/api/chat', async (ctx) => {
     }
     /** 收尾：清宽限计时、摘缓冲、关所有客户端（幂等——重复调用无害） */
     const finish = () => {
-      if (buf.graceTimer) clearTimeout(buf.graceTimer)
-      buf.graceTimer = null
+      cancelGrace(buf)
       streamBuffers.delete(sid)
       for (const c of buf.clients) {
         if (!c.destroyed && !c.writableEnded) c.end()

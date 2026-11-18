@@ -4,7 +4,7 @@
 import Router from '@koa/router'
 import type { ServerResponse } from 'node:http'
 import { json } from '../http.ts'
-import { streamBuffers } from '../state.ts'
+import { armGraceIfIdle, cancelGrace, pendingConfirms, streamBuffers } from '../state.ts'
 
 const NL = String.fromCharCode(10)
 
@@ -46,14 +46,16 @@ router.get('/api/chat/:sid/stream', (ctx) => {
     if (f.id > last) write('id: ' + f.id + NL + 'data: ' + f.json + NL + NL)
   }
   buf.clients.add(res)
-  // 有人回来了：宽限计时作废（生成继续给活人看）
+  // 有人回来了：宽限计时作废（生成继续给活人看）——撤销逻辑统一在 state.ts
   if (buf.graceTimer) {
-    clearTimeout(buf.graceTimer)
-    buf.graceTimer = null
+    cancelGrace(buf)
     console.log('[pa] chat 客户端重连，宽限取消 · session ' + sid)
   }
   res.on('close', () => {
     buf.clients.delete(res)
+    // 这个观众也走光了：重新武装宽限计时——不补挂的话生成会在零观众下跑到自然结束
+    // （plan/composite 能跑几分钟，正是宽限期要防的无界烧钱）
+    armGraceIfIdle(sid, buf)
   })
 })
 
@@ -63,5 +65,8 @@ router.post('/api/chat/:sid/stop', (ctx) => {
   const buf = streamBuffers.get(sid)
   if (!buf) return json(ctx, 404, { error: '该会话没有进行中的回答' })
   buf.abort.abort()
+  // 还挂在确认卡上等人点：跟着停止一起拒绝收尾——否则循环阻塞在 askConfirm 上，
+  // /running 一直报在跑、下次发送一直 409，最长卡满 CONFIRM_TIMEOUT_MS（终审 I5）
+  for (const p of pendingConfirms.values()) if (p.sid === sid) p.settle(false, 'denied')
   json(ctx, 200, { ok: true })
 })

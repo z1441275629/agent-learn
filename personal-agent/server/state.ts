@@ -120,9 +120,46 @@ export interface StreamBuffer {
   nextId: number
 }
 export const streamBuffers = new Map<string, StreamBuffer>()
-/** 发送幂等：同 requestId 重放时返回既有会话（重发安全靠协议，不靠「没收到首帧」的猜测） */
-export const requestIds = new Map<string, { sid: string; at: number }>()
+/** 发送幂等：同 requestId 重放时返回既有会话（重发安全靠协议，不靠「没收到首帧」的猜测）。
+ * ready 是首请求「校验→建会话→入缓冲」整体的 promise：预留发生在任何 await 之前（同步），
+ * 重放落在任何 await 的水窗里都拿到同一份结果，而不是再开一轮生成 */
+export const requestIds = new Map<string, { ready: Promise<{ sid: string }>; at: number }>()
 export const REQUEST_ID_TTL_MS = 10 * 60_000
+
+// ---------- 宽限期辅助（chat.ts 与 chat-stream.ts 共用：计时生命周期只这一份逻辑） ----------
+// 语义：最后一个观众走光才开始计时（服务端继续生成+缓冲）；任何人回来即撤销；
+// 到期 abort + 拒绝未应答确认卡——落盘与 finish 由主流程 aborted 分支统一收尾，这里不碰存储。
+// 「观众」= 除 postRes 外还活着的客户端（postRes 断开时已从 clients 摘除，此判据是双保险）
+function liveViewers(buf: StreamBuffer): number {
+  let n = 0
+  for (const c of buf.clients) if (c !== buf.postRes && !c.destroyed && !c.writableEnded) n++
+  return n
+}
+
+/** 无人观看才武装宽限计时（已武装则不动） */
+export function armGraceIfIdle(sid: string, buf: StreamBuffer): void {
+  if (buf.graceTimer || liveViewers(buf) > 0) return
+  console.log('[pa] chat 无人观看，宽限 ' + Math.round(PA_GRACE_MS / 1000) + 's 续跑 · session ' + sid)
+  buf.graceTimer = setTimeout(() => graceExpire(sid, buf), PA_GRACE_MS)
+}
+
+/** 撤销宽限计时（有人回来/正常收尾时调） */
+export function cancelGrace(buf: StreamBuffer): void {
+  if (buf.graceTimer) {
+    clearTimeout(buf.graceTimer)
+    buf.graceTimer = null
+  }
+}
+
+/** 宽限到期：仍无观众才真正停（有人回来是撤销逻辑漏网的兜底） */
+function graceExpire(sid: string, buf: StreamBuffer): void {
+  buf.graceTimer = null
+  if (streamBuffers.get(sid) !== buf) return
+  if (liveViewers(buf) > 0) return
+  console.log('[pa] chat 宽限期无人重连，停止生成 · session ' + sid)
+  buf.abort.abort()
+  for (const p of pendingConfirms.values()) if (p.sid === sid) p.settle(false, 'denied')
+}
 
 // ---------- 记忆抽取钩子：回答完成后异步跑，绝不阻塞/弄崩对话 ----------
 // 课程 07 的教训在这条链上全用得上：
