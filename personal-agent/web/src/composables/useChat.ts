@@ -7,7 +7,7 @@
 // 会话在服务端：客户端只发「新消息」，历史由 /api/sessions 的账本维护。
 
 import { computed, reactive, ref } from 'vue'
-import { confirmToolCall, fetchModels, fetchRunningSessions, getSession, listSessions, newRequestId, stopSession, streamChat } from '../api'
+import { confirmToolCall, deleteSession as deleteSessionApi, fetchModels, fetchRunningSessions, getSession, listSessions, newRequestId, stopSession, streamChat } from '../api'
 import router from '../router'
 import type { ConfirmCard, DisplayMessage, ModelEntry, PendingAttachment, SessionSummary } from '../types'
 import { toast } from '../utils/toast'
@@ -31,6 +31,10 @@ const voiceEngine = ref<'browser' | 'asr'>('browser')
 const asrModel = ref<string | null>(null)
 
 const sessions = ref<SessionSummary[]>([])
+/** 服务端会话总数（分页事实源：hasMore = 已加载数 < total） */
+const total = ref(0)
+/** 侧栏分页大小（首页与「加载更多」同页幅） */
+const SESSION_PAGE = 30
 const activeSid = ref<string | null>(null)
 /** 按会话缓存消息（null = 尚未落库的新对话）；活跃键的消息由 messages computed 暴露 */
 const messagesBySid = reactive(new Map<string | null, DisplayMessage[]>())
@@ -47,6 +51,8 @@ const messages = computed<DisplayMessage[]>(() => messagesBySid.get(activeSid.va
 // runs（而非 streamingSessions）做判定：新会话的首条消息在 session 帧到达前 activeSid 还是 null，
 // 此时输入框也要禁用/显示停止——runs 以 null 为键覆盖了这个空窗
 const streaming = computed(() => runs.has(activeSid.value))
+/** 还有没加载完的会话（侧栏「加载更多」按钮的显示条件） */
+const hasMore = computed(() => sessions.value.length < total.value)
 
 function touchCache(key: string | null): void {
   cacheOrder.value = cacheOrder.value.filter((k) => k !== key)
@@ -79,13 +85,44 @@ async function loadModels(): Promise<void> {
   }
 }
 
+/** 重拉 [0, 已加载数) 整窗替换——保窗不折叠（设计稿裁定）：发送/流完/后台跑完/删除五个调用点
+ * 都会触发 refresh，绝不缩回第一页；刚跑完的会话跳到顶部是排序的预期行为 */
 async function refreshSessions(): Promise<void> {
   try {
-    const payload = await listSessions()
+    const window = Math.max(sessions.value.length, SESSION_PAGE)
+    const payload = await listSessions(window, 0)
     sessions.value = payload.sessions
+    total.value = payload.total
   } catch (e: any) {
     toast('会话列表加载失败：' + (e?.message ?? e))
   }
+}
+
+/** 加载更多：从已加载数往后追加一页。按 id 去重——refresh 与 loadMore 交错时
+ * 新会话会把行往后推，offset 分页可能重出边界行 */
+async function loadMoreSessions(): Promise<void> {
+  try {
+    const payload = await listSessions(SESSION_PAGE, sessions.value.length)
+    const known = new Set(sessions.value.map((s) => s.id))
+    for (const s of payload.sessions) if (!known.has(s.id)) sessions.value.push(s)
+    total.value = payload.total
+  } catch (e: any) {
+    toast('会话列表加载失败：' + (e?.message ?? e))
+  }
+}
+
+/** 删除会话：成功后整窗重拉；删的是当前打开的会话 → 回新对话。false = 服务端拒绝（在跑 409） */
+async function deleteSession(id: string): Promise<boolean> {
+  try {
+    await deleteSessionApi(id)
+  } catch (e: any) {
+    toast(e?.message ?? String(e))
+    return false
+  }
+  messagesBySid.delete(id) // 消息缓存跟着走，防侧栏没了还能从缓存打开幽灵会话
+  if (activeSid.value === id) newChat()
+  void refreshSessions()
+  return true
 }
 
 async function openSession(id: string): Promise<void> {
@@ -108,6 +145,10 @@ async function openSession(id: string): Promise<void> {
     pending.value = []
   } catch (e: any) {
     toast('打开会话失败：' + (e?.message ?? e))
+    // 坏 id 兜底（深链失效/已删除）：路由是唯一事实源，replace 到最近会话（无会话回 /chat）。
+    // 不在这里直调 openSession——路由变了 watcher 自然会打开，避免双开
+    const first = sessions.value[0]?.id
+    void router.replace(first ? '/chat/' + first : '/chat')
   }
 }
 
@@ -175,12 +216,13 @@ async function init(): Promise<void> {
   try {
     const payload = await listSessions()
     sessions.value = payload.sessions
+    total.value = payload.total
     // 在跑对账放在深链早退之前：刷新落在深链上时「进行中」标记不能丢
     await syncRunning()
-    // 深链定位：路由带合法 id 时 watcher 已打开（openSession 直接拉详情，不依赖列表）——不再重复打开
+    // 深链：路由带 id 时 watcher 已经/正在打开（openSession 直接拉详情，不依赖列表）。
+    // 分页后拿首页列表验证会误判 30 名外的旧会话不存在——路由是唯一事实源，坏 id 由 openSession 的 catch 兜底
     const wanted = String(router.currentRoute.value.params.id ?? '')
-    if (wanted && payload.sessions.some((s) => s.id === wanted)) return
-    if (wanted) void router.replace('/chat')
+    if (wanted) return
     if (payload.sessions.length > 0) await openSession(payload.sessions[0].id)
   } catch (e: any) {
     toast('会话列表加载失败：' + (e?.message ?? e))
@@ -429,6 +471,8 @@ export function useChat() {
     voiceEngine,
     asrModel,
     sessions,
+    total,
+    hasMore,
     activeSid,
     globalConfirm,
     sessionId,
@@ -441,6 +485,8 @@ export function useChat() {
     openSession,
     newChat,
     refreshSessions,
+    loadMoreSessions,
+    deleteSession,
     addImages,
     addDocs,
     removePending,

@@ -9,7 +9,7 @@ import type {
   OcrRequest,
   OcrResponse,
   SessionDetail,
-  SessionSummary,
+  SessionListPayload,
   SkillInfo,
 } from './types'
 
@@ -28,10 +28,17 @@ export async function fetchModels(): Promise<ModelsPayload> {
   return res.json()
 }
 
-export async function listSessions(): Promise<{ sessions: SessionSummary[] }> {
-  const res = await fetch('/api/sessions')
+/** 会话列表：分页拉取（limit 缺省 30 = 侧栏首页大小；offset = 已加载数，加载更多往后翻） */
+export async function listSessions(limit = 30, offset = 0): Promise<SessionListPayload> {
+  const res = await fetch(`/api/sessions?limit=${limit}&offset=${offset}`)
   if (!res.ok) throw new Error(await readError(res))
   return res.json()
+}
+
+/** 删除会话（在跑会话服务端 409 拒绝，错误文本直接可展示） */
+export async function deleteSession(id: string): Promise<void> {
+  const res = await fetch(`/api/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' })
+  if (!res.ok) throw new Error(await readError(res))
 }
 
 export async function getSession(id: string): Promise<SessionDetail> {

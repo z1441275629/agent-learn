@@ -66,6 +66,12 @@ export interface SessionSummary {
   messageCount: number
 }
 
+/** 会话列表分页响应（服务端 SQLite 索引分页；total 是全量数，sessions 是当前窗口） */
+export interface SessionListPayload {
+  sessions: SessionSummary[]
+  total: number
+}
+
 /** 跨会话长期记忆（服务端抽取落盘，用户可查看/删除） */
 export interface MemoryItem {
   id: string
